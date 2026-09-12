@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Simple "P" glyph -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M38,30 h20 a14,14 0 0 1 0,28 h-10 v20 h-10 z M48,40 v8 h10 a4,4 0 0 0 0,-8 z" />
+</vector>

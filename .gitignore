@@ -1,0 +1,15 @@
+# Gradle / Android build output
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+# Keystores must never be committed
+*.jks
+*.keystore
+# Keep dist/ tracked only via the README; APKs are published as GitHub releases
+dist/*
+!dist/.gitkeep
