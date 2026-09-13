@@ -26,7 +26,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.4.0 | 2C1: first one-relay STORE -> CARRY -> FORWARD | superseded by v0.4.1 before testing |
 | v0.4.1 | 2C1 hardening: explicit last-hop ID, JVM routing tests gate the build | built, awaiting three-phone test |
 | v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | passed on two phones except the Wi-Fi link (2026-09-13) |
-| v0.5.1 | Wi-Fi join fix: security-aware join, host address from DHCP, approval banner, phase line | built, 48 JVM tests pass, awaiting phone test |
+| v0.5.1 | Wi-Fi join fix: security-aware join, host address from DHCP, approval banner, phase line | passed: WIFI UP, signed handshake, 1 MB over Wi-Fi (2026-09-13) |
+| v0.6.0 | Internet through another phone: provider/buyer roles, tunnel over the Wi-Fi link, VpnService client, gateway | built, 64 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 
@@ -99,7 +100,27 @@ Two Android phones with mobile data and Wi-Fi OFF can:
   state, active transport, bytes sent/received, transfer progress, real
   version number from the package.
 
-Still not here: multi-hop routing, Internet tunnelling, wallet, payments.
+### v0.6 - Internet through another phone
+
+- **Provide Internet** on the phone that has mobile data or home Wi-Fi; it
+  advertises the capability over BLE (`[NET]` in peer lists) and shows
+  PROVIDER READY with its upstream type and validation state.
+- **Use Internet** on the other phone: the Wi-Fi link comes up (or is reused),
+  a session is opened with the peer authenticated on that link, Android asks
+  once to allow the VPN, and from then on every app on the phone reaches the
+  Internet through the provider. TCP and DNS are supported; UDP other than
+  DNS is dropped (QUIC falls back to TCP).
+- Tunnel: multiplexed frames with stream IDs on the existing authenticated
+  TCP link; no per-frame receipts; long-lived streams; keepalives.
+- Client: Android `VpnService` with a small user-space TCP/IP stack in Kotlin
+  (no root, no NDK). Provider: real sockets bound to its Internet network,
+  never to the hotspot.
+- **Net test** button: DNS + real TLS + HTTPS GET through the provider with
+  status code, latency and bytes, independent of the VPN.
+- Usage accounting per session: bytes up/down, streams, DNS queries,
+  duration, provider, disconnect reason (local only, no payments).
+
+Still not here: multi-hop / relayed Internet, wallet, payments, pricing.
 
 ## Build (on the VPS)
 

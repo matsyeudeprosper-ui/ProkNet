@@ -18,7 +18,10 @@ import net.prok.proknet.core.Transfer
 import net.prok.proknet.core.Wire
 import net.prok.proknet.core.hexToBytes
 import net.prok.proknet.core.toHex
+import net.prok.proknet.node.Gateway
 import net.prok.proknet.node.TransferEngine
+import net.prok.proknet.node.TunnelClient
+import net.prok.proknet.core.Tunnel
 import net.prok.proknet.transport.BleTransport
 import net.prok.proknet.transport.Frame
 import net.prok.proknet.transport.Transport
@@ -81,6 +84,61 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onChanged() { main.post { listener.onMessagesChanged(); pushStatus() } }
     })
 
+    // ---- v0.6: Internet through another phone ----
+    val gateway = Gateway(context, identity, object : Gateway.Hooks {
+        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = wifi.sendTunnel(type, streamId, data)
+        override fun linkPeerFullId(): String? = wifi.linkedPeer?.let { store.peerKey(it)?.fullId }
+        override fun onChanged() { main.post { pushStatus() } }
+    })
+    val tunnel = TunnelClient(identity, object : TunnelClient.Hooks {
+        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = wifi.sendTunnel(type, streamId, data)
+        override fun linkPeer(): String? = wifi.linkedPeer
+        override fun linkPeerFullId(): String? = wifi.linkedPeer?.let { store.peerKey(it)?.fullId }
+        override fun onSessionUp() { main.post { vpnRequested?.invoke() } }
+        override fun onChanged() { main.post { pushStatus() } }
+    })
+    /** Set by the UI: called when the session is accepted and the VPN should be started (consent dialog first). */
+    @Volatile var vpnRequested: (() -> Unit)? = null
+    @Volatile var buyerWanted: String? = null
+        private set
+    @Volatile var lastInternetTest: String = ""
+
+    private val tunnelSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {
+        override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) {
+            if (gateway.providing && (frame.type == Tunnel.T_SESSION_START || gateway.buyerShort == peerShort)) gateway.onFrame(peerShort, frame)
+            else tunnel.onFrame(peerShort, frame)
+        }
+        override fun onLinkClosed(peerShort: String, reason: String) { gateway.onLinkClosed(peerShort, reason); tunnel.onLinkClosed(peerShort, reason) }
+    }
+
+    /** Provider role on/off. Advertises the capability over BLE. */
+    fun setProviding(on: Boolean) {
+        if (on) gateway.start() else gateway.stop()
+        ble.setCapabilities(if (on) net.prok.proknet.ble.CAP_INTERNET else 0)
+        pushStatus()
+    }
+
+    /** Buyer role: bring up the Wi-Fi link to [peer] if needed, then the tunnel session. The UI starts the VPN on onSessionUp. */
+    fun useInternet(peer: Peer): Boolean {
+        if (!isRunning) return false
+        if (gateway.providing) { DiagLog.w(tag, "cannot be buyer and provider at the same time: disable Provide Internet first"); return false }
+        buyerWanted = peer.shortId
+        if (wifi.canReach(peer.shortId)) { DiagLog.i(tag, "USE INTERNET via prok-" + peer.shortId + ": link is up, starting session"); return tunnel.start() }
+        DiagLog.i(tag, "USE INTERNET via prok-" + peer.shortId + ": bringing the Wi-Fi link up first")
+        return requestWifi(peer)
+    }
+
+    fun stopInternet(reason: String) {
+        buyerWanted = null
+        tunnel.stop(reason)
+        net.prok.proknet.vpn.ProkVpnService.stop(context)
+        pushStatus()
+    }
+
+    fun onVpnChanged() { main.post { pushStatus() } }
+
+    fun internetTest(host: String, cb: (TunnelClient.TestResult) -> Unit) = tunnel.internetTest(host) { r -> lastInternetTest = r.text; main.post { pushStatus(); cb(r) } }
+
     @Volatile var isRunning = false
         private set
     private var lastVisibleIds: Set<String> = emptySet()
@@ -95,6 +153,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "starting node id=" + identity.idHex + " name=" + identity.displayName + " fingerprint=" + identity.fingerprint +
             (identity.legacyIdHex?.let { " (migrated from " + it.substring(0, 8) + ")" } ?: "") + ", known keys=" + store.peerKeyCount())
         val bleOk = ble.start(this)
+        wifi.tunnelSink = tunnelSink
         wifi.start(this)
         isRunning = true
         queue.start()
@@ -108,6 +167,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     fun stop() {
         if (!isRunning) return
+        tunnel.stop("node stopped")
+        net.prok.proknet.vpn.ProkVpnService.stop(context)
+        gateway.stop()
         engine.stop()
         queue.stop()
         wifi.stop()
@@ -192,7 +254,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     override fun onLinkState(transport: String, state: String) {
         linkStates[transport] = state
-        main.post { pushStatus(); engine.onWifiChanged(); queue.onPeersChanged() }
+        main.post {
+            pushStatus(); engine.onWifiChanged(); queue.onPeersChanged()
+            // Buyer waiting for the link: start the session as soon as the authenticated link is up.
+            val want = buyerWanted
+            if (transport == Routing.TRANSPORT_WIFI && want != null && wifi.canReach(want) && tunnel.session == null && tunnel.state != "CONNECTING") {
+                DiagLog.i(tag, "Wi-Fi link up with prok-" + want + ": starting Internet session")
+                tunnel.start()
+            }
+        }
     }
 
     fun linkState(transport: String): String = linkStates[transport] ?: "?"
@@ -334,6 +404,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         sb.append(" | ble: ").append(ble.linkState())
         sb.append(" | wifi: ").append(wifi.phase).append(wifi.linkedPeer?.let { " prok-" + it } ?: "")
         sb.append(" | keys ").append(store.peerKeyCount())
+        if (gateway.providing) sb.append(" | provider: ").append(gateway.state)
+        if (tunnel.state != "DISCONNECTED" || buyerWanted != null) sb.append(" | internet: ").append(tunnel.state)
         sb.append(" | ").append(q)
         if (extra != null) sb.append(" | ").append(extra)
         return sb.toString()

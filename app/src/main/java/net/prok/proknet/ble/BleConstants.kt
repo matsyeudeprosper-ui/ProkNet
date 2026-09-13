@@ -49,6 +49,8 @@ object BleConstants {
 }
 
 /** A ProkNet device: currently visible to the scanner, or known from before. */
+const val CAP_INTERNET = 1
+
 class Peer(
     val shortId: String,
     @Volatile var address: String,
@@ -57,7 +59,10 @@ class Peer(
     @Volatile var inRange: Boolean = true,
     /** Full 16-byte ID hex when the peer advertises v2; null for v1 peers. */
     @Volatile var fullId: String? = null,
+    /** v0.6 capability bits from the scan response: bit0 = providing Internet. */
+    @Volatile var capabilities: Int = 0,
 ) {
+    val providesInternet: Boolean get() = capabilities and CAP_INTERNET != 0
     val label: String get() = "prok-" + shortId
 
     /** False for devices seen without a scan response: they have no ProkNet ID yet and cannot be addressed. */

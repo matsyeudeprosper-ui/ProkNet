@@ -116,7 +116,8 @@ object Wire {
     const val FRAME_RECEIPT = 2
     const val FRAME_HELLO = 3
     const val FRAME_AUTH = 4
-    const val MAX_FRAME = 4096
+    const val FRAME_TUNNEL = 5     // v0.6: [tunnel type][stream id][data], see core/Tunnel.kt
+    const val MAX_FRAME = 1 + 5 + 16 * 1024 + 64
     const val NONCE_LEN = 16
 
     /** [type 1][payload] (the u32 length prefix is written by the socket layer). */

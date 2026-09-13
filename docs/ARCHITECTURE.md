@@ -403,10 +403,75 @@ BLE after 45 s. States: pending, sending (with %), delivered, failed /
 receiving, received, failed. Text longer than one packet automatically
 becomes a transfer.
 
-## Automated tests (48)
+## Internet through another phone (v0.6)
+
+```
+Phone A (buyer, no Internet)                         Phone B (provider, mobile data)
+apps -> Android VpnService (TUN 10.8.0.2/24, DNS 10.8.0.1)
+   -> TunnelClient: user-space TCP/DNS endpoints (core/TcpFlow.kt, core/Tcpip.kt)
+   -> tunnel frames on the authenticated Wi-Fi TCP link  ==>  Gateway: real sockets on B's upstream Network
+                                                                   (Network.socketFactory / bindSocket) -> Internet
+```
+
+**Tunnel protocol** (`core/Tunnel.kt`): link frame type 5 carries
+`[type 1][stream id u32][data <= 16 KB]`. Types: SESSION_START/OK/END,
+OPEN_TCP (host, port), TCP_OPEN_OK, TCP_DATA, TCP_CLOSE (half-close),
+DNS_REQUEST/RESPONSE (raw DNS messages), ERROR (stream or session),
+KEEPALIVE (15 s, 45 s timeout), UPSTREAM_STATE. Streams are multiplexed and
+long-lived; the link's own TCP gives ordering, reliability and backpressure.
+There are no per-frame receipts (the v0.5 chunk/receipt path is untouched
+and still used for message transfers).
+
+**Session binding**: SESSION_START carries the buyer's ID and is accepted
+only if it equals the identity authenticated by the Wi-Fi handshake;
+SESSION_OK carries the provider's ID and is accepted only if it equals the
+link peer. Tunnel frames from any other peer are ignored.
+
+**Client (A)**: `VpnService.Builder` with address 10.8.0.2/24, route
+0.0.0.0/0, DNS 10.8.0.1, MTU 1500, blocking reads, ProkNet's own package
+excluded (`addDisallowedApplication`) and the Wi-Fi link socket `protect()`ed
+so the tunnel can never loop into itself. No IPv6 address or route, so apps
+stay on IPv4. `TunnelClient` parses each packet: TCP -> one `TcpFlow` per
+(src port, dst ip, dst port); UDP/53 -> DNS_REQUEST with the raw query, the
+answer is wrapped back into a UDP/IP packet; other UDP is dropped (logged
+once per port). `TcpFlow` plays the remote end towards the app: SYN ->
+SYN-ACK (MSS 1360) + OPEN_TCP; app data -> ACK + TCP_DATA (buffered until
+TCP_OPEN_OK); provider data -> PSH/ACK segments within the app's window,
+retransmitted after 1 s without ACK progress; FIN/RST handled both ways;
+idle flows reset after 5 min. Literal window (no scaling), no SACK, no
+congestion control: the TUN is lossless. Everything is unit-tested on the JVM.
+
+**Gateway (B)**: `Tunnel.chooseUpstream` picks a network with INTERNET
+capability that is not the ProkNet link (Wi-Fi without Internet, or the
+ap/swlan interface), preferring validated Wi-Fi, then validated cellular.
+Every outbound socket is created from that `Network.socketFactory`; DNS
+datagrams are `bindSocket`ed to it and sent to its DNS servers (fallback
+8.8.8.8 / 1.1.1.1). One writer thread and one reader thread per stream;
+`shutdownOutput` on TCP_CLOSE; all sockets closed on session end, link loss
+or provider off. A `NetworkCallback` follows upstream changes and pushes
+UPSTREAM_STATE to the buyer (INTERNET LOST / back).
+
+**Capability flag**: the BLE scan response gained one byte after the full
+ID (`[2][id 16][flags 1]`, 22 bytes with headers): bit 0 = providing Internet.
+
+**States**: provider PROVIDER OFF / NO UPSTREAM / PROVIDER READY / TUNNEL UP /
+INTERNET LOST; buyer DISCONNECTED / CONNECTING / TUNNEL UP / INTERNET OK /
+INTERNET LOST. Accounting (`Tunnel.Accounting`): bytes up/down, streams,
+DNS queries, start/end, duration, peer, disconnect reason; kept in memory
+(last 20 sessions) on both sides.
+
+**In-app test**: a loopback bridge turns one tunnel stream into a local
+socket so the platform TLS stack can run a real handshake and HTTP GET to
+example.com:443 through the provider; reports protocol, cipher, status
+line, bytes and latency. It does not depend on the VPN.
+
+**Not in v0.6**: UDP other than DNS, IPv6, ICMP (ping), relayed/multi-hop
+Internet, any economics.
+
+## Automated tests (64)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

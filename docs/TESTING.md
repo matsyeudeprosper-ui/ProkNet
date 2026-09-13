@@ -369,3 +369,57 @@ If it fails, the log now says why. Look for:
 
 Log line on B (host): `hotspot started: ssid=... security=...` and
 `hotspot addresses (own Wi-Fi network excluded): [...]` tell what B offered.
+
+## 13. v0.6 Internet through another phone (two phones)
+
+Roles: **B = provider** (mobile data ON, Internet works), **A = buyer**
+(mobile data OFF, not connected to any normal Wi-Fi; Wi-Fi itself ON,
+Location ON). Both on v0.6.0, both apps started, keys learned (`[key]`).
+
+**13.1 Provider ready.** On B press **Provide Internet**. The Internet line
+shows `PROVIDER: PROVIDER READY | upstream mobile data, validated`. A's peer
+list shows B with `[NET]` within ~10 s. B's log: `UPSTREAM mobile data ... (validated Internet)`.
+If it says `NO UPSTREAM`: mobile data is off, or Android has not validated it yet.
+
+**13.2 Buyer connects.** On A select B and press **Use Internet**.
+Expected on A, in order: Wi-Fi banner REQUESTING -> OFFERED -> JOINING (tap
+CONNECT) -> TCP -> AUTH -> WIFI UP (skipped if the link is already up), then
+`BUYER: CONNECTING`, then `TUNNEL UP`, then an Android dialog
+"Connection request / ProkNet Lab wants to set up a VPN connection": tap **OK**.
+Log on A: `SESSION OK: provider prok-B upstream mobile data`, `VPN UP: 10.8.0.2/24 ...`.
+Log on B: `SESSION OK for prok-A via mobile data`.
+A key icon appears in A's status bar (VPN active).
+
+**13.3 In-app test.** On A press **Net test**. A dialog shows something like
+`stream open in 900 ms via provider / TLS TLSv1.3 ... / HTTP: HTTP/1.1 200 OK / 1256 bytes in 2400 ms`.
+Internet line: `BUYER: INTERNET OK`. B's log shows `stream N open to example.com:443`.
+
+**13.4 Real browser.** On A open Chrome and load https://example.com, then
+https://www.wikipedia.org. Pages must render. A's Internet line counts
+`flows` and `dns`; B's counts `streams` and bytes. A's log may show
+`UDP to port 443 dropped` (QUIC): expected, the browser falls back to TCP.
+
+**13.5 Accounting.** On A press Stop Internet. Both logs print
+`SESSION END: ... up N B, down M B, streams S, dns D, T s, ended: ...`.
+Copy log on both phones: the diagnostic text lists the session and the last
+Net test.
+
+**13.6 Reliability.**
+- B turns mobile data OFF while A browses: A shows `INTERNET LOST` within a
+  few seconds; back ON: `TUNNEL UP` again (B log: `UPSTREAM ... [capabilities changed]`).
+- B presses Stop providing: A `DISCONNECTED` with reason, VPN stays up but
+  nothing loads until Use Internet again (or press Stop Internet).
+- Walk A out of Wi-Fi range: link fails, A `DISCONNECTED: Wi-Fi link closed`.
+- Swipe A away, reopen: VPN and session survive (the service holds them).
+
+What to send back: Copy log from both phones after 13.4, and the Net test
+dialog text.
+
+### Checklist for the v0.6 report
+
+- [ ] 13.1 PROVIDER READY with upstream type, `[NET]` visible on the buyer
+- [ ] 13.2 SESSION OK on both, VPN dialog accepted, VPN UP
+- [ ] 13.3 Net test: HTTP status through the provider
+- [ ] 13.4 a real HTTPS page renders in the browser on A with data OFF
+- [ ] 13.5 session accounting on both sides
+- [ ] 13.6 at least the mobile-data-off/on case

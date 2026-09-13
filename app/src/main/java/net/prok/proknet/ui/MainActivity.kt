@@ -39,6 +39,8 @@ import net.prok.proknet.core.MsgStatus
 import net.prok.proknet.core.Routing
 import net.prok.proknet.core.Transfer
 import net.prok.proknet.service.ProkNetService
+import net.prok.proknet.core.Tunnel
+import net.prok.proknet.vpn.ProkVpnService
 
 /**
  * ProkNet Lab screen. Deliberately plain: one Activity, stock widgets,
@@ -54,6 +56,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private lateinit var txtStatus: TextView
     private lateinit var txtDiag: TextView
     private lateinit var txtWifiBanner: TextView
+    private lateinit var txtInternet: TextView
+    private lateinit var btnProvide: Button
+    private lateinit var btnUseInternet: Button
     private lateinit var txtSelected: TextView
     private lateinit var txtLog: TextView
     private lateinit var scrollLog: ScrollView
@@ -89,6 +94,13 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         txtStatus = findViewById(R.id.txtStatus)
         txtDiag = findViewById(R.id.txtDiag)
         txtWifiBanner = findViewById(R.id.txtWifiBanner)
+        txtInternet = findViewById(R.id.txtInternet)
+        btnProvide = findViewById(R.id.btnProvide)
+        btnUseInternet = findViewById(R.id.btnUseInternet)
+        btnProvide.setOnClickListener { toggleProvide() }
+        btnUseInternet.setOnClickListener { toggleUseInternet() }
+        findViewById<Button>(R.id.btnNetTest).setOnClickListener { netTest() }
+        node.vpnRequested = { startVpnWithConsent() }
         txtSelected = findViewById(R.id.txtSelected)
         txtLog = findViewById(R.id.txtLog)
         scrollLog = findViewById(R.id.scrollLog)
@@ -223,6 +235,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             else DiagLog.w(tag, "user declined to enable Bluetooth")
         }
         if (requestCode == 4 && resultCode == RESULT_OK && data?.data != null) onFilePicked(data.data!!)
+        if (requestCode == 6) onActivityResultVpn(resultCode)
     }
 
     private fun batterySettings() {
@@ -234,6 +247,70 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         } catch (e: Exception) {
             try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) { toast("Not available on this phone") }
         }
+    }
+
+    // ---- v0.6 Internet roles ------------------------------------------------------------------
+
+    private fun toggleProvide() {
+        if (!node.isRunning) { toast("Press Start first"); return }
+        val on = !node.gateway.providing
+        DiagLog.i(tag, (if (on) "Provide Internet ON" else "Provide Internet OFF") + " pressed")
+        node.setProviding(on)
+        if (on && !node.gateway.upstreamReady) toast("Provider enabled, but this phone has no Internet right now (turn mobile data on)")
+        else if (on) toast("PROVIDER READY via " + node.gateway.upstreamDescription())
+        refreshInternetLine()
+    }
+
+    private fun toggleUseInternet() {
+        if (!node.isRunning) { toast("Press Start first"); return }
+        if (node.tunnel.session != null || node.buyerWanted != null) {
+            DiagLog.i(tag, "Stop Internet pressed")
+            node.stopInternet("stopped by user"); refreshInternetLine(); return
+        }
+        val peer = selected ?: run { toast("Select the provider phone first"); return }
+        if (!node.hasKey(peer.shortId)) { toast(peer.label + "'s key not known yet"); return }
+        if (!peer.inRange && !node.wifi.canReach(peer.shortId)) { toast("Provider must be in BLE range"); return }
+        DiagLog.i(tag, "Use Internet pressed -> prok-" + peer.shortId + (if (peer.providesInternet) " (advertises Internet)" else " (does NOT advertise Internet; trying anyway)"))
+        if (!node.useInternet(peer)) toast("Cannot start (see log)") else toast("Connecting to prok-" + peer.shortId + " for Internet...")
+        refreshInternetLine()
+    }
+
+    /** Called by the node when the provider accepted the session: ask Android for VPN consent, then start the VPN. */
+    private fun startVpnWithConsent() {
+        try {
+            val intent = android.net.VpnService.prepare(this)
+            if (intent != null) {
+                DiagLog.i(tag, "VPN consent needed: Android shows 'connection request' - tap OK")
+                toast("Android asks to allow the VPN: tap OK")
+                startActivityForResult(intent, 6)
+            } else onActivityResultVpn(RESULT_OK)
+        } catch (e: Exception) { DiagLog.e(tag, "VPN prepare", e) }
+    }
+
+    private fun onActivityResultVpn(resultCode: Int) {
+        if (resultCode == RESULT_OK) { DiagLog.i(tag, "VPN consent granted, starting VPN service"); ProkVpnService.start(this) }
+        else { DiagLog.w(tag, "VPN consent DENIED: apps cannot use the tunnel; the in-app Net test still works"); toast("VPN not allowed: only the in-app test will work") }
+        refreshInternetLine()
+    }
+
+    private fun netTest() {
+        if (node.tunnel.session == null) { toast("No Internet session (press Use Internet first)"); return }
+        toast("Testing DNS + HTTPS through the provider...")
+        node.internetTest("example.com") { r -> runOnUiThread { AlertDialog.Builder(this).setTitle(if (r.ok) "Internet test OK" else "Internet test FAILED").setMessage(r.text).setPositiveButton("OK", null).show(); refreshInternetLine() } }
+    }
+
+    private fun refreshInternetLine() {
+        val g = node.gateway; val t = node.tunnel
+        val text = when {
+            g.providing -> "PROVIDER: " + g.state + " | upstream " + g.upstreamDescription() + (g.session?.let { s -> " | buyer prok-" + s.peerShort + " up " + s.bytesUp + " B down " + s.bytesDown + " B, " + (s.durationMs / 1000) + " s, streams " + g.activeStreams() } ?: "")
+            t.session != null || node.buyerWanted != null -> "BUYER: " + t.state + (t.providerShort?.let { " via prok-" + it } ?: "") + " | VPN " + (if (ProkVpnService.running) "UP" else "off") +
+                " | upstream " + Tunnel.upstreamName(t.upstreamType) + (t.session?.let { s -> " | up " + s.bytesUp + " B down " + s.bytesDown + " B, " + (s.durationMs / 1000) + " s, flows " + t.activeFlows() + ", dns " + t.dnsCount } ?: "") +
+                (if (t.lastError.isNotEmpty()) " | last error: " + t.lastError else "")
+            else -> "Internet: off (Provide Internet on the phone with data; Use Internet on the other)"
+        }
+        txtInternet.text = text
+        btnProvide.text = if (g.providing) "Stop providing" else "Provide Internet"
+        btnUseInternet.text = if (t.session != null || node.buyerWanted != null) "Stop Internet" else "Use Internet"
     }
 
     // ---- actions -----------------------------------------------------------------------------
@@ -339,6 +416,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             "wifi: " + node.linkState(Routing.TRANSPORT_WIFI) + " | sent " + node.wifi.bytesSent + " B, recv " + node.wifi.bytesReceived + " B\n" +
             "peers: " + peers.joinToString("; ") { describe(it) } + "\n" +
             "keys known: " + node.store.peerKeyCount() + "\n" +
+            "provider: " + node.gateway.state + ", upstream " + node.gateway.upstreamDescription() + ", streams " + node.gateway.activeStreams() + " [" + node.gateway.streamSummary() + "]\n" +
+            "buyer: " + node.tunnel.state + ", vpn " + ProkVpnService.running + ", flows " + node.tunnel.activeFlows() + " [" + node.tunnel.flowSummary() + "], dns " + node.tunnel.dnsCount + ", last error: " + node.tunnel.lastError + "\n" +
+            (node.tunnel.session ?: node.gateway.session)?.let { "session: " + it.summary() + "\n" }.orEmpty() +
+            (node.tunnel.history + node.gateway.history).take(5).joinToString("") { "  past session: " + it.summary() + "\n" } +
+            "tunnel bytes on link: sent " + node.wifi.tunnelBytesSent + " recv " + node.wifi.tunnelBytesReceived + "\n" +
+            (if (node.lastInternetTest.isNotEmpty()) "last net test: " + node.lastInternetTest.replace("\n", " | ") + "\n" else "") +
             "messages stored: " + node.store.count() + ", pending: " + pending.size + ", carrying: " + node.store.carryingCount() + "\n" +
             pending.joinToString("") { "  pending msg=" + it.msgId + " to " + it.peerName + " attempts=" + it.attempts + " last=" + it.lastError + "\n" } +
             node.store.carrying().joinToString("") { "  carrying msg=" + it.msgId + " from " + it.peerName + " for prok-" + it.destShort + " hops=" + it.hops + "/" + it.ttl + " enc=" + it.enc + "\n" } +
@@ -349,7 +432,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     // ---- node listener -----------------------------------------------------------------------
 
     private fun describe(p: Peer): String {
-        val key = if (node.hasKey(p.shortId)) "[key] " else "[no key] "
+        val key = (if (node.hasKey(p.shortId)) "[key] " else "[no key] ") + (if (p.providesInternet) "[NET] " else "")
         val name = node.peerName(p.shortId).let { if (it != p.label) " \"" + it + "\"" else "" }
         val wifi = if (node.wifi.linkedPeer == p.shortId) " [WIFI UP]" else ""
         return key + p.describe() + name + wifi
@@ -406,6 +489,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         txtStatus.text = status
         refreshServiceLine()
         refreshDiag()
+        refreshInternetLine()
     }
 
     private fun refreshDiag() {

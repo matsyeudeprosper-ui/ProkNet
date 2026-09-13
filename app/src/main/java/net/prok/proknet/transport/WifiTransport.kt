@@ -31,6 +31,7 @@ import net.prok.proknet.core.Identity
 import net.prok.proknet.core.LinkState
 import net.prok.proknet.core.Packet
 import net.prok.proknet.core.Routing
+import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.Wire
 
 /**
@@ -62,6 +63,13 @@ class WifiTransport(
         /** Is a ProkNet Activity visible? The Android join dialog needs the app in front. */
         fun appVisible(): Boolean
     }
+
+    /** v0.6: where tunnel frames go. Called on the link's read thread; must not block for long. */
+    interface TunnelSink {
+        fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame)
+        fun onLinkClosed(peerShort: String, reason: String)
+    }
+    @Volatile var tunnelSink: TunnelSink? = null
 
     private val tag = "WIFI"
     override val name = Routing.TRANSPORT_WIFI
@@ -499,7 +507,9 @@ class WifiTransport(
     }
 
     private fun teardown(reason: String) {
+        val peer = link?.peerRecord?.shortId ?: fsm.peer
         link?.close(); link = null
+        if (peer != null) try { tunnelSink?.onLinkClosed(peer, reason) } catch (e: Exception) { DiagLog.w(tag, "tunnel sink: " + e) }
         pendingOffer = null
         joinWaitingForForeground = false
         netCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }; netCallback = null
@@ -508,6 +518,19 @@ class WifiTransport(
         if (fsm.state != LinkState.State.DOWN && fsm.state != LinkState.State.IDLE) fsm.fail(reason, now())
         setPhase("DOWN", reason + (if (fsm.retryDelayMs() > 0) " (retry allowed in " + (fsm.retryDelayMs() / 1000) + "s)" else ""))
     }
+
+    /** v0.6: write one tunnel frame on the current authenticated link. False if there is no link. */
+    fun sendTunnel(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): Boolean {
+        val l = link ?: return false
+        if (!fsm.isUp || !l.isOpen) return false
+        return try { l.writeTunnel(Tunnel.encode(type, streamId, data)); true } catch (e: Exception) { DiagLog.w(tag, "tunnel write failed: " + e); main.post { fail("tunnel write failed: " + e.message) }; false }
+    }
+
+    /** The link's TCP socket, so the VPN can exclude it from the tunnel it creates. */
+    fun linkSocket(): Socket? = link?.socketForProtect()
+
+    val tunnelBytesSent: Long get() = link?.tunnelSent ?: 0L
+    val tunnelBytesReceived: Long get() = link?.tunnelReceived ?: 0L
 
     override fun sendBatch(peerShort: String, frames: List<Frame>, onEach: (Int, DeliveryResult, String) -> Boolean, onDone: () -> Unit) {
         val l = link
@@ -532,6 +555,10 @@ class WifiTransport(
         private val output = DataOutputStream(socket.getOutputStream().buffered())
         var peerRecord: Wire.IdentityRecord? = null
         @Volatile var isOpen = true
+        @Volatile var tunnelSent = 0L
+        @Volatile var tunnelReceived = 0L
+        fun socketForProtect(): Socket = socket
+        fun writeTunnel(bytes: ByteArray) { writeFrame(Wire.FRAME_TUNNEL, bytes); tunnelSent += bytes.size }
         private val receiptLock = Object()
         private var awaitingMsg: ByteArray? = null
         private var receiptStatus = -1
@@ -585,6 +612,13 @@ class WifiTransport(
                             val pkt = Packet.decode(p)
                             val code = if (pkt == null) Routing.RECEIPT_REJECTED else try { listener?.onFrame(name, peerRecord?.shortId, p) ?: Routing.RECEIPT_REJECTED } catch (e: Exception) { DiagLog.e(tag, "frame handler", e); Routing.RECEIPT_REJECTED }
                             writeFrame(Wire.FRAME_RECEIPT, Wire.receiptPayload(code, pkt?.msgId ?: ByteArray(8)))
+                        }
+                        Wire.FRAME_TUNNEL -> {
+                            tunnelReceived += p.size
+                            val f = Tunnel.decode(p)
+                            val peer = peerRecord?.shortId
+                            if (f == null || peer == null) DiagLog.w(tag, "malformed tunnel frame ignored (" + p.size + " bytes)")
+                            else try { tunnelSink?.onTunnelFrame(peer, f) } catch (e: Exception) { DiagLog.e(tag, "tunnel sink", e) }
                         }
                         Wire.FRAME_RECEIPT -> {
                             val r = Wire.parseReceipt(p) ?: continue

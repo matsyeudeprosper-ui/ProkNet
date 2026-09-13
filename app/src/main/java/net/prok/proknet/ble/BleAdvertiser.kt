@@ -42,6 +42,16 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
     }
 
     private var shortPayload = false
+    /** v0.6 capability bits advertised in the scan response (bit0 = providing Internet). */
+    @Volatile var capabilityFlags = 0
+        private set
+
+    /** Change the advertised capability bits (restarts advertising). */
+    fun setCapabilities(flags: Int) {
+        if (flags == capabilityFlags) return
+        capabilityFlags = flags
+        if (isAdvertising) { stop(); startInternal() }
+    }
 
     fun start(): Boolean {
         shortPayload = false
@@ -75,9 +85,10 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
             payload[0] = BleConstants.ADV_VERSION_SHORT.toByte()
             System.arraycopy(identity.shortIdBytes, 0, payload, 1, Identity.SHORT_ID_LEN)
         } else {
-            payload = ByteArray(1 + Identity.ID_LEN)
+            payload = ByteArray(1 + Identity.ID_LEN + 1)
             payload[0] = BleConstants.ADV_VERSION.toByte()
             System.arraycopy(identity.idBytes, 0, payload, 1, Identity.ID_LEN)
+            payload[1 + Identity.ID_LEN] = capabilityFlags.toByte()   // v0.6: bit0 = providing Internet
         }
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
