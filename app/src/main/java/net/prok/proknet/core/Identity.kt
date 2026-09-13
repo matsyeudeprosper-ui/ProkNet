@@ -22,18 +22,18 @@ import java.security.PrivateKey
  */
 class Identity private constructor(
     private val priv: PrivateKey,
-    val pubBytes: ByteArray,
-    var displayName: String,
+    override val pubBytes: ByteArray,
+    override var displayName: String,
     val legacyIdHex: String?,
     val createdAt: Long,
-) {
-    val idBytes: ByteArray = Crypto.deriveId(pubBytes)
+) : Signer {
+    override val idBytes: ByteArray = Crypto.deriveId(pubBytes)
     val idHex: String get() = idBytes.toHex()
     val shortIdBytes: ByteArray get() = idBytes.copyOfRange(0, SHORT_ID_LEN)
     val shortIdHex: String get() = shortIdBytes.toHex()
     val fingerprint: String get() = Crypto.fingerprint(pubBytes)
 
-    fun sign(data: ByteArray): ByteArray = Crypto.sign(priv, data)
+    override fun sign(data: ByteArray): ByteArray = Crypto.sign(priv, data)
     fun open(aad: ByteArray, envelope: ByteArray?): ByteArray? = Crypto.open(priv, pubBytes, aad, envelope)
     fun buildSigned(aad: ByteArray, kind: Int, body: ByteArray): ByteArray = Signed.build(priv, aad, kind, body)
 

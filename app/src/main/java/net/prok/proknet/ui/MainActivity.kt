@@ -100,6 +100,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         btnProvide.setOnClickListener { toggleProvide() }
         btnUseInternet.setOnClickListener { toggleUseInternet() }
         findViewById<Button>(R.id.btnNetTest).setOnClickListener { netTest() }
+        findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
+        findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         node.vpnRequested = { startVpnWithConsent() }
         txtSelected = findViewById(R.id.txtSelected)
         txtLog = findViewById(R.id.txtLog)
@@ -394,6 +396,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("ProkNet log", diagnosticText()))
         toast("Log copied to clipboard")
+    }
+
+    /** Short diagnostic: everything above the log plus the last 120 log lines. Fits a chat message. */
+    private fun copyDiag() {
+        val full = diagnosticText()
+        val head = full.substringBefore("----- log -----")
+        val tail = DiagLog.text().lines().takeLast(120).joinToString("\n")
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("ProkNet diagnostic", head + "----- last 120 log lines -----\n" + tail + "\n"))
+        toast("Diagnostic copied (short)")
     }
 
     private fun shareLog() {

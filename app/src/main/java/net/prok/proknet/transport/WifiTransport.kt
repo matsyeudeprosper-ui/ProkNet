@@ -27,7 +27,9 @@ import java.util.concurrent.atomic.AtomicLong
 import net.prok.proknet.core.Crypto
 import net.prok.proknet.core.DeliveryResult
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.Handshake
 import net.prok.proknet.core.Identity
+import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.LinkState
 import net.prok.proknet.core.Packet
 import net.prok.proknet.core.Routing
@@ -318,7 +320,7 @@ class WifiTransport(
             DiagLog.i(tag, "TCP client connected from " + s.inetAddress.hostAddress + ":" + s.port)
             main.post { fsm.clientConnected(now()); setPhase("AUTH", "client connected, handshake") }
             val l = Link(s, isHost = true)
-            if (l.handshake()) main.post { linkUp(l) } else { l.close(); main.post { fail("handshake failed (host side)") } }
+            if (l.handshake()) main.post { linkUp(l) } else { l.close(); main.post { fail("handshake failed (host side), see AUTH line") } }
         }
     }
 
@@ -481,7 +483,7 @@ class WifiTransport(
                 val l = Link(s, isHost = false)
                 if (l.handshake()) { main.post { linkUp(l) }; return }
                 l.close(); lastErr = "handshake failed with " + ip
-            } catch (e: Exception) { lastErr = ip + ": " + e.message; DiagLog.w(tag, "TCP connect " + ip + " failed: " + e) }
+            } catch (e: Exception) { lastErr = ip + ": " + LinkIo.describe(e); DiagLog.w(tag, "TCP connect " + ip + " failed: " + LinkIo.describe(e)) }
         }
         main.post { fail("could not reach the host (" + lastErr + ")") }
     }
@@ -523,7 +525,8 @@ class WifiTransport(
     fun sendTunnel(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): Boolean {
         val l = link ?: return false
         if (!fsm.isUp || !l.isOpen) return false
-        return try { l.writeTunnel(Tunnel.encode(type, streamId, data)); true } catch (e: Exception) { DiagLog.w(tag, "tunnel write failed: " + e); main.post { fail("tunnel write failed: " + e.message) }; false }
+        val bytes = try { Tunnel.encode(type, streamId, data) } catch (e: Exception) { DiagLog.e(tag, "tunnel encode: " + LinkIo.describe(e)); return false }
+        return l.writeTunnel(bytes)
     }
 
     /** The link's TCP socket, so the VPN can exclude it from the tunnel it creates. */
@@ -549,110 +552,96 @@ class WifiTransport(
         }
     }
 
-    /** One authenticated TCP connection. */
+    /**
+     * One authenticated TCP connection on top of core/LinkIo (v0.6.1): all
+     * writes go through the link's writer thread, so no caller ever touches the
+     * socket on its own thread (Android forbids it on the main thread).
+     */
     private inner class Link(private val socket: Socket, val isHost: Boolean) {
-        private val input = DataInputStream(socket.getInputStream().buffered())
-        private val output = DataOutputStream(socket.getOutputStream().buffered())
+        private val io = LinkIo(socket.getInputStream(), socket.getOutputStream(), if (isHost) "wifi-host" else "wifi-client")
         var peerRecord: Wire.IdentityRecord? = null
-        @Volatile var isOpen = true
-        @Volatile var tunnelSent = 0L
-        @Volatile var tunnelReceived = 0L
-        fun socketForProtect(): Socket = socket
-        fun writeTunnel(bytes: ByteArray) { writeFrame(Wire.FRAME_TUNNEL, bytes); tunnelSent += bytes.size }
+        val isOpen: Boolean get() = io.isOpen
+        val tunnelSent: Long get() = tunnelOut
+        val tunnelReceived: Long get() = tunnelIn
+        @Volatile private var tunnelOut = 0L
+        @Volatile private var tunnelIn = 0L
         private val receiptLock = Object()
         private var awaitingMsg: ByteArray? = null
         private var receiptStatus = -1
 
         init { socket.soTimeout = 0; socket.tcpNoDelay = true; socket.keepAlive = true }
 
-        private fun writeFrame(type: Int, payload: ByteArray) {
-            synchronized(output) {
-                output.writeInt(1 + payload.size); output.writeByte(type); output.write(payload); output.flush()
-            }
-            sent.addAndGet((5 + payload.size).toLong())
-        }
-
-        private fun readFrame(): Pair<Int, ByteArray>? {
-            val len = try { input.readInt() } catch (e: Exception) { return null }
-            if (len < 1 || len > Wire.MAX_FRAME) return null
-            val type = input.readUnsignedByte()
-            val p = ByteArray(len - 1); input.readFully(p)
-            received.addAndGet((4 + len).toLong())
-            return type to p
-        }
+        fun socketForProtect(): Socket = socket
 
         fun handshake(): Boolean {
-            return try {
-                socket.soTimeout = 15_000
-                val myNonce = Crypto.randomBytes(Wire.NONCE_LEN)
-                writeFrame(Wire.FRAME_HELLO, Wire.hello(identity.idBytes, identity.pubBytes, identity.displayName, myNonce))
-                DiagLog.i(tag, "AUTH: HELLO sent, waiting for peer HELLO")
-                val (t1, p1) = readFrame() ?: run { DiagLog.w(tag, "AUTH: connection closed before HELLO"); return false }
-                if (t1 != Wire.FRAME_HELLO) { DiagLog.w(tag, "AUTH: expected HELLO, got frame type " + t1); return false }
-                val hello = Wire.parseHello(p1) ?: run { DiagLog.w(tag, "AUTH: HELLO rejected (bad record or ID/key mismatch)"); return false }
-                DiagLog.i(tag, "AUTH: HELLO from prok-" + hello.record.shortId + " \"" + hello.record.name + "\", sending signature")
-                writeFrame(Wire.FRAME_AUTH, identity.sign(Wire.authData(identity.idBytes, hello.record.id, myNonce, hello.nonce)))
-                val (t2, p2) = readFrame() ?: run { DiagLog.w(tag, "AUTH: connection closed before AUTH"); return false }
-                if (t2 != Wire.FRAME_AUTH) { DiagLog.w(tag, "AUTH: expected AUTH, got frame type " + t2); return false }
-                val ok = Crypto.verify(hello.record.pub, Wire.authData(hello.record.id, identity.idBytes, hello.nonce, myNonce), p2)
-                if (!ok) { DiagLog.w(tag, "AUTH: signature from prok-" + hello.record.shortId + " INVALID"); return false }
-                DiagLog.i(tag, "AUTH: peer signature VERIFIED")
-                peerRecord = hello.record
-                socket.soTimeout = 0
-                true
-            } catch (e: Exception) { DiagLog.w(tag, "handshake error: " + e); false }
+            socket.soTimeout = 15_000
+            val r = Handshake.perform(io, identity)
+            if (r.peer == null) { DiagLog.w(tag, "AUTH failed: " + r.why); return false }
+            DiagLog.i(tag, "AUTH: HELLO from prok-" + r.peer.shortId + " \"" + r.peer.name + "\", peer signature VERIFIED")
+            peerRecord = r.peer
+            socket.soTimeout = 0
+            io.startWriter { why -> DiagLog.e(tag, "link writer stopped: " + why); main.post { if (link === this) fail(why) } }
+            return true
+        }
+
+        /** Tunnel frames: block on data threads (backpressure), never on the main thread. */
+        fun writeTunnel(bytes: ByteArray): Boolean {
+            val onMain = Looper.myLooper() == Looper.getMainLooper()
+            val ok = io.enqueue(Wire.FRAME_TUNNEL, bytes, block = !onMain)
+            if (ok) tunnelOut += bytes.size else DiagLog.w(tag, "tunnel frame dropped (" + (if (onMain) "main thread, queue full " + io.queuedFrames else "link closed") + ")")
+            return ok
         }
 
         fun readLoop() {
-            try {
-                while (isOpen) {
-                    val (type, p) = readFrame() ?: break
-                    when (type) {
-                        Wire.FRAME_PACKET -> {
-                            val pkt = Packet.decode(p)
-                            val code = if (pkt == null) Routing.RECEIPT_REJECTED else try { listener?.onFrame(name, peerRecord?.shortId, p) ?: Routing.RECEIPT_REJECTED } catch (e: Exception) { DiagLog.e(tag, "frame handler", e); Routing.RECEIPT_REJECTED }
-                            writeFrame(Wire.FRAME_RECEIPT, Wire.receiptPayload(code, pkt?.msgId ?: ByteArray(8)))
-                        }
-                        Wire.FRAME_TUNNEL -> {
-                            tunnelReceived += p.size
-                            val f = Tunnel.decode(p)
-                            val peer = peerRecord?.shortId
-                            if (f == null || peer == null) DiagLog.w(tag, "malformed tunnel frame ignored (" + p.size + " bytes)")
-                            else try { tunnelSink?.onTunnelFrame(peer, f) } catch (e: Exception) { DiagLog.e(tag, "tunnel sink", e) }
-                        }
-                        Wire.FRAME_RECEIPT -> {
-                            val r = Wire.parseReceipt(p) ?: continue
-                            synchronized(receiptLock) {
-                                if (awaitingMsg != null && r.msgId.contentEquals(awaitingMsg)) { receiptStatus = r.status; receiptLock.notifyAll() }
-                            }
-                        }
-                        else -> {}
+            io.startReader({ type, p ->
+                when (type) {
+                    Wire.FRAME_PACKET -> {
+                        val pkt = Packet.decode(p)
+                        val code = if (pkt == null) Routing.RECEIPT_REJECTED else try { listener?.onFrame(name, peerRecord?.shortId, p) ?: Routing.RECEIPT_REJECTED } catch (e: Exception) { DiagLog.e(tag, "frame handler", e); Routing.RECEIPT_REJECTED }
+                        io.enqueue(Wire.FRAME_RECEIPT, Wire.receiptPayload(code, pkt?.msgId ?: ByteArray(8)), block = true)
+                        received.addAndGet(p.size.toLong())
                     }
+                    Wire.FRAME_TUNNEL -> {
+                        tunnelIn += p.size
+                        val f = Tunnel.decode(p)
+                        val peer = peerRecord?.shortId
+                        if (f == null || peer == null) DiagLog.w(tag, "malformed tunnel frame ignored (" + p.size + " bytes)")
+                        else try { tunnelSink?.onTunnelFrame(peer, f) } catch (e: Exception) { DiagLog.e(tag, "tunnel sink: " + LinkIo.describe(e)) }
+                    }
+                    Wire.FRAME_RECEIPT -> {
+                        val r = Wire.parseReceipt(p)
+                        if (r != null) synchronized(receiptLock) {
+                            if (awaitingMsg != null && r.msgId.contentEquals(awaitingMsg)) { receiptStatus = r.status; receiptLock.notifyAll() }
+                        }
+                    }
+                    else -> {}
                 }
-            } catch (e: Exception) { DiagLog.w(tag, "read loop ended: " + e) }
-            val wasOpen = isOpen
-            close()
-            if (wasOpen) main.post { if (link === this) fail("connection closed by peer or network") }
+            }, { why ->
+                DiagLog.w(tag, "link read loop ended: " + why)
+                synchronized(receiptLock) { receiptLock.notifyAll() }
+                main.post { if (link === this) fail("connection closed: " + why) }
+            })
         }
 
         fun sendAndWait(f: Frame): Pair<DeliveryResult, String> {
             synchronized(receiptLock) { awaitingMsg = f.msgId; receiptStatus = -1 }
-            try { writeFrame(Wire.FRAME_PACKET, f.bytes) } catch (e: Exception) { return DeliveryResult.TRANSPORT_FAILED to ("write failed: " + e.message) }
+            if (!io.enqueue(Wire.FRAME_PACKET, f.bytes, block = true)) return DeliveryResult.TRANSPORT_FAILED to ("link closed: " + io.closeReason)
+            sent.addAndGet(f.bytes.size.toLong())
             val deadline = System.currentTimeMillis() + RECEIPT_TIMEOUT_MS
             synchronized(receiptLock) {
-                while (receiptStatus < 0 && isOpen) {
+                while (receiptStatus < 0 && io.isOpen) {
                     val left = deadline - System.currentTimeMillis()
                     if (left <= 0) break
                     receiptLock.wait(left)
                 }
                 val st = receiptStatus; awaitingMsg = null
-                if (st < 0) return (if (isOpen) DeliveryResult.NO_RECEIPT else DeliveryResult.TRANSPORT_FAILED) to "no receipt over Wi-Fi within " + (RECEIPT_TIMEOUT_MS / 1000) + "s"
+                if (st < 0) return (if (io.isOpen) DeliveryResult.NO_RECEIPT else DeliveryResult.TRANSPORT_FAILED) to "no receipt over Wi-Fi within " + (RECEIPT_TIMEOUT_MS / 1000) + "s"
                 return Routing.resultFor(st) to ("Wi-Fi receipt " + st)
             }
         }
 
         fun close() {
-            isOpen = false
+            io.close("closed by transport")
             try { socket.close() } catch (_: Exception) {}
             synchronized(receiptLock) { receiptLock.notifyAll() }
         }

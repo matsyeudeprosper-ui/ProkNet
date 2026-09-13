@@ -423,3 +423,14 @@ dialog text.
 - [ ] 13.4 a real HTTPS page renders in the browser on A with data OFF
 - [ ] 13.5 session accounting on both sides
 - [ ] 13.6 at least the mobile-data-off/on case
+
+## 14. v0.6.1 - copy buttons and the retest
+
+- **COPY LOG** is now at the very top of the screen (full diagnostic + full log).
+- **COPY DIAG** is next to Net test (everything above the log + the last 120
+  log lines: short enough for a chat message).
+
+Retest = section 13 unchanged. The v0.6.0 failure ("tunnel write failed:
+null", link DOWN right after Use Internet) is fixed at the root: link writes
+no longer happen on the main thread. If anything still fails, the last error
+now names the exception class and where it happened.

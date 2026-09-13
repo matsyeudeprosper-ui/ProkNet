@@ -403,6 +403,25 @@ BLE after 45 s. States: pending, sending (with %), delivered, failed /
 receiving, received, failed. Text longer than one packet automatically
 becomes a transfer.
 
+## Link I/O (v0.6.1)
+
+`core/LinkIo.kt` owns the framing of one authenticated link: `[u32 len][type][payload]`,
+a reader thread that dispatches frames, and a **writer thread fed by a bounded
+queue (1024 frames)**. No caller ever writes to the socket on its own thread:
+data threads enqueue with backpressure, the Android main thread enqueues
+without blocking (a full queue drops the frame and logs it). `Handshake`
+(HELLO/AUTH both ways, signatures verified) lives next to it. Both are pure
+Kotlin and tested over real loopback sockets (`LinkIoTest`), including the
+exact sequence that failed on the phones in v0.6.0: SESSION_START sent the
+instant the link is up. Every failure reason now carries the exception
+class, message and top stack frames (`LinkIo.describe`).
+
+Why v0.6.0 failed: Android throws `NetworkOnMainThreadException` (message
+null) for a socket write on the main thread. v0.5 only ever wrote from worker
+threads; the tunnel's first frame was sent from the link-up callback on the
+main thread, the write threw, and the link was torn down with the reason
+"tunnel write failed: null".
+
 ## Internet through another phone (v0.6)
 
 ```
@@ -468,10 +487,10 @@ line, bytes and latency. It does not depend on the VPN.
 **Not in v0.6**: UDP other than DNS, IPv6, ICMP (ping), relayed/multi-hop
 Internet, any economics.
 
-## Automated tests (64)
+## Automated tests (71)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

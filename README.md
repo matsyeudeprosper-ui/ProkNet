@@ -27,7 +27,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.4.1 | 2C1 hardening: explicit last-hop ID, JVM routing tests gate the build | built, awaiting three-phone test |
 | v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | passed on two phones except the Wi-Fi link (2026-09-13) |
 | v0.5.1 | Wi-Fi join fix: security-aware join, host address from DHCP, approval banner, phase line | passed: WIFI UP, signed handshake, 1 MB over Wi-Fi (2026-09-13) |
-| v0.6.0 | Internet through another phone: provider/buyer roles, tunnel over the Wi-Fi link, VpnService client, gateway | built, 64 JVM tests pass, awaiting phone test |
+| v0.6.0 | Internet through another phone: provider/buyer roles, tunnel over the Wi-Fi link, VpnService client, gateway | phone test: session dropped at the first tunnel frame (main-thread socket write) |
+| v0.6.1 | Fix: link writes on a dedicated writer thread (core/LinkIo), real exception text, loopback link tests, copy buttons at the top | built, 71 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 
