@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- monochrome "P" for the status bar -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M7,3 h7 a5,5 0 0 1 0,10 h-4 v8 h-3 z M10,6 v4 h4 a2,2 0 0 0 0,-4 z" />
+</vector>

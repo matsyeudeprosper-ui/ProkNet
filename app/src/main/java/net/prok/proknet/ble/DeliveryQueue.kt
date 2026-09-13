@@ -29,8 +29,12 @@ class DeliveryQueue(
     private val senderProvider: () -> BleSender?,
     private val peersProvider: () -> List<Peer>,
     private val onChanged: () -> Unit,
+    private val powerManager: android.os.PowerManager? = null,
 ) {
     private val tag = "QUEUE"
+    /** Milestone 2B: keep the CPU awake for the few seconds of a delivery attempt when the screen is off. */
+    private val wakeLock: android.os.PowerManager.WakeLock? =
+        powerManager?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ProkNet:delivery")?.apply { setReferenceCounted(false) }
     private val main = Handler(Looper.getMainLooper())
     private var running = false
     private var inFlight: String? = null
@@ -122,6 +126,7 @@ class DeliveryQueue(
 
     private fun attempt(m: StoredMessage, peer: Peer, sender: BleSender, reason: String) {
         inFlight = m.msgId
+        try { wakeLock?.acquire(BleConstants.SEND_TIMEOUT_MS * 2 + 5000) } catch (e: Exception) { DiagLog.w(tag, "wakelock: " + e) }
         store.setStatus(m.msgId, MsgStatus.SENDING, bumpAttempts = true)
         onChanged()
         val attemptNo = m.attempts + 1
@@ -134,6 +139,7 @@ class DeliveryQueue(
 
     private fun onResult(m: StoredMessage, attemptNo: Int, peer: Peer, result: DeliveryResult, detail: String) {
         inFlight = null
+        try { if (wakeLock?.isHeld == true) wakeLock.release() } catch (_: Exception) {}
         when (result) {
             DeliveryResult.DELIVERED, DeliveryResult.DUPLICATE -> {
                 store.setStatus(m.msgId, MsgStatus.DELIVERED, detail)

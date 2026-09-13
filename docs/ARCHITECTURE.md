@@ -32,6 +32,8 @@ Every phone plays **both roles at once**:
 | Deliver a message | `BluetoothGatt` client | `ble/BleSender.kt` |
 
 `ble/ProkNetNode.kt` owns all four and is the only object the UI talks to.
+Since v0.3 the node is created once per process by `ProkNetApp` and started
+and stopped by `service/ProkNetService.kt`, never by the Activity.
 
 ## Over-the-air format
 
@@ -140,6 +142,43 @@ in the list as "NOT IN RANGE" so a message can be queued for a phone that is
 currently off. Address at send time always comes from the live scan result,
 never from the table, because Android rotates BLE addresses.
 
+## Background operation (milestone 2B)
+
+```
+ProkNetApp (Application)  ----creates----> ProkNetNode (one per process)
+       |                                        ^         ^
+ProkNetService (foreground) --start/stop--------+         | addListener / removeListener
+       |  persistent notification, screen on/off log,     |
+       |  wake lock during delivery attempts              |
+MainActivity (a window) ---------observes only------------+
+```
+
+- **Start** in the UI calls `startForegroundService`. The service calls
+  `startForeground` with type `connectedDevice` (required on Android 14 for
+  Bluetooth work), then `node.start()`. `START_STICKY`, `stopWithTask=false`:
+  Android restarts it if it kills the process, and swiping the app away does
+  not stop it.
+- **Stop** (button or the notification's "Stop ProkNet" action) sends the
+  STOP action: `node.stop()`, notification removed, service stops.
+- The Activity attaches as a listener in `onStart` and detaches in `onStop`.
+  It never starts or stops the node. Closing it logs
+  `activity hidden (background) - node continues in the service`.
+- A `BroadcastReceiver` in the service logs `SCREEN OFF - node keeps running`
+  with the live status line, so screen-off continuity is visible in the log.
+- `DeliveryQueue` holds a partial wake lock for the duration of one delivery
+  attempt (max ~45 s). BLE callbacks wake the CPU on their own, but the
+  connect/MTU/discover/write/read chain has gaps where a dozing CPU could
+  stretch the 20 s timeout.
+- Why BLE keeps working with the screen off: Android only drops screen-off
+  scans that have no `ScanFilter`; ProkNet always filters on its service UUID.
+- **Battery** button opens the system dialog to exempt the app from battery
+  optimisation. Not required on stock Android; needed on phones whose vendor
+  kills background services (Xiaomi, Huawei, Oppo, some Samsung profiles).
+  The service logs the exemption state at every start.
+
+Still no third-party carrying: the service keeps THIS phone's node alive; the
+queue still only holds this phone's own messages.
+
 ## Identity
 
 `core/Identity.kt`: 16 random bytes from `SecureRandom`, generated once,
@@ -197,5 +236,5 @@ the box after a build, and refuses to build with under 1 GB free disk.
 ## What is deliberately NOT here
 
 Encryption, multi-hop routing, store-and-forward for other people's messages
-(the queue only carries this phone's own), background service, Wi-Fi Direct,
-Internet sharing, wallet or payments.
+(the queue only carries this phone's own), Wi-Fi Direct, Internet sharing,
+wallet or payments.

@@ -21,7 +21,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | Version | Milestone | Status |
 |---|---|---|
 | v0.1.0 | Lab: BLE discovery + direct text message, Internet off | passed on two real phones (2026-09-12) |
-| v0.2.0 | 2A: queued delayed delivery with delivery receipts | built, awaiting phone test |
+| v0.2.0 | 2A: queued delayed delivery with delivery receipts | passed on two real phones (2026-09-13) |
+| v0.3.0 | 2B: background operation via foreground service | built, awaiting phone test |
 
 ### v0.1 - what it does
 
@@ -48,7 +49,19 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 - Known peers stay in the list marked "NOT IN RANGE" so you can queue for them.
 - **Retry** button clears backoff and tries everything pending now.
 
-Still not here: encryption, multi-hop, background service, Wi-Fi Direct.
+### v0.3 (milestone 2B) - background operation
+
+- A **foreground service** with a persistent notification owns the node.
+  Start starts the service; Stop (button or notification action) stops it.
+- The screen (Activity) is only a window: close it, reopen it, swipe the app
+  away, the node keeps advertising, scanning, receiving and delivering.
+- Screen off does not stop anything. A short wake lock guards each delivery.
+- UI shows `Service: RUNNING / STOPPED` and a **Battery** button to ask
+  Android to exempt ProkNet from battery optimisation (OEM background killers).
+- Log lines for service start/stop, activity foreground/background, screen
+  on/off, task swiped away, battery-exemption state.
+
+Still not here: encryption, multi-hop, carrying other people's packets, Wi-Fi Direct.
 
 ## Build (on the VPS)
 
@@ -85,7 +98,9 @@ app/                      Android app (Kotlin, no AndroidX, plain Activity)
   src/main/java/net/prok/proknet/
     core/                 Identity, Packet (wire format), MessageStore (+queue), DiagLog
     ble/                  Advertiser, GATT server, Scanner, Sender, DeliveryQueue, ProkNetNode
+    service/              ProkNetService (foreground service owning the node)
     ui/                   MainActivity (the one screen)
+    ProkNetApp.kt         Application: creates the node once per process
 build.ps1                 The build command
 dist/                     Predictable APK output location (APK itself not committed)
 docs/ARCHITECTURE.md      Design and technology choices

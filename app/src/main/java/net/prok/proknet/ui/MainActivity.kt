@@ -10,8 +10,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
@@ -24,22 +27,29 @@ import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import net.prok.proknet.ProkNetApp
 import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MsgStatus
+import net.prok.proknet.service.ProkNetService
 
 /**
  * ProkNet Lab screen. Deliberately plain: one Activity, stock widgets,
  * everything visible. Functionality over design.
+ *
+ * Milestone 2B: the Activity is only a window onto the node. The node is
+ * owned by the Application and driven by ProkNetService; closing this screen
+ * changes nothing about discovery or delivery.
  */
 class MainActivity : Activity(), ProkNetNode.Listener {
     private val tag = "UI"
     private lateinit var node: ProkNetNode
 
     private lateinit var txtIdentity: TextView
+    private lateinit var txtService: TextView
     private lateinit var txtStatus: TextView
     private lateinit var txtSelected: TextView
     private lateinit var txtLog: TextView
@@ -63,11 +73,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        DiagLog.init(applicationContext)
-        node = ProkNetNode(applicationContext)
-        node.listener = this
+        node = ProkNetApp.node(this)
 
         txtIdentity = findViewById(R.id.txtIdentity)
+        txtService = findViewById(R.id.txtService)
         txtStatus = findViewById(R.id.txtStatus)
         txtSelected = findViewById(R.id.txtSelected)
         txtLog = findViewById(R.id.txtLog)
@@ -87,11 +96,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         listMessages.adapter = messagesAdapter
 
         findViewById<Button>(R.id.btnStart).setOnClickListener { startNode() }
-        findViewById<Button>(R.id.btnStop).setOnClickListener { node.stop() }
+        findViewById<Button>(R.id.btnStop).setOnClickListener { stopNode() }
         findViewById<Button>(R.id.btnRename).setOnClickListener { renameDialog() }
         findViewById<Button>(R.id.btnRetry).setOnClickListener {
             if (!node.isRunning) toast("Press Start first") else node.queue.retryAllNow()
         }
+        findViewById<Button>(R.id.btnBattery).setOnClickListener { batterySettings() }
         findViewById<Button>(R.id.btnSend).setOnClickListener { sendMessage() }
         editMessage.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) { sendMessage(); true } else false
@@ -101,21 +111,30 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnClearLog).setOnClickListener { DiagLog.clear(); txtLog.text = "" }
 
         refreshIdentity()
+        DiagLog.i(tag, "activity created; device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")")
+    }
+
+    override fun onStart() {
+        super.onStart()
         txtLog.text = DiagLog.text() + "\n"
+        scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         DiagLog.addListener(logListener)
-        DiagLog.i(tag, "device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")")
+        node.addListener(this)
+        DiagLog.i(tag, "activity visible (foreground); service " + (if (ProkNetService.running) "RUNNING" else "stopped") + ", node " + (if (node.isRunning) "running" else "stopped"))
         onPeers(node.peers())
         onMessagesChanged()
         onStatus(node.statusLine())
+        refreshServiceLine()
     }
 
-    override fun onDestroy() {
+    override fun onStop() {
+        DiagLog.i(tag, "activity hidden (background) - node continues in the service: " + node.statusLine())
+        node.removeListener(this)
         DiagLog.removeListener(logListener)
-        node.stop()
-        super.onDestroy()
+        super.onStop()
     }
 
-    // ---- start / permissions ----------------------------------------------------------------
+    // ---- start / stop / permissions ------------------------------------------------------------
 
     private fun requiredPermissions(): Array<String> =
         if (Build.VERSION.SDK_INT >= 31) arrayOf(
@@ -126,11 +145,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
     }
 
+    private fun notificationPermissionMissing(): Boolean =
+        Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+
     private fun startNode() {
         val missing = missingPermissions()
         if (missing.isNotEmpty()) {
             DiagLog.i(tag, "requesting permissions: " + missing.joinToString())
             requestPermissions(missing.toTypedArray(), 1)
+            return
+        }
+        if (notificationPermissionMissing()) {
+            DiagLog.i(tag, "requesting POST_NOTIFICATIONS (needed to show the persistent notification)")
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3)
             return
         }
         if (!node.isBluetoothOn()) {
@@ -143,14 +170,36 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             val locOn = lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
             if (!locOn) DiagLog.w(tag, "Location services are OFF. On Android 8-11 BLE scanning finds nothing until Location is turned on.")
         }
-        node.start()
+        DiagLog.i(tag, "Start pressed -> starting foreground service")
+        ProkNetService.start(this)
+        txtService.postDelayed({ refreshServiceLine() }, 1500)
+    }
+
+    private fun stopNode() {
+        DiagLog.i(tag, "Stop pressed -> stopping service and node")
+        ProkNetService.stop(this)
+        txtService.postDelayed({ refreshServiceLine() }, 1500)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val denied = permissions.filterIndexed { i, _ -> grantResults.getOrNull(i) != PackageManager.PERMISSION_GRANTED }
+        if (requestCode == 3) {
+            if (denied.isNotEmpty()) DiagLog.w(tag, "notification permission denied: the service still runs but its notification stays hidden")
+            startNodeSkippingNotificationPrompt()
+            return
+        }
         if (denied.isEmpty()) { DiagLog.i(tag, "permissions granted"); startNode() }
         else DiagLog.e(tag, "permissions DENIED: " + denied.joinToString() + " - grant them in Settings > Apps > ProkNet Lab > Permissions")
+    }
+
+    private var skipNotifPrompt = false
+    private fun startNodeSkippingNotificationPrompt() {
+        skipNotifPrompt = true
+        try {
+            if (missingPermissions().isEmpty() && node.isBluetoothOn()) { ProkNetService.start(this); txtService.postDelayed({ refreshServiceLine() }, 1500) }
+            else startNode()
+        } finally { skipNotifPrompt = false }
     }
 
     @Deprecated("Deprecated in Java")
@@ -159,6 +208,20 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (requestCode == 2) {
             if (resultCode == RESULT_OK) { DiagLog.i(tag, "Bluetooth enabled"); startNode() }
             else DiagLog.w(tag, "user declined to enable Bluetooth")
+        }
+    }
+
+    private fun batterySettings() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            toast("Already exempt from battery optimisation"); DiagLog.i(tag, "battery: already exempt"); return
+        }
+        DiagLog.i(tag, "battery: asking Android to exempt ProkNet from battery optimisation")
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + packageName)))
+        } catch (e: Exception) {
+            DiagLog.w(tag, "battery: dialog not available (" + e + "), opening the settings list instead")
+            try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) { toast("Not available on this phone") }
         }
     }
 
@@ -202,9 +265,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun diagnosticText(): String {
         val pending = node.store.pending()
-        return "ProkNet Lab v0.2 diagnostic\n" +
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return "ProkNet Lab v0.3 diagnostic\n" +
             "device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n" +
             "id: " + node.identity.idHex + " name: " + node.identity.displayName + "\n" +
+            "service: " + (if (ProkNetService.running) "RUNNING" else "stopped") + ", battery-exempt: " + pm.isIgnoringBatteryOptimizations(packageName) + "\n" +
             "status: " + node.statusLine() + "\n" +
             "peers: " + peers.joinToString("; ") { it.describe() } + "\n" +
             "messages stored: " + node.store.count() + ", pending: " + pending.size + "\n" +
@@ -243,10 +308,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     override fun onStatus(status: String) {
         txtStatus.text = status
+        refreshServiceLine()
+    }
+
+    private fun refreshServiceLine() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        txtService.text = "Service: " + (if (ProkNetService.running) "RUNNING (background OK)" else "STOPPED") +
+            "   battery-exempt: " + (if (pm.isIgnoringBatteryOptimizations(packageName)) "yes" else "no")
     }
 
     private fun refreshIdentity() {
-        txtIdentity.text = "ProkNet Lab v0.2  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
+        txtIdentity.text = "ProkNet Lab v0.3  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

@@ -88,7 +88,7 @@ Common cases:
 - [ ] close and reopen the app: identity unchanged, old messages still listed
 - [ ] walk 10-20 m apart: peer expires from the list after ~25 s, comes back when close
 
-## 7. Milestone 2A (v0.2): queued delayed delivery
+## 7. Milestone 2A (v0.2): queued delayed delivery - passed 2026-09-13
 
 Both phones on v0.2.0. Names below: A = sender, B = receiver.
 
@@ -139,3 +139,62 @@ the code paths are logged as `FAILED msg=...` and `EXPIRED msg=...`.
 - [ ] 7.4 zero duplicates on B after a flaky-range burst
 - [ ] 7.5 Retry with B off does nothing harmful
 - [ ] old v0.1 messages still listed after upgrading (schema migration)
+
+## 8. Milestone 2B (v0.3): background operation
+
+Both phones on v0.3.0. On first Start, Android 13+ asks for notification
+permission: allow it, otherwise the persistent notification stays hidden
+(the service still runs). Press **Battery** once on each phone and accept
+the dialog; it matters on Xiaomi / Huawei / Oppo / some Samsung phones.
+
+**8.1 Service starts and shows.**
+Press Start. The line under the identity reads `Service: RUNNING (background OK)`.
+A notification "ProkNet running (prok-...)" appears with the status text and
+a "Stop ProkNet" action. Log: `SERVICE: foreground started`, `NODE: node started`.
+
+**8.2 Activity closes, node lives.**
+Press the phone's Back or Home. The notification stays. Reopen the app from
+the notification: peers list and status are still live, no Start needed.
+Log shows `UI: activity hidden (background) - node continues in the service`
+then `UI: activity visible (foreground); service RUNNING, node running`.
+
+**8.3 Swipe away from recents.**
+Swipe the app out of Recents. Notification stays. Log (visible after
+reopening): `SERVICE: app swiped away from recents - service keeps running`.
+
+**8.4 THE test: pending delivery with A asleep.**
+1. Stop B (or Bluetooth off on B). Wait for `NOT IN RANGE` on A.
+2. On A, send "asleep test" to B: `[pending]`, `queue 1`.
+3. On A, press Home, then turn the screen OFF. Leave it off.
+4. Wait 1 minute. Then Start B (Bluetooth on, open app, Start).
+5. Within ~10-30 s B shows `<- prok-... [received]: asleep test`.
+   Do NOT touch A until B has it.
+6. Now wake A and open the app. Log on A must show, in order:
+   `SERVICE: SCREEN OFF - node keeps running: ... scan on ...`,
+   `SCAN: NEW peer prok-...` (B reappearing),
+   `QUEUE: peer prok-... reappeared, 1 pending message(s) -> retry now`,
+   `QUEUE: DELIVERED msg=...`, then `SERVICE: SCREEN ON`.
+
+**8.5 Receive while asleep.**
+A running, screen off, app not open. From B send "to sleeping A". Wake A,
+open the app: the message is in the list with `[received]`, and the log
+shows the `GATT-S: PACKET from ...` line timestamped while the screen was off.
+
+**8.6 Stop from the notification.**
+Tap "Stop ProkNet" on the notification. Notification disappears; the app shows
+`Service: STOPPED`; log `SERVICE: STOP requested`, `NODE: node stopped`.
+
+**8.7 Long background (optional).**
+Leave both phones running, screens off, for 30 minutes, then send both ways.
+If a phone's vendor killed ProkNet, its log will show a gap and a
+`service created` line without a preceding `STOP`; press Battery and retest.
+
+### Checklist for the 2B report
+
+- [ ] 8.1 service RUNNING line + notification
+- [ ] 8.2 close/reopen the screen without losing the node
+- [ ] 8.3 swipe away, service survives
+- [ ] 8.4 pending message delivered while A's screen is off and app not open
+- [ ] 8.5 message received while asleep
+- [ ] 8.6 Stop from the notification works
+- [ ] all 2A behaviour unchanged (queue, receipts, no duplicates, old messages still listed)

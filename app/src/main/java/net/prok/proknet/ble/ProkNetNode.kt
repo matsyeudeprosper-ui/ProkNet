@@ -29,7 +29,16 @@ class ProkNetNode(private val context: Context) {
         fun onMessagesChanged()
         fun onStatus(status: String)
     }
-    var listener: Listener? = null
+
+    /** Milestone 2B: several observers (the service for its notification, the Activity when visible). */
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<Listener>()
+    fun addListener(l: Listener) { if (!listeners.contains(l)) listeners.add(l) }
+    fun removeListener(l: Listener) { listeners.remove(l) }
+    private val listener = object : Listener {
+        override fun onPeers(peers: List<Peer>) { listeners.forEach { it.onPeers(peers) } }
+        override fun onMessagesChanged() { listeners.forEach { it.onMessagesChanged() } }
+        override fun onStatus(status: String) { listeners.forEach { it.onStatus(status) } }
+    }
 
     private val adapter: BluetoothAdapter? =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -38,7 +47,8 @@ class ProkNetNode(private val context: Context) {
     private var advertiser: BleAdvertiser? = null
     private var scanner: BleScanner? = null
     private var sender: BleSender? = null
-    val queue = DeliveryQueue(store, identity, { sender }, { peers() }, { main.post { listener?.onMessagesChanged(); pushStatus() } })
+    val queue = DeliveryQueue(store, identity, { sender }, { peers() }, { main.post { listener.onMessagesChanged(); pushStatus() } },
+        (context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager))
 
     @Volatile var isRunning = false
         private set
@@ -65,7 +75,7 @@ class ProkNetNode(private val context: Context) {
         queue.start()
         DiagLog.i(tag, "node started: server=" + srvOk + " advertise=" + advOk + " scan=" + scanOk)
         main.postDelayed({ pushStatus() }, 1500)
-        listener?.onPeers(peers())
+        listener.onPeers(peers())
         pushStatus()
         return srvOk && scanOk
     }
@@ -81,7 +91,7 @@ class ProkNetNode(private val context: Context) {
         visible = emptyList()
         lastVisibleIds = emptySet()
         DiagLog.i(tag, "node stopped")
-        listener?.onPeers(peers())
+        listener.onPeers(peers())
         pushStatus()
     }
 
@@ -92,7 +102,7 @@ class ProkNetNode(private val context: Context) {
         val appeared = seen.filter { it.shortId !in lastVisibleIds }
         lastVisibleIds = ids
         val merged = peers()
-        listener?.onPeers(merged)
+        listener.onPeers(merged)
         for (p in appeared) queue.onPeerAppeared(p)
         queue.onPeersChanged(merged)
         pushStatus()
@@ -121,7 +131,7 @@ class ProkNetNode(private val context: Context) {
             StoredMessage(0, pkt.msgIdHex, "in", senderShort, "prok-" + senderShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED)
         )
         if (!fresh) DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + senderShort + " ignored (receipt says DUPLICATE)")
-        main.post { listener?.onMessagesChanged(); pushStatus("received from prok-" + senderShort) }
+        main.post { listener.onMessagesChanged(); pushStatus("received from prok-" + senderShort) }
         return fresh
     }
 
@@ -141,6 +151,6 @@ class ProkNetNode(private val context: Context) {
 
     private fun pushStatus(extra: String? = null) {
         val line = statusLine(extra)
-        main.post { listener?.onStatus(line) }
+        main.post { listener.onStatus(line) }
     }
 }
