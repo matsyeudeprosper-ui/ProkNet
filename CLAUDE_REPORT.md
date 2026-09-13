@@ -1,203 +1,163 @@
-# CLAUDE_REPORT - Milestone 1: ProkNet Lab v0.1
+# CLAUDE_REPORT - Milestone 2A: queued delayed delivery (ProkNet Lab v0.2.0)
 
 Date: 2026-09-12
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, APK produced, NOT yet tested on real phones** (Mike has the APK)
+Status: **built, released, NOT yet tested on real phones** (Mike has the APK)
+
+Milestone 1 (v0.1.0) passed on two real phones on 2026-09-12: discovery,
+both-direction messages, 300-character message, persistent identity and
+storage, Bluetooth disappearance/reappearance. Its report is in the git
+history at commit `4e394d7`.
 
 ## 1. What I built
 
-An Android app, **ProkNet Lab v0.1**, in which two phones with mobile data
-and Wi-Fi off discover each other over Bluetooth Low Energy and send a text
-message directly, phone to phone.
-
-Implemented from the milestone list:
+Exactly the 2A list, Kotlin only, no Python:
 
 | Requirement | Done | How |
 |---|---|---|
-| Persistent unique ProkNet device identity | yes | 16 random bytes, generated once, SharedPreferences; local display name |
-| Basic nearby-device discovery | yes | BLE advertise + scan filtered on the ProkNet service UUID |
-| Show nearby ProkNet devices | yes | list with short ID, RSSI, address, age; expires after 25 s unseen |
-| Select a nearby device | yes | tap in list |
-| Send a text message directly | yes | GATT connect -> MTU 517 -> write one packet -> ack -> disconnect |
-| Store sent/received messages locally | yes | SQLite, duplicate delivery ignored by message ID |
-| Show connection/discovery/debug status | yes | one status line: BT / server / adv / scan / peers / last send |
-| Internal logs visible in the app | yes | live log pane, last 600 lines, every BLE step with raw status codes |
-| Copy / export logs | yes | **Copy log** (clipboard) and **Share** (any app) with device, identity, status, peers, log |
-| Very basic UI | yes | one Activity, stock widgets, no design |
+| Message stored as pending when peer unavailable | yes | every Send goes through `DeliveryQueue`; a row with status `pending` in SQLite |
+| Auto-retry when the peer reappears, no second Send | yes | scanner diff detects a peer coming back into range, clears its backoff, pumps immediately |
+| States pending / sending / delivered / failed / expired | yes | `MsgStatus`, shown in the message list as `[pending try 3]`, `[delivered]`, `[failed ...]` |
+| Pending survives app restart | yes | SQLite; on start anything stuck in `sending` returns to `pending` |
+| Delivery receipt, not just a BLE write ack | yes | new RECEIPT characteristic read after the write; only `ACCEPTED`/`DUPLICATE` with the matching message ID counts |
+| No duplicate delivery | yes | unique (msg_id, direction) index on the receiver; retries reuse the same message ID; receipt `DUPLICATE` closes the loop |
+| Clear logs for queue, retry, receipt, delivery | yes | `QUEUE:` ENQUEUED / ATTEMPT / RETRY LATER / DELIVERED / FAILED / EXPIRED; `GATT-C:` reading RECEIPT / SEND DELIVERED; `GATT-S:` receipt ACCEPTED/DUPLICATE |
+| UI stays simple | yes | one new **Retry** button, peers marked `NOT IN RANGE`, `queue N` in the status line |
 
-Plus the VPS build pipeline and the four documents requested.
+Not added, as instructed: multi-hop, background service, Wi-Fi Direct,
+Internet sharing, encryption, wallet, payments.
 
-## 2. Architecture and technology choices, and why
+## 2. Architecture / technology choices and why
 
-**Transport: BLE GATT, every phone is both peripheral and central.**
-Simplest reliable offline link on Android: no pairing dialog, no group-owner
-negotiation, no IP layer, works foreground on every phone since Android 5.
-The advertisement carries the ProkNet service UUID; the scan response carries
-a 4-byte short ID (manufacturer data, company ID 0xFFFF = Bluetooth SIG test
-ID). Peers are keyed by short ID because Android rotates BLE MAC addresses.
-The GATT service has an IDENTITY (read) and an INBOX (write) characteristic.
+**Receipt = read-back, not notification.** After the INBOX write is acked,
+the sender reads a RECEIPT characteristic (`7a0c0004-...`) whose value is
+`[version][status][msgId x8]`, kept per connected central on the receiver.
+This needs no descriptor / indication setup and no extra round trip beyond
+one read inside the same connection. The receiver fills the receipt BEFORE
+sending the write response, so the read can never see a stale value.
 
-**Wire format:** one binary packet, max 512 bytes (`core/Packet.kt`):
-magic "PK", version, type, 16-byte sender ID, 8-byte message ID, timestamp,
-text. The sender asks for MTU 517 so a packet fits in one write; if the peer
-grants less, Android's long-write procedure is used and the server reassembles
-prepared-write chunks. Both paths are implemented.
+**Queue lives in SQLite, not in memory.** `messages` gained `attempts`,
+`next_attempt`, `last_error`, `delivered_at`. Restart-safety came for free.
+Schema v1 -> v2 migration keeps Mike's existing messages (`sent` becomes
+`delivered`).
 
-**Kotlin only, no Python yet.** The project direction is Python for protocol
-logic and thin Kotlin for Android APIs. In v0.1 the protocol is 80 lines of
-packet encode/decode; everything else is Android BLE plumbing that must be
-native. Embedding Python now (Chaquopy is the realistic option) would add a
-large dependency, a slower build on the shared VPS and a second runtime to
-debug, for nothing yet. The boundary is prepared (`core/` has no Android BLE
-imports). **This is a decision I want you to confirm or overrule** before
-milestone 2, because store-carry-forward routing is where Python would start
-to earn its place.
+**Retry policy.** Transport failure or missing receipt: back to `pending`
+with backoff 5 s doubling to 60 s; a peer reappearing resets the backoff for
+its messages. Receiver says REJECTED: `failed`, no retry. 50 attempts:
+`failed`. Older than 48 h: `expired`. One attempt in flight at a time.
 
-**No AndroidX, no Room, no Material.** Plain `android.app.Activity`, stock
-widgets, `SQLiteOpenHelper`. Dependency tree = Kotlin stdlib. Keeps the build
-at ~1 minute and the APK at 0.8 MB on a 12 GB VPS that also runs live
-services.
+**Known peers table** so a peer that is off can still be selected and
+queued for. The BLE address used for an attempt always comes from the live
+scan, never from the table, because Android rotates addresses.
 
-**No background service.** Both phones must have the app open. Deliberate for
-v0.1; it is the first thing to add once the link is proven.
+**Duplicate handling has two layers.** The receiver's unique index makes a
+second copy impossible to store; the DUPLICATE receipt lets the sender mark
+the message delivered even when the first attempt's receipt was lost.
 
-Full detail: `docs/ARCHITECTURE.md`.
+Full detail: `docs/ARCHITECTURE.md`, sections "Delivery receipt" and
+"Delivery queue".
 
-## 3. Files / components added
+## 3. Files / components added or changed
 
 ```
-build.ps1                                   the build command (see 5)
-build.gradle.kts, settings.gradle.kts, gradle.properties, gradle/wrapper/*
-app/build.gradle.kts, app/src/main/AndroidManifest.xml
-app/src/main/res/layout/activity_main.xml   the one screen
-app/src/main/res/values, drawable, mipmap   name + icon
 app/src/main/java/net/prok/proknet/
-  core/Identity.kt        persistent ID + display name
-  core/Packet.kt          wire format encode/decode
-  core/MessageStore.kt    SQLite messages table
-  core/DiagLog.kt         in-app log ring buffer + file + listeners
-  ble/BleConstants.kt     UUIDs, manufacturer ID, timeouts, Peer model
-  ble/BleAdvertiser.kt    be discoverable
-  ble/GattServerNode.kt   receive packets (incl. prepared-write reassembly)
-  ble/BleScanner.kt       discover peers, expiry, address rotation handling
-  ble/BleSender.kt        connect/MTU/discover/write state machine, retry, timeout
-  ble/ProkNetNode.kt      owns the four above; the only object the UI uses
-  ui/MainActivity.kt      UI, permissions, Bluetooth-enable flow, copy/share log
-README.md, docs/ARCHITECTURE.md, docs/TESTING.md, CLAUDE_REPORT.md
+  ble/DeliveryQueue.kt     NEW  queue state machine, backoff, reappearance retry, expiry
+  ble/GattServerNode.kt    RECEIPT characteristic; per-central receipts; handle-before-respond
+  ble/BleSender.kt         reads RECEIPT after write; returns DeliveryResult
+  ble/BleConstants.kt      RECEIPT UUID + status codes, queue tuning, DeliveryResult, Peer.inRange
+  ble/ProkNetNode.kt       owns the queue; merges visible + known peers; detects reappearance
+  core/MessageStore.kt     schema v2, MsgStatus, pending/retry/expire queries, peers table
+  ui/MainActivity.kt       Retry button, state display, NOT IN RANGE peers, queue in diagnostics
+app/src/main/res/layout/activity_main.xml   Retry button
+app/build.gradle.kts       versionCode 2, versionName 0.2.0
+README.md, docs/ARCHITECTURE.md, docs/TESTING.md (section 7), CLAUDE_REPORT.md
 ```
-
-About 1,100 lines of Kotlin.
 
 ## 4. Exact APK path
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Also inside the build tree at `app\build\outputs\apk\debug\ProkNetLab-debug.apk`.
-
-Published for the phone at:
-https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.1.0
-(private repo; Mike's phone browser must be logged in to GitHub). The APK
-was also sent to Mike directly through the Claude session.
-
-Build 1: 0.81 MB, SHA256 `16b3d7d54ead67c43dff161d98b860d7f00fd0144e0df513eaa9598657f4e95b`,
-package `net.prok.proknet.lab`, versionCode 1, minSdk 26 (Android 8),
-targetSdk 34, debug-signed.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.2.0
+Build 2: 0.86 MB, SHA256 `c499a1da93f922b90446dc4c457e23e9f0bda1f837da0d9e69cc37e2c14af860`,
+versionCode 2, versionName 0.2.0, same package and debug key as v0.1 (installs
+over it, data kept).
 
 ## 5. Exact build command
 
 ```
 powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1
 ```
-Options: `-Clean`, `-Offline`. It sets JAVA_HOME / ANDROID_HOME, runs
-`gradlew.bat --no-daemon assembleDebug`, copies the APK to `dist\`, prints
-size and SHA256. Refuses to run with under 1 GB free disk. A rebuild takes
-about 60 s.
-
-Toolchain installed on the VPS, all under `C:\Android` (nothing else touched):
-Temurin JDK 17.0.20, Android cmdline-tools, platforms;android-34,
-build-tools;34.0.0, platform-tools, Gradle 8.7 (wrapper), AGP 8.5.2,
-Kotlin 1.9.24.
+Unchanged from milestone 1. About 65 s per build.
 
 ## 6. What Mike needs to do on his phones
 
-Full steps in `docs/TESTING.md`. Short version:
+Install v0.2.0 over v0.1 on **both** phones (both must be on v0.2, the
+receipt characteristic does not exist in v0.1). Then `docs/TESTING.md`
+section 7. The five tests, in one breath:
 
-1. Download and install `ProkNetLab-debug.apk` on both phones (allow
-   "install unknown apps"; Play Protect: "install anyway").
-2. On both: mobile data OFF, Wi-Fi OFF, Bluetooth ON. Android 8-11 only:
-   Location ON too (Android requires it for BLE scanning).
-3. Open the app on both, press **Start**, grant the "Nearby devices"
-   (or Location) permission, press Start again if needed.
-4. Status line should say `server ready | adv on | scan on`. Within ~5 s each
-   phone lists the other as `prok-xxxxxxxx`.
-5. Tap the peer, type a text, **Send**. Sender shows `[sent]`, receiver shows
-   `<- prok-... [received]`.
-6. If anything fails: **Copy log** or **Share** on the failing phone and paste
-   the text back. The checklist in TESTING.md section 6 is what I need
-   answered for the milestone verdict.
+1. Normal send with B in range: A shows `[delivered]`, A's log has
+   `RECEIPT accepted`, B's log has `receipt ACCEPTED`.
+2. Stop B, wait until A lists it as `NOT IN RANGE`, send two messages from A
+   (`[pending]`, status `queue 2`), start B: both arrive by themselves, in order.
+3. With B off, send from A, kill A completely, reopen, Start: message still
+   `[pending]`; start B: delivered.
+4. Burst of five with B walking out of range and back: each text exactly once on B.
+5. Retry button with B off: nothing breaks.
+
+Copy log from both phones after test 2 and test 4 is what I most want to see.
 
 ## 7. Known limitations
 
-- App must be in the foreground on both phones (no background service).
-- No encryption. Anyone with the UUID can read the packets over the air.
-- One message per GATT connection, max 474 bytes of text, a few hundred ms
-  per message. Fine for a lab, not for bulk data.
-- Identity is a random number, not a key pair; the display name is local only
-  (the other phone shows `prok-<shortId>`, not the name).
-- Some cheap phones cannot advertise (`bluetoothLeAdvertiser == null`). They
-  can still find others and send, but cannot be discovered. The log says so.
-- Android 8-11 need Location ON for scanning; Android 12+ do not.
-- Debug signing key lives on the VPS (`~/.android/debug.keystore`). If it is
-  ever lost, phones must uninstall before installing a new build.
-- Windows Update download cache (8.5 GB) still needs clearing on the VPS
-  (harness blocks me from that path; Mike approved and has the one-liner).
-  Free disk is 1.9 GB; build.ps1 stops below 1 GB.
+- Queue only carries this phone's OWN messages. Carrying other people's
+  packets (real STORE-CARRY-FORWARD) is a later milestone.
+- App must be open on both phones (no background service). A pending message
+  is only delivered while A's app is open and sees B.
+- `failed` (50 attempts) and `expired` (48 h) are implemented but not
+  practical to test by hand; they are logged.
+- The receipt proves the receiver STORED the message, not that a human saw it.
+- Peer names: still `prok-<shortId>` on the other phone.
+- Still no encryption; the receipt is as readable over the air as the message.
 
 ## 8. What failed or is uncertain
 
-- **Not tested on real hardware.** I have no phones. The build compiles,
-  the manifest and signature verify, but BLE behaviour differs per vendor.
-  The most likely first-run problems, all logged with hints in the app:
-  status 133 on connect (retried once automatically), a peripheral that never
-  answers the MTU request (3 s fallback), and OEM battery managers killing
-  the scan.
-- **Uncertain: automatic long write.** If a phone grants MTU 23, Android should
-  split the write into prepared writes; the server handles that, but I could
-  not exercise it. TESTING.md includes a 300-character message for this.
-- **AGP's own SDK download hangs on this VPS** (Java TLS to dl.google.com is
-  reset; curl and sdkmanager work). Fixed by `android.builder.sdkDownload=false`;
-  missing SDK parts must be installed with sdkmanager, which is documented.
-- **Hard-coded `0xFFFF` manufacturer ID** is the SIG test ID; correct for a
-  lab, must not ship in a product.
-- **GitHub release is on a private repo.** Downloading from the phone needs a
-  logged-in browser. If that is a nuisance, make the repo public (there are no
-  secrets in it) or I serve the APK from the VPS.
+- **Untested on hardware.** Compiles, manifest verified, logic reviewed twice.
+  The two things I could not exercise: (a) the reappearance trigger timing
+  (scanner expiry is 25 s, so "B is back" is noticed within ~5 s of B
+  advertising again, but the first attempt may hit a stale rotated address
+  once and retry after 1.5 s); (b) the receipt read on Android 8-12, which
+  uses the older `onCharacteristicRead` callback (handled, but a different
+  code path from Android 13+).
+- **Compiler warning**, harmless: the pre-API-33 read callback override is
+  deprecated upstream. Left as is.
+- **VPS disk** is at 1.8 GB free; builds still work. The Windows Update
+  cache cleanup is still pending on Mike's side (needs an RDP session).
+- Repo is still private; ChatGPT's GitHub plugin could not read it at the
+  last review. Mike can make it public in Settings > Danger Zone, or tell me
+  to.
 
 ## 9. Git commit hash
 
-Code and docs: `ae90ab4c25d49d9bbb932e5de9969491ca804543` (branch `main`,
-https://github.com/matsyeudeprosper-ui/ProkNet). This report is committed
-on top of it. Release tag `v0.1.0` points at the built commit.
+Code + docs: `de603a8f4684f3a8509be532f686d31b830e36b3` on `main`.
+Release tag `v0.2.0` points at it. This report is committed on top.
 
 ## 10. Recommendation for the next step
 
-Do not start milestone 2 until Mike's two-phone test passes the checklist in
-`docs/TESTING.md`. Expect one or two fix-and-rebuild rounds first (that is
-what the in-app log is for).
+Wait for Mike's 2A test. If it passes, my recommendation for 2B is the
+smallest step that makes CARRY real:
 
-Once the link is proven, my recommended milestone 2 is **"the link survives
-real life"**, still BLE, still two phones:
+1. **Foreground service** so A keeps scanning and delivering with the screen
+   off and the app in the background. Without this, "carry while people
+   move" cannot happen: the app dies in the pocket.
+2. **Peer display names** via the IDENTITY characteristic (read once on
+   first contact, cached in the peers table).
+3. Only then: carry other people's packets (destination ID + TTL + hop
+   count in the packet, a per-packet "seen" set, forward on contact). That
+   is the first true multi-phone STORE-CARRY-FORWARD and the point where the
+   Python question should be decided, because routing policy is the logic
+   that would live there.
 
-1. Foreground service so discovery and receive work with the screen off and
-   the app in the background (this is a precondition for CARRY).
-2. Show the peer's display name (read the IDENTITY characteristic on first
-   contact, cache it).
-3. Delivery receipts and a resend queue: a message written while the peer
-   is out of range waits and goes out when the peer is next seen. That is
-   STORE and FORWARD in its smallest form, for the sender's own messages.
-4. Decide the Python question (section 2) before any routing logic exists.
-
-Encryption, multi-hop, Wi-Fi Direct, Internet sharing and payments stay out
-until 1-3 are solid.
+Encryption should come before any real user traffic, but after the carry
+mechanics are visible and testable, so the identity/key design is informed by
+what the packets actually need.
