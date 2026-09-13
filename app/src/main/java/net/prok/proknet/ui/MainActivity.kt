@@ -29,9 +29,10 @@ import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
+import net.prok.proknet.core.MsgStatus
 
 /**
- * ProkNet Lab v0.1 screen. Deliberately plain: one Activity, stock widgets,
+ * ProkNet Lab screen. Deliberately plain: one Activity, stock widgets,
  * everything visible. Functionality over design.
  */
 class MainActivity : Activity(), ProkNetNode.Listener {
@@ -80,7 +81,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         listPeers.setOnItemClickListener { _, _, pos, _ ->
             selected = peers.getOrNull(pos)
             txtSelected.text = "Selected: " + (selected?.describe() ?: "none")
-            DiagLog.i(tag, "selected " + selected?.label)
+            DiagLog.i(tag, "selected " + selected?.label + (if (selected?.inRange == false) " (not in range, messages will queue)" else ""))
         }
         messagesAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
         listMessages.adapter = messagesAdapter
@@ -88,6 +89,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnStart).setOnClickListener { startNode() }
         findViewById<Button>(R.id.btnStop).setOnClickListener { node.stop() }
         findViewById<Button>(R.id.btnRename).setOnClickListener { renameDialog() }
+        findViewById<Button>(R.id.btnRetry).setOnClickListener {
+            if (!node.isRunning) toast("Press Start first") else node.queue.retryAllNow()
+        }
         findViewById<Button>(R.id.btnSend).setOnClickListener { sendMessage() }
         editMessage.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) { sendMessage(); true } else false
@@ -100,6 +104,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         txtLog.text = DiagLog.text() + "\n"
         DiagLog.addListener(logListener)
         DiagLog.i(tag, "device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")")
+        onPeers(node.peers())
         onMessagesChanged()
         onStatus(node.statusLine())
     }
@@ -162,12 +167,13 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun sendMessage() {
         val peer = selected
         val text = editMessage.text.toString().trim()
-        if (peer == null) { toast("Select a nearby device first"); return }
+        if (peer == null) { toast("Select a device first"); return }
         if (text.isEmpty()) { toast("Type a message"); return }
         if (!node.isRunning) { toast("Press Start first"); return }
-        DiagLog.i(tag, "send \"" + text + "\" -> " + peer.label)
+        DiagLog.i(tag, "send \"" + text + "\" -> " + peer.label + (if (peer.inRange) "" else " (not in range: queued)"))
         node.sendText(peer, text)
         editMessage.setText("")
+        if (!peer.inRange) toast("Queued: will deliver when " + peer.label + " is back in range")
     }
 
     private fun renameDialog() {
@@ -194,14 +200,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         try { startActivity(Intent.createChooser(i, "Share ProkNet log")) } catch (e: Exception) { toast("No app to share with") }
     }
 
-    private fun diagnosticText(): String =
-        "ProkNet Lab v0.1 diagnostic\n" +
+    private fun diagnosticText(): String {
+        val pending = node.store.pending()
+        return "ProkNet Lab v0.2 diagnostic\n" +
             "device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n" +
             "id: " + node.identity.idHex + " name: " + node.identity.displayName + "\n" +
             "status: " + node.statusLine() + "\n" +
             "peers: " + peers.joinToString("; ") { it.describe() } + "\n" +
-            "messages stored: " + node.store.count() + "\n" +
+            "messages stored: " + node.store.count() + ", pending: " + pending.size + "\n" +
+            pending.joinToString("") { "  pending msg=" + it.msgId + " to " + it.peerName + " attempts=" + it.attempts + " last=" + it.lastError + "\n" } +
             "----- log -----\n" + DiagLog.text() + "\n"
+    }
 
     // ---- node listener -----------------------------------------------------------------------
 
@@ -213,15 +222,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val sel = selected
         if (sel != null) {
             val still = peers.firstOrNull { it.shortId == sel.shortId }
-            if (still == null) txtSelected.text = "Selected: " + sel.label + " (out of range - will retry on send)"
-            else { selected = still; txtSelected.text = "Selected: " + still.describe() }
+            if (still != null) { selected = still; txtSelected.text = "Selected: " + still.describe() }
         }
     }
 
     override fun onMessagesChanged() {
         val rows = node.store.recent(60).map { m ->
             val arrow = if (m.direction == "in") "<- " else "-> "
-            timeFmt.format(Date(m.timestamp)) + " " + arrow + m.peerName + " [" + m.status + "]: " + m.text
+            val extra = when (m.status) {
+                MsgStatus.PENDING -> if (m.attempts > 0) " try " + m.attempts else ""
+                MsgStatus.FAILED, MsgStatus.EXPIRED -> " " + m.lastError.take(40)
+                else -> ""
+            }
+            timeFmt.format(Date(m.timestamp)) + " " + arrow + m.peerName + " [" + m.status + extra + "]: " + m.text
         }
         messagesAdapter.clear()
         messagesAdapter.addAll(rows)
@@ -233,7 +246,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshIdentity() {
-        txtIdentity.text = "ProkNet Lab v0.1  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
+        txtIdentity.text = "ProkNet Lab v0.2  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

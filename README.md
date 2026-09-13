@@ -14,9 +14,16 @@ PROKNET       communication / connectivity network
   `-- Internet       (optional gateway, later)
 ```
 
-This repository currently contains **ProkNet Lab v0.1**: the first milestone.
+This repository contains **ProkNet Lab**, built milestone by milestone.
 
-## Milestone v0.1 - what it does
+## Milestones
+
+| Version | Milestone | Status |
+|---|---|---|
+| v0.1.0 | Lab: BLE discovery + direct text message, Internet off | passed on two real phones (2026-09-12) |
+| v0.2.0 | 2A: queued delayed delivery with delivery receipts | built, awaiting phone test |
+
+### v0.1 - what it does
 
 Two Android phones with mobile data and Wi-Fi OFF can:
 
@@ -29,7 +36,19 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 - show a full internal log, with **Copy log** and **Share** buttons, so testing
   needs no ADB, no PC and no Android Studio
 
-Nothing else. No encryption, no multi-hop, no Wi-Fi Direct, no wallet yet.
+### v0.2 (milestone 2A) - queued delayed delivery
+
+- A message to a phone that is not in range is stored as **pending** and
+  delivered automatically when that phone is seen again. No second Send.
+- Message states: `pending`, `sending`, `delivered`, `failed`, `expired`.
+- Pending messages survive app restart (SQLite queue).
+- **Delivery receipt**: the receiver confirms it stored the message; a bare
+  BLE write acknowledgement no longer counts as delivered.
+- Duplicate delivery is impossible: message IDs are unique on both sides.
+- Known peers stay in the list marked "NOT IN RANGE" so you can queue for them.
+- **Retry** button clears backoff and tries everything pending now.
+
+Still not here: encryption, multi-hop, background service, Wi-Fi Direct.
 
 ## Build (on the VPS)
 
@@ -64,8 +83,8 @@ install (allow "install unknown apps" for the browser when asked).
 ```
 app/                      Android app (Kotlin, no AndroidX, plain Activity)
   src/main/java/net/prok/proknet/
-    core/                 Identity, Packet (wire format), MessageStore, DiagLog
-    ble/                  Advertiser, GATT server, Scanner, Sender, ProkNetNode
+    core/                 Identity, Packet (wire format), MessageStore (+queue), DiagLog
+    ble/                  Advertiser, GATT server, Scanner, Sender, DeliveryQueue, ProkNetNode
     ui/                   MainActivity (the one screen)
 build.ps1                 The build command
 dist/                     Predictable APK output location (APK itself not committed)

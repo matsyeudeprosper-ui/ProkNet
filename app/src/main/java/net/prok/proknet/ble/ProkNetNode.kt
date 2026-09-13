@@ -8,12 +8,14 @@ import android.os.Looper
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MessageStore
+import net.prok.proknet.core.MsgStatus
 import net.prok.proknet.core.Packet
 import net.prok.proknet.core.StoredMessage
 
 /**
  * One ProkNet node = identity + GATT server (receive) + advertiser (be found)
- * + scanner (find others) + sender (deliver). This is the only object the UI talks to.
+ * + scanner (find others) + sender (deliver) + delivery queue (milestone 2A).
+ * This is the only object the UI talks to.
  */
 class ProkNetNode(private val context: Context) {
     private val tag = "NODE"
@@ -36,9 +38,12 @@ class ProkNetNode(private val context: Context) {
     private var advertiser: BleAdvertiser? = null
     private var scanner: BleScanner? = null
     private var sender: BleSender? = null
+    val queue = DeliveryQueue(store, identity, { sender }, { peers() }, { main.post { listener?.onMessagesChanged(); pushStatus() } })
+
     @Volatile var isRunning = false
         private set
-    private var peerCount = 0
+    private var visible: List<Peer> = emptyList()
+    private var lastVisibleIds: Set<String> = emptySet()
 
     fun isBluetoothOn(): Boolean = adapter?.isEnabled == true
 
@@ -53,67 +58,83 @@ class ProkNetNode(private val context: Context) {
         val srvOk = server!!.start()
         advertiser = BleAdvertiser(a, identity)
         val advOk = advertiser!!.start()
-        scanner = BleScanner(a) { peers ->
-            peerCount = peers.size
-            listener?.onPeers(peers)
-            pushStatus()
-        }
+        scanner = BleScanner(a) { peers -> onScannerPeers(peers) }
         val scanOk = scanner!!.start()
         sender = BleSender(context, a)
         isRunning = true
+        queue.start()
         DiagLog.i(tag, "node started: server=" + srvOk + " advertise=" + advOk + " scan=" + scanOk)
         main.postDelayed({ pushStatus() }, 1500)
+        listener?.onPeers(peers())
         pushStatus()
         return srvOk && scanOk
     }
 
     fun stop() {
         if (!isRunning) return
+        queue.stop()
         scanner?.stop(); scanner = null
         advertiser?.stop(); advertiser = null
         server?.stop(); server = null
         sender = null
         isRunning = false
-        peerCount = 0
+        visible = emptyList()
+        lastVisibleIds = emptySet()
         DiagLog.i(tag, "node stopped")
+        listener?.onPeers(peers())
         pushStatus()
     }
 
-    fun peers(): List<Peer> = scanner?.snapshot() ?: emptyList()
-
-    fun sendText(peer: Peer, text: String) {
-        val s = sender
-        if (s == null || !isRunning) { DiagLog.e(tag, "cannot send: node not running"); return }
-        val pkt = Packet.text(identity, text)
-        val bytes = pkt.encode()
-        store.insert(
-            StoredMessage(0, pkt.msgIdHex, "out", peer.shortId, peer.label, text, pkt.timestamp, "sending")
-        )
-        listener?.onMessagesChanged()
-        s.send(peer, bytes) { ok, detail ->
-            store.updateStatus(pkt.msgIdHex, if (ok) "sent" else "failed")
-            listener?.onMessagesChanged()
-            pushStatus(if (ok) "last send OK" else "last send FAILED: " + detail)
-        }
+    private fun onScannerPeers(seen: List<Peer>) {
+        visible = seen
+        for (p in seen) store.rememberPeer(p.shortId, p.label, p.address, p.lastSeen)
+        val ids = seen.map { it.shortId }.toSet()
+        val appeared = seen.filter { it.shortId !in lastVisibleIds }
+        lastVisibleIds = ids
+        val merged = peers()
+        listener?.onPeers(merged)
+        for (p in appeared) queue.onPeerAppeared(p)
+        queue.onPeersChanged(merged)
+        pushStatus()
     }
 
-    private fun onPacketReceived(pkt: Packet, address: String) {
+    /** Visible peers first (with RSSI), then known peers that are not in range. */
+    fun peers(): List<Peer> {
+        val vis = visible
+        val visIds = vis.map { it.shortId }.toSet()
+        val known = store.knownPeers()
+            .filter { it.shortId !in visIds }
+            .map { Peer(it.shortId, it.lastAddress, 0, it.lastSeen, inRange = false) }
+        return vis + known
+    }
+
+    /** Milestone 2A: never sends directly; always goes through the queue. */
+    fun sendText(peer: Peer, text: String) {
+        if (!isRunning) { DiagLog.e(tag, "cannot queue: node not running"); return }
+        queue.enqueue(peer.shortId, peer.label, text)
+    }
+
+    /** Returns true if stored (new), false if duplicate. Called on a binder thread. */
+    private fun onPacketReceived(pkt: Packet, address: String): Boolean {
         val senderShort = pkt.senderIdHex.substring(0, Identity.SHORT_ID_LEN * 2)
         val fresh = store.insert(
-            StoredMessage(0, pkt.msgIdHex, "in", senderShort, "prok-" + senderShort, pkt.text, pkt.timestamp, "received")
+            StoredMessage(0, pkt.msgIdHex, "in", senderShort, "prok-" + senderShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED)
         )
-        if (!fresh) DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " ignored")
+        if (!fresh) DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + senderShort + " ignored (receipt says DUPLICATE)")
         main.post { listener?.onMessagesChanged(); pushStatus("received from prok-" + senderShort) }
+        return fresh
     }
 
     fun statusLine(extra: String? = null): String {
         val bt = if (adapter == null) "no BT" else if (adapter.isEnabled) "BT on" else "BT OFF"
-        if (!isRunning) return bt + " | node stopped"
+        val q = "queue " + store.pendingCount() + (if (queue.inFlightMsg() != null) " (1 sending)" else "")
+        if (!isRunning) return bt + " | node stopped | " + q
         val sb = StringBuilder(bt)
         sb.append(" | server ").append(if (server?.isReady == true) "ready" else "not ready")
         sb.append(" | adv ").append(if (advertiser?.isAdvertising == true) "on" else "OFF")
         sb.append(" | scan ").append(if (scanner?.isScanning == true) "on" else "OFF")
-        sb.append(" | peers ").append(peerCount)
+        sb.append(" | peers ").append(visible.size)
+        sb.append(" | ").append(q)
         if (extra != null) sb.append(" | ").append(extra)
         return sb.toString()
     }

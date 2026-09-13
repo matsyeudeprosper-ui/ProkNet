@@ -1,6 +1,6 @@
-# ProkNet Lab v0.1 - Architecture
+# ProkNet Lab - Architecture
 
-## Goal of v0.1
+## Goal of v0.1 (kept as the base of every later milestone)
 
 Phone A <---- offline local connection ----> Phone B
 
@@ -50,6 +50,7 @@ by MAC address, because Android rotates BLE addresses.
 |---|---|---|---|
 | IDENTITY | `7a0c0002-...` | read | `idHex|displayName` UTF-8 |
 | INBOX | `7a0c0003-...` | write (with response) | one encoded Packet per write |
+| RECEIPT | `7a0c0004-...` | read | v0.2: `[ver=1][status][msgId x8]` for the last packet this central wrote |
 
 **Packet** (`core/Packet.kt`), big-endian, max 512 bytes:
 
@@ -69,19 +70,75 @@ The sender requests MTU 517 so a full packet fits in one write; when the peer
 grants less, Android automatically uses the GATT long-write procedure and the
 server reassembles the prepared-write chunks.
 
-## Send sequence
+## Send sequence (one delivery attempt)
 
 ```
 connectGatt(TRANSPORT_LE)
   -> CONNECTED -> requestMtu(517)   (3 s fallback if no callback)
   -> onMtuChanged -> discoverServices()
   -> onServicesDiscovered -> find INBOX -> writeCharacteristic(packet)
-  -> onCharacteristicWrite(GATT_SUCCESS) = delivered
+  -> onCharacteristicWrite(GATT_SUCCESS)      = Android says the write landed
+  -> readCharacteristic(RECEIPT)              (v0.2)
+  -> onCharacteristicRead: status + msgId     = the PEER says what it did with it
   -> disconnect + close
 ```
 
-One send at a time (queue), 20 s timeout per attempt, one automatic retry.
-Every step is written to the in-app log with the raw status code and a hint.
+One attempt at a time, 20 s timeout, one automatic transport retry inside the
+attempt. Every step is written to the in-app log with the raw status code and
+a hint.
+
+## Delivery receipt (milestone 2A)
+
+A BLE write acknowledgement only proves the bytes reached the other phone's
+Bluetooth stack. It does not prove the app parsed and stored them. So the
+receiver keeps, per connected central, a receipt for the last packet it
+handled, and the sender reads it right after the write:
+
+| Receipt status | Receiver did | Sender marks |
+|---|---|---|
+| 1 ACCEPTED | parsed and stored the message | delivered |
+| 2 DUPLICATE | already had this message ID (an earlier attempt got through but its receipt was lost) | delivered |
+| 0 REJECTED | packet did not parse | failed, no retry |
+| missing / wrong msgId | old app version or a race | not delivered, retry later |
+
+The receipt is filled BEFORE the write response is sent, so the read that
+follows can never see a stale value. It is cleared on disconnect.
+
+## Delivery queue (milestone 2A)
+
+`ble/DeliveryQueue.kt` is the smallest possible STORE -> FORWARD, for this
+phone's own outgoing messages only. State machine per outgoing message,
+persisted in SQLite (`messages.status`, `attempts`, `next_attempt`,
+`last_error`, `delivered_at`):
+
+```
+        enqueue                attempt starts
+  ----------------> pending --------------------> sending
+                     ^  ^                           |
+     backoff elapsed |  | transport failed /        | receipt ACCEPTED / DUPLICATE
+     or peer         |  | no receipt                v
+     reappeared      |  +------------------------ delivered
+                     |
+                     +-- 50 attempts or receipt REJECTED --> failed
+                     +-- older than 48 h -------------------> expired
+```
+
+- `pump()` runs on: enqueue, every scanner update, a 10 s tick, and after each
+  attempt. It picks the oldest pending message whose peer is in range and whose
+  backoff has elapsed. One attempt in flight at a time.
+- Backoff after a failed attempt: 5 s doubling to a 60 s cap.
+- **Peer reappears** (was out of the scanner's list, now back): backoff for its
+  messages is cleared and a pump runs immediately. This is the "B comes back,
+  A delivers by itself" path.
+- On start, any message stuck in `sending` from a crash goes back to `pending`.
+- The **Retry** button clears every backoff and pumps.
+- Retries re-encode the SAME message ID and timestamp, so a retry can never
+  create a second copy on the receiver.
+
+Known peers (`peers` table: short ID, label, last seen, last address) are shown
+in the list as "NOT IN RANGE" so a message can be queued for a phone that is
+currently off. Address at send time always comes from the live scan result,
+never from the table, because Android rotates BLE addresses.
 
 ## Identity
 
@@ -92,8 +149,10 @@ milestone; the API surface is intentionally tiny so the swap is cheap.
 
 ## Storage
 
-`core/MessageStore.kt`: one SQLite table `messages` via `SQLiteOpenHelper`.
-No Room, no annotation processing, so the build stays small and fast.
+`core/MessageStore.kt`: SQLite via `SQLiteOpenHelper`, tables `messages`
+(with the v0.2 queue columns) and `peers`. Schema v1 -> v2 migration keeps
+existing messages and maps the old `sent` status to `delivered`. No Room, no
+annotation processing, so the build stays small and fast.
 
 `core/DiagLog.kt`: ring buffer of the last 600 log lines, mirrored to logcat
 and to `files/proknet-log.txt`. The UI shows it live; Copy puts the full
@@ -137,5 +196,6 @@ the box after a build, and refuses to build with under 1 GB free disk.
 
 ## What is deliberately NOT here
 
-Encryption, multi-hop routing, store-and-forward for third parties,
-background service, Wi-Fi Direct, Internet sharing, wallet or payments.
+Encryption, multi-hop routing, store-and-forward for other people's messages
+(the queue only carries this phone's own), background service, Wi-Fi Direct,
+Internet sharing, wallet or payments.

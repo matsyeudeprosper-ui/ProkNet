@@ -29,6 +29,8 @@
             android:layout_height="wrap_content" android:text="Stop" />
         <Button android:id="@+id/btnRename" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="Name" />
+        <Button android:id="@+id/btnRetry" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Retry" />
     </LinearLayout>
 
     <TextView

@@ -1,4 +1,4 @@
-# ProkNet Lab v0.1 - Testing on phones
+# ProkNet Lab - Testing on phones
 
 No PC, no ADB, no Android Studio. Everything needed is on screen.
 
@@ -33,7 +33,7 @@ On **both** phones:
    The `xxxxxxxx` matches the `id` shown at the top of the other phone.
 5. On phone A tap the entry for phone B. The *Selected:* line updates.
 6. Type a message and press **Send**.
-7. Phone A shows the message in *Messages* as `-> prok-... [sending]`, then `[sent]`.
+7. Phone A shows the message in *Messages* as `-> prok-... [pending]`, `[sending]`, then `[delivered]` (v0.1 said `[sent]`).
 8. Phone B shows `<- prok-... [received]: your text` and the log line
    `GATT-S: PACKET from ...`.
 9. Repeat from B to A.
@@ -78,7 +78,7 @@ Common cases:
 | `peer has no ProkNet inbox characteristic` | the other phone's GATT server is not running | press Stop then Start on the other phone |
 | messages arrive twice | duplicate delivery | the store ignores duplicates by message ID; you should not see it in the list, only in the log |
 
-## 6. Test checklist for the milestone report
+## 6. Test checklist for milestone 1 (v0.1, passed 2026-09-12)
 
 - [ ] A sees B, B sees A (both lists non-empty)
 - [ ] A -> B text arrives and shows `[received]` on B, `[sent]` on A
@@ -87,3 +87,55 @@ Common cases:
 - [ ] Stop then Start on both phones, discovery recovers
 - [ ] close and reopen the app: identity unchanged, old messages still listed
 - [ ] walk 10-20 m apart: peer expires from the list after ~25 s, comes back when close
+
+## 7. Milestone 2A (v0.2): queued delayed delivery
+
+Both phones on v0.2.0. Names below: A = sender, B = receiver.
+
+**7.1 Receipt on a normal send (B in range).**
+Send A -> B. A's message goes `[pending]` -> `[sending]` -> `[delivered]`.
+A's log must contain `write ACKED ... reading RECEIPT` then
+`SEND DELIVERED ... RECEIPT accepted`. B's log: `PACKET from ... -> receipt ACCEPTED`.
+
+**7.2 Queue while B is off.**
+1. On B: press **Stop** (or turn Bluetooth off). Wait until A's list shows
+   B as `NOT IN RANGE` (about 25 s).
+2. On A: tap B, send "queued 1". It shows `[pending]`. Status line shows
+   `queue 1`. Log: `QUEUE: ENQUEUED msg=...`.
+3. Send "queued 2" the same way. `queue 2`.
+4. On B: press **Start** (or Bluetooth on, then Start).
+5. Within ~10 s A's log shows `peer prok-... reappeared, 2 pending message(s)`
+   then `ATTEMPT 1 msg=...`, and both messages become `[delivered]` without
+   touching Send. B shows both `[received]`, in order.
+
+**7.3 Queue survives restart.**
+1. B off. On A send "after restart" -> `[pending]`.
+2. Close A completely (swipe away), reopen, press Start.
+   Log: `QUEUE: queue started, pending=1`. The message is still `[pending]`.
+3. Turn B on, Start. The message is delivered automatically.
+
+**7.4 No duplicates.**
+Send five messages quickly A -> B while B is in range, then walk B out of
+range mid-way and back. Every message must appear exactly once on B.
+A's log may show `RETRY LATER` and later `RECEIPT duplicate` lines: that is
+the receipt catching a retry of something B already had. B's list must not
+show any text twice.
+
+**7.5 Retry button.**
+With B off, send one message, then press **Retry** on A: log says
+`manual retry: backoff cleared`; nothing is sent (B not in range), status
+stays `[pending]`. Turn B on: delivered.
+
+**7.6 Failed / expired (optional, long).**
+`expired` needs 48 h of waiting. `failed` needs 50 transport failures against
+a visible peer, which is hard to provoke by hand. Skip unless ChatGPT asks;
+the code paths are logged as `FAILED msg=...` and `EXPIRED msg=...`.
+
+### Checklist for the 2A report
+
+- [ ] 7.1 normal send shows `RECEIPT accepted` on A and `receipt ACCEPTED` on B
+- [ ] 7.2 two queued messages delivered automatically when B returns, in order
+- [ ] 7.3 pending survives closing and reopening A
+- [ ] 7.4 zero duplicates on B after a flaky-range burst
+- [ ] 7.5 Retry with B off does nothing harmful
+- [ ] old v0.1 messages still listed after upgrading (schema migration)
