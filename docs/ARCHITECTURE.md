@@ -549,10 +549,66 @@ and was never answered. A phone sells or buys on a link, not both.
 **RELAY**: a flag in the offer plus counts of packets this phone actually
 forwarded for others (existing carry-forward). No live multi-hop Internet.
 
-## Automated tests (83)
+## Consumer product UI (v0.8)
+
+The engine under v0.7.1 is unchanged. v0.8 adds a second window onto the
+same node and demotes the lab screen to a developer screen.
+
+```
+ProkNetNode (unchanged)  <--observes--  ui/MainActivity   consumer: Home / Internet / Earn / Activity / Profile
+                         <--observes--  ui/LabActivity    developer: the v0.1-v0.7 lab screen, whole, under Profile > Developer
+                                              ^
+                       core/ProductState -----+  the ONE place engine states become user words (pure, tested)
+```
+
+- `core/ProductState` is the translation layer. Input: `buyerWanted`,
+  Wi-Fi phase, link up, `TunnelClient.state`, VPN up, last error. Output:
+  `Buyer.IDLE / FINDING / CONNECTING / SECURING / STARTING / ONLINE / LOST`
+  with titles "Finding provider…", "Connecting…", "Securing connection…",
+  "Starting Internet…", "You're online", "Connection lost", plus a hint
+  ("Android will ask to join a network: tap CONNECT"). Seller side:
+  `Seller.OFF / NO_INTERNET / AVAILABLE / SERVING / LOST` ("Waiting for your
+  Internet", "You're sharing Internet", "Someone is using your Internet").
+  Also words for numbers: `cfaShort` ("57 CFA"), `data` ("11.5 MB"),
+  `duration`, `signalWord`, `upstreamWord` ("Mobile data"), price / minimum /
+  limit lines, payment words, and `wallet(entries, me)` = to pay / to receive /
+  Prok fees over pending ledger entries. Screens never read `Gateway.state`
+  or `TunnelClient.state` directly for display.
+- `MainActivity` (consumer): one layout, five sections in a `FrameLayout`,
+  a hand-made bottom bar (no AndroidX, so no BottomNavigationView). The
+  Internet tab picks its sub-screen from state on every refresh: sharing
+  active > buyer active or lost > confirmation (an offer was tapped) > share
+  setup > offer cards. A 2 s ticker refreshes counters while visible; node
+  callbacks refresh immediately. Get Internet: offer cards from
+  `node.offers()` (ranked by the engine) -> confirmation (price, minimum,
+  limit, signal, upstream, fee) -> CONNECT = `node.buy(peer)` and the engine
+  does Wi-Fi link -> contract -> tunnel -> VPN by itself; the VPN consent
+  callback (`node.vpnRequested`) is set by whichever screen is in front.
+  Share Internet: price / minimum charge / max data per customer ->
+  `node.setSelling(true, ...)`. STOP = `node.stopInternet`, STOP SHARING =
+  `node.setSelling(false)`. Earn: net earnings from the ledger (received
+  minus fees owed to Prok), relay switch = `node.setRelay`. Activity:
+  sessions from the store as cards; tap = detail dialog (date, data,
+  duration, price, final cost, Prok fee, payment) with MARK AS PAID /
+  RECEIVED / DISPUTE from the v0.7 settlement foundation. Wallet = accounting
+  view only ("Prok does not hold your money").
+- Start-up: the consumer screen starts the foreground service by itself when
+  every permission is already granted; otherwise the first Get / Share tap
+  walks the same permission -> notification -> Bluetooth flow as the lab
+  screen, then runs the tapped action.
+- Theme: `ProkTheme` on the platform Material theme, light and dark via
+  `values-night`, rounded cards and 56 dp primary buttons as drawables.
+  Nothing new in the manifest except the theme and `LabActivity`
+  (`exported=false`).
+- What normal users no longer see: GATT / BLE / WIFI_REQUEST / SESSION_START
+  / checkpoint internals, raw IDs (only their own short Prok ID on Profile),
+  logs, node start/stop buttons, routing controls. All of it is one tap away
+  under Profile > Developer / Diagnostics, with COPY LOG and COPY DIAG.
+
+## Automated tests (87)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 4. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

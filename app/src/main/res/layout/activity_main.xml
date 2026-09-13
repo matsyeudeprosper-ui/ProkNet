@@ -1,202 +1,230 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v0.8 consumer screen: one Activity, five tabs in a frame, bottom navigation. Wording comes from ProductState only. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:background="@color/bg">
 
-    <TextView
-        android:id="@+id/txtIdentity"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textStyle="bold"
-        android:text="ProkNet Lab" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-            android:gravity="center_vertical" android:textSize="12sp" android:text="Logs are long: copy them from here" />
-        <Button android:id="@+id/btnCopyLogTop" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="COPY LOG" />
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/txtService"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:text="Service: STOPPED" />
-
-    <TextView
-        android:id="@+id/txtStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:text="status" />
-
-    <TextView
-        android:id="@+id/txtWifiBanner"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="13sp"
-        android:textStyle="bold"
-        android:textColor="#000000"
-        android:padding="6dp"
-        android:visibility="gone"
-        android:text="" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button android:id="@+id/btnBuy" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="BUY" />
-        <Button android:id="@+id/btnSell" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="SELL" />
-        <Button android:id="@+id/btnRelay" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="RELAY" />
-        <Button android:id="@+id/btnLedger" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Ledger" />
-        <Button android:id="@+id/btnHistory" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="History" />
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/txtInternet"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:background="#FFF8E1"
-        android:padding="4dp"
-        android:text="Internet: off" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button android:id="@+id/btnProvide" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="dev: provide" />
-        <Button android:id="@+id/btnUseInternet" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="dev: use" />
-        <Button android:id="@+id/btnNetTest" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Net test" />
-        <Button android:id="@+id/btnCopyDiag" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="COPY DIAG" />
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/txtDiag"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="11sp"
-        android:typeface="monospace"
-        android:background="#F3F3F3"
-        android:padding="4dp"
-        android:text="diagnostics" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button android:id="@+id/btnStart" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Start" />
-        <Button android:id="@+id/btnStop" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Stop" />
-        <Button android:id="@+id/btnRename" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Name" />
-        <Button android:id="@+id/btnBattery" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Battery" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button android:id="@+id/btnRetry" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Retry" />
-        <Button android:id="@+id/btnWifi" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Wi-Fi link" />
-        <Button android:id="@+id/btnBigTest" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Big test" />
-        <Button android:id="@+id/btnSendFile" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Send file" />
-    </LinearLayout>
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Nearby (tap to select; [SELL price] = Internet offer, [key] = can encrypt):"
-        android:textSize="12sp" />
-
-    <ListView
-        android:id="@+id/listPeers"
-        android:layout_width="match_parent"
-        android:layout_height="100dp"
-        android:background="#EEEEEE" />
-
-    <TextView
-        android:id="@+id/txtSelected"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:text="Selected: none" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <EditText android:id="@+id/editMessage" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:hint="Message (encrypted)" android:inputType="text"
-            android:maxLength="20000" android:imeOptions="actionSend" />
-        <Button android:id="@+id/btnSend" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Send" />
-    </LinearLayout>
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Messages and transfers:"
-        android:textSize="12sp" />
-
-    <ListView
-        android:id="@+id/listMessages"
-        android:layout_width="match_parent"
-        android:layout_height="150dp"
-        android:background="#F4F8FF"
-        android:stackFromBottom="true"
-        android:transcriptMode="alwaysScroll" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-            android:text="Debug log:" android:textSize="12sp" android:gravity="center_vertical" />
-        <Button android:id="@+id/btnCopyLog" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Copy log" />
-        <Button android:id="@+id/btnShareLog" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Share" />
-        <Button android:id="@+id/btnClearLog" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Clear" />
-    </LinearLayout>
-
-    <ScrollView
-        android:id="@+id/scrollLog"
+    <FrameLayout
+        android:id="@+id/tabs"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:background="#111111">
-        <TextView
-            android:id="@+id/txtLog"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#B7F5B7"
-            android:typeface="monospace"
-            android:textSize="10sp"
-            android:padding="4dp" />
-    </ScrollView>
+        android:layout_weight="1">
+
+        <!-- ================= HOME ================= -->
+        <ScrollView android:id="@+id/tabHome" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+                    <TextView android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/bg_primary" android:gravity="center" android:text="P" android:textColor="@color/on_brand" android:textSize="24sp" android:textStyle="bold" />
+                    <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="12dp" android:text="Prok" style="@style/H1" />
+                    <TextView android:id="@+id/chipNode" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/bg_chip" android:paddingStart="12dp" android:paddingEnd="12dp" android:paddingTop="6dp" android:paddingBottom="6dp" android:text="Off" style="@style/Muted" />
+                </LinearLayout>
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:id="@+id/homeTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Not connected" style="@style/H2" />
+                    <TextView android:id="@+id/homeSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Start Prok to see people nearby" style="@style/Muted" />
+                    <TextView android:id="@+id/homeMoney" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" android:visibility="gone" style="@style/Body" />
+                </LinearLayout>
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginEnd="6dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Nearby" style="@style/Muted" />
+                        <TextView android:id="@+id/homeNearby" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 people" style="@style/H2" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginStart="6dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet offers" style="@style/Muted" />
+                        <TextView android:id="@+id/homeOffers" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0" style="@style/H2" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <Button android:id="@+id/btnGetInternet" android:text="Get Internet" style="@style/PrimaryButton" android:layout_marginBottom="10dp" />
+                <Button android:id="@+id/btnShareInternet" android:text="Share Internet" style="@style/SecondaryButton" />
+                <TextView android:id="@+id/homeNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:gravity="center" android:text="" style="@style/Muted" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ================= INTERNET ================= -->
+        <ScrollView android:id="@+id/tabInternet" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet" style="@style/H1" android:layout_marginBottom="12dp" />
+
+                <!-- offers -->
+                <LinearLayout android:id="@+id/netOffers" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+                    <TextView android:id="@+id/netOffersHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet offers near you" style="@style/Muted" android:layout_marginBottom="8dp" />
+                    <LinearLayout android:id="@+id/netOfferList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+                    <TextView android:id="@+id/netNoOffers" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="18dp" android:text="No Internet offers nearby yet.\nStay close to someone who is sharing." style="@style/Body" />
+                </LinearLayout>
+
+                <!-- confirm -->
+                <LinearLayout android:id="@+id/netConfirm" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                        <TextView android:id="@+id/confirmTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet available" style="@style/H2" />
+                        <TextView android:id="@+id/confirmPrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="5 CFA / MB" style="@style/Big" />
+                        <TextView android:id="@+id/confirmMin" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Minimum: 0 CFA" style="@style/Body" />
+                        <TextView android:id="@+id/confirmLimit" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Limit: Unlimited" style="@style/Body" />
+                        <TextView android:id="@+id/confirmSignal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Good signal · Mobile data" style="@style/Muted" />
+                        <TextView android:id="@+id/confirmFee" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Prok fee 5% is included in the price." style="@style/Muted" />
+                    </LinearLayout>
+                    <Button android:id="@+id/btnConnect" android:text="Connect" style="@style/PrimaryButton" android:layout_marginBottom="10dp" />
+                    <Button android:id="@+id/btnConfirmBack" android:text="Back" style="@style/SecondaryButton" />
+                </LinearLayout>
+
+                <!-- connecting / active -->
+                <LinearLayout android:id="@+id/netActive" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                        <TextView android:id="@+id/activeTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Finding provider…" style="@style/H2" />
+                        <TextView android:id="@+id/activeHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                        <ProgressBar android:id="@+id/activeProgress" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" style="?android:attr/progressBarStyleHorizontal" android:indeterminate="true" />
+                    </LinearLayout>
+                    <LinearLayout android:id="@+id/activeStats" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp" android:visibility="gone">
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginEnd="6dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Data used" style="@style/Muted" />
+                            <TextView android:id="@+id/activeData" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 B" style="@style/H2" />
+                        </LinearLayout>
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginStart="6dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Cost so far" style="@style/Muted" />
+                            <TextView android:id="@+id/activeCost" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" />
+                        </LinearLayout>
+                    </LinearLayout>
+                    <TextView android:id="@+id/activeDetail" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" android:layout_marginBottom="12dp" />
+                    <Button android:id="@+id/btnStopInternet" android:text="Stop" style="@style/DangerButton" />
+                </LinearLayout>
+
+                <!-- share setup -->
+                <LinearLayout android:id="@+id/netShareSetup" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share your Internet" style="@style/H2" />
+                        <TextView android:id="@+id/shareUpstream" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Price per MB (CFA)" style="@style/Muted" />
+                        <EditText android:id="@+id/sharePrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="number" android:text="5" style="@style/Body" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Minimum charge per customer (CFA, 0 = none)" style="@style/Muted" />
+                        <EditText android:id="@+id/shareMin" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="number" android:text="0" style="@style/Body" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Max data per customer (MB, 0 = unlimited)" style="@style/Muted" />
+                        <EditText android:id="@+id/shareMax" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="number" android:text="0" style="@style/Body" />
+                        <TextView android:id="@+id/shareFee" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Muted" />
+                    </LinearLayout>
+                    <Button android:id="@+id/btnStartSharing" android:text="Start sharing" style="@style/PrimaryButton" android:layout_marginBottom="10dp" />
+                    <Button android:id="@+id/btnShareBack" android:text="Back" style="@style/SecondaryButton" />
+                </LinearLayout>
+
+                <!-- share active -->
+                <LinearLayout android:id="@+id/netShareActive" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                        <TextView android:id="@+id/shareTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="You're sharing Internet" style="@style/H2" />
+                        <TextView android:id="@+id/shareHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                        <TextView android:id="@+id/shareTerms" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Body" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginEnd="6dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Data shared" style="@style/Muted" />
+                            <TextView android:id="@+id/shareData" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 B" style="@style/H2" />
+                        </LinearLayout>
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginStart="6dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Earned" style="@style/Muted" />
+                            <TextView android:id="@+id/shareEarned" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" />
+                        </LinearLayout>
+                    </LinearLayout>
+                    <TextView android:id="@+id/shareCustomer" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card_alt" android:padding="14dp" android:text="" style="@style/Body" android:layout_marginBottom="12dp" />
+                    <Button android:id="@+id/btnStopSharing" android:text="Stop sharing" style="@style/DangerButton" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ================= EARN ================= -->
+        <ScrollView android:id="@+id/tabEarn" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Earn" style="@style/H1" android:layout_marginBottom="12dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Total earned" style="@style/Muted" />
+                    <TextView android:id="@+id/earnTotal" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/Big" />
+                    <TextView android:id="@+id/earnSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Sharing Internet" style="@style/H2" />
+                    <TextView android:id="@+id/earnShare" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Body" />
+                    <Button android:id="@+id/btnEarnShare" android:text="Share Internet" style="@style/SecondaryButton" android:layout_marginTop="12dp" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Help ProkNet" style="@style/H2" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Let your phone help nearby users when possible. It carries small messages for others while you go about your day. Rewards for this come later." style="@style/Body" />
+                    <TextView android:id="@+id/earnRelayStats" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />
+                    <Switch android:id="@+id/switchRelay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Help nearby users" style="@style/Body" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ================= ACTIVITY ================= -->
+        <ScrollView android:id="@+id/tabActivity" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Activity" style="@style/H1" android:layout_marginBottom="12dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="12dp" android:layout_marginEnd="4dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="To pay" style="@style/Muted" />
+                        <TextView android:id="@+id/walletPay" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="12dp" android:layout_marginStart="4dp" android:layout_marginEnd="4dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="To receive" style="@style/Muted" />
+                        <TextView android:id="@+id/walletReceive" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="12dp" android:layout_marginStart="4dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Prok fees" style="@style/Muted" />
+                        <TextView android:id="@+id/walletFees" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="These are amounts to settle between people. Prok does not hold your money." style="@style/Muted" android:layout_marginBottom="12dp" />
+                <LinearLayout android:id="@+id/activityList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+                <TextView android:id="@+id/activityEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="18dp" android:text="No sessions yet." style="@style/Body" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ================= PROFILE ================= -->
+        <ScrollView android:id="@+id/tabProfile" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Profile" style="@style/H1" android:layout_marginBottom="12dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:id="@+id/profileName" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
+                    <TextView android:id="@+id/profileId" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                    <Button android:id="@+id/btnRename" android:text="Change name" style="@style/SecondaryButton" android:layout_marginTop="12dp" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Prok network" style="@style/H2" />
+                    <TextView android:id="@+id/profileService" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Body" />
+                    <Switch android:id="@+id/switchNode" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Keep Prok running" style="@style/Body" />
+                    <Button android:id="@+id/btnBattery" android:text="Allow running in background" style="@style/SecondaryButton" android:layout_marginTop="12dp" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="12dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Developer / Diagnostics" style="@style/H2" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Lab tools, raw states, logs and copy buttons for support." style="@style/Muted" />
+                    <Button android:id="@+id/btnDeveloper" android:text="Open developer screen" style="@style/SecondaryButton" android:layout_marginTop="12dp" />
+                </LinearLayout>
+                <TextView android:id="@+id/profileVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="" style="@style/Muted" />
+            </LinearLayout>
+        </ScrollView>
+    </FrameLayout>
+
+    <!-- bottom navigation -->
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp" android:orientation="horizontal" android:background="@color/nav_bg">
+        <LinearLayout android:id="@+id/navHome" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+            <ImageView android:id="@+id/navHomeIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_home" android:contentDescription="Home" />
+            <TextView android:id="@+id/navHomeText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Home" android:textSize="11sp" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/navInternet" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+            <ImageView android:id="@+id/navInternetIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_globe" android:contentDescription="Internet" />
+            <TextView android:id="@+id/navInternetText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Internet" android:textSize="11sp" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/navEarn" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+            <ImageView android:id="@+id/navEarnIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_coins" android:contentDescription="Earn" />
+            <TextView android:id="@+id/navEarnText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Earn" android:textSize="11sp" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/navActivity" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+            <ImageView android:id="@+id/navActivityIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_list" android:contentDescription="Activity" />
+            <TextView android:id="@+id/navActivityText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Activity" android:textSize="11sp" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/navProfile" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+            <ImageView android:id="@+id/navProfileIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_person" android:contentDescription="Profile" />
+            <TextView android:id="@+id/navProfileText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Profile" android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

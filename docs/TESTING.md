@@ -493,3 +493,49 @@ Section 15 unchanged. The v0.7.0 failure (`no contract answer within 15s`)
 is fixed at the root. Expected on both phones right after the Wi-Fi link is
 up: `CONTRACT AGREED ... (both signatures stored)`, then `SESSION OK`, VPN
 UP on A, and `CHECKPOINT #1` lines within 30 s of the first traffic.
+
+## 17. v0.8 consumer UI (two phones, same engine as v0.7.1)
+
+The engine is untouched, so section 15 still describes what happens
+underneath. This section is about what a normal user sees.
+
+Phone B (seller): open Prok. If permissions were granted before, the top
+right chip says **On** within a second. Tap **Share Internet**: set price 5,
+minimum 0, max 0, tap **Start sharing**. Expected: "You're sharing Internet /
+Available to people nearby", the terms line, Data shared 0 B, Earned 0 CFA.
+If mobile data is off: "Waiting for your Internet / Turn on mobile data or
+connect to Wi-Fi".
+
+Phone A (buyer): open Prok, tap **Get Internet**. Expected: one card
+"Internet available · <B's name>", "5 CFA / MB", "Good signal · Mobile data ·
+Checked". Tap it: confirmation with price, minimum, limit, fee. Tap
+**Connect**. Expected states in order: "Finding provider…" -> "Connecting…"
+(with "Android will ask to join a network: tap CONNECT") -> "Securing
+connection…" -> "Starting Internet…" (Android VPN dialog: tap OK) ->
+"Connected". Then Data used / Cost so far count up while browsing. B shows
+"Someone is using your Internet" with the customer line.
+
+Tap **Stop** on A. Expected: A back to the offer list; Activity tab on both
+phones shows the session card with the same final cost; tap it for the
+detail (date, data, duration, price, final cost, payment "To pay" on A,
+"To receive" on B; B also shows the Prok fee). Mark as paid / received work
+as in v0.7.
+
+Home: connection state, nearby count, offers count, session cost while
+buying, earnings while sharing. Earn: total earned, "Help ProkNet" switch.
+Profile: name, "Keep Prok running" switch, background permission, and
+**Open developer screen** = the complete v0.7.1 lab screen (Start/Stop,
+Wi-Fi link, Big test, Send file, BUY/SELL/RELAY, Ledger, History, dev
+Internet controls, COPY LOG, COPY DIAG). Dark mode: switch the phone to dark
+theme and reopen.
+
+### Checklist for the v0.8 report
+
+- Both phones: does anything on the five consumer tabs show an engine word
+  (GATT, WIFI, SESSION, checkpoint, hex ID)? Which screen?
+- A: the exact sequence of state titles seen, and whether the two Android
+  dialogs were announced by the hint line.
+- Final cost on A's and B's Activity cards (must match).
+- Anything you could not do from the consumer screens and had to do in the
+  developer screen.
+- COPY DIAG from the developer screen if something failed.

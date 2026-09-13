@@ -53,12 +53,21 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:theme="@style/ProkTheme"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- v0.8: the engineering screen, reached from Profile > Developer / Diagnostics -->
+        <activity
+            android:name=".ui.LabActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Prok Developer"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- v0.6: buyer-side VPN. Only the system may bind it. -->
         <service

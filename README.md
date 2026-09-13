@@ -14,7 +14,8 @@ PROKNET       communication / connectivity network
   `-- Internet       (optional gateway, later)
 ```
 
-This repository contains **ProkNet Lab**, built milestone by milestone.
+This repository contains the **Prok** app (engine + consumer UI, with the
+lab screen kept as a developer screen), built milestone by milestone.
 
 ## Milestones
 
@@ -30,7 +31,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.6.0 | Internet through another phone: provider/buyer roles, tunnel over the Wi-Fi link, VpnService client, gateway | phone test: session dropped at the first tunnel frame (main-thread socket write) |
 | v0.6.1 | Fix: link writes on a dedicated writer thread (core/LinkIo), real exception text, loopback link tests, copy buttons at the top | passed on two phones: A browses HTTPS through B with its own data OFF (2026-09-13) |
 | v0.7.0 | Connectivity Marketplace: BUY / SELL / RELAY, offers with price in the BLE scan, signed contract, signed usage checkpoints, exact CFA pricing + Prok fee, ledger, history | phone test: first CONTRACT_PROPOSE misrouted on the seller, buyer timed out |
-| v0.7.1 | Fix: tunnel frames routed by direction and role (pure, tested), regression test for the first-frame sequence | built, 83 JVM tests pass, awaiting phone test |
+| v0.7.1 | Fix: tunnel frames routed by direction and role (pure, tested), regression test for the first-frame sequence | passed on two phones: mutually signed settlement, 11.47 MB -> 57.35 CFA (2026-09-13) |
+| v0.8.0 | Consumer product UI: Home / Internet / Earn / Activity / Profile, plain words, one state-translation layer (ProductState); the whole lab screen kept under Profile > Developer | built, 87 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 
@@ -183,10 +185,10 @@ install (allow "install unknown apps" for the browser when asked).
 ```
 app/                      Android app (Kotlin, no AndroidX, plain Activity)
   src/main/java/net/prok/proknet/
-    core/                 Identity, Packet (wire format), MessageStore (+queue), DiagLog
+    core/                 Identity, Packet, MessageStore, Crypto, Routing, Tunnel, Market, ProductState (engine -> user words), DiagLog
     ble/                  Advertiser, GATT server, Scanner, Sender, DeliveryQueue, ProkNetNode
     service/              ProkNetService (foreground service owning the node)
-    ui/                   MainActivity (the one screen)
+    ui/                   MainActivity (v0.8 consumer screen), LabActivity (developer / diagnostics)
     ProkNetApp.kt         Application: creates the node once per process
 build.ps1                 The build command
 dist/                     Predictable APK output location (APK itself not committed)

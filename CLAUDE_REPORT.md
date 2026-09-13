@@ -1,86 +1,110 @@
-# CLAUDE_REPORT - ProkNet v0.7.1 "contract routing fix"
+# CLAUDE_REPORT - ProkNet v0.8.0 "Consumer product UI"
 
 Date: 2026-09-13
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 83/83 automated tests pass, released, NOT yet retested on phones**
+Status: **built, 87/87 automated tests pass, released, NOT yet tested on phones**
 
-v0.7.0 phone result: offer visible, WIFI UP, signed handshake, `STATE
-AGREEING - proposing 5 CFA/MB`, then `no contract answer within 15s`. The
-seller never logged a proposal.
+v0.7.1 phone result (before this milestone): PASSED. Mutually signed
+settlement on both phones, session b33fedf4, checkpoint #5, 11.47 MB ->
+57.35 CFA, fee 2.87, seller net 54.48, the unsigned #6 ignored on both.
 
-## 1. Root cause (confirmed in the code)
+## 1. What v0.8 is
 
-`ProkNetNode.tunnelSink.onTunnelFrame` routed a frame to the seller Gateway
-only if it was SESSION_START or came from an already-registered buyer.
-The v0.7 negotiation starts with CONTRACT_PROPOSE, before any buyer is
-registered, so on the seller the first proposal went to its own buyer
-TunnelClient, which ignored it (no matching provider). Gateway.onProposal
-was never reached; the buyer's 15 s timer fired. Deterministic, every time.
+A consumer screen on top of the unchanged v0.7.1 engine. Not one line of
+the BLE, Wi-Fi, crypto, tunnel, VPN, gateway or marketplace code changed;
+the diff is `ui/`, `res/`, one new pure file `core/ProductState.kt`, its
+test, the manifest (theme + LabActivity) and the version.
 
-## 2. Fix
+## 2. Screens (bottom navigation: Home / Internet / Earn / Activity / Profile)
 
-- `Tunnel.route(type, providing)` (pure): every tunnel frame type is
-  classified by direction. Buyer -> seller: CONTRACT_PROPOSE, SESSION_START,
-  OPEN_TCP, DNS_REQUEST, USAGE_ACK. Seller -> buyer: CONTRACT_ACCEPT,
-  CONTRACT_REJECT, SESSION_OK, TCP_OPEN_OK, DNS_RESPONSE, UPSTREAM_STATE,
-  USAGE_CHECKPOINT. Both ways: SESSION_END, TCP_DATA, TCP_CLOSE, ERROR,
-  KEEPALIVE. A providing phone hands buyer->seller and bidirectional frames
-  to the Gateway; a non-providing phone hands seller->buyer and bidirectional
-  frames to the TunnelClient; a frame in the wrong direction for the role is
-  logged as misdirected and dropped. Nothing depends on `buyerShort`.
-- The node uses it. Gateway.onFrame already accepted CONTRACT_PROPOSE and
-  SESSION_START before a session and refuses everything else pre-session.
-- A phone sells or buys on a link, never both (`setSelling` refuses while
-  buying, `buy` refuses while selling), which is what makes direction + role
-  sufficient.
+- **Home**: Prok mark and name, On/Off chip, connection card (buyer or
+  seller state in plain words), Nearby (people in range) and Internet
+  offers counters, session cost while buying or earnings while sharing, two
+  big actions GET INTERNET / SHARE INTERNET.
+- **Internet, Get Internet**: offer cards "Internet available · <name> /
+  5 CFA / MB / Good signal · Mobile data · Checked" from `node.offers()`
+  (engine ranking). Tap -> confirmation (price, minimum, limit, signal,
+  upstream, fee) -> CONNECT. Then the engine runs Wi-Fi link -> contract ->
+  tunnel -> VPN by itself and the screen shows "Finding provider…" ->
+  "Connecting…" -> "Securing connection…" -> "Starting Internet…" ->
+  "Connected", with a hint line for the two Android dialogs. Active view:
+  Data used, Cost so far, price · duration · via <name>, STOP.
+- **Internet, Share Internet**: price per MB, minimum charge, max data per
+  customer, START SHARING. Active view: "You're sharing Internet / Available
+  to people nearby" or "Someone is using your Internet", terms line, Data
+  shared, Earned, customer line, STOP SHARING.
+- **Earn**: total earned (received minus Prok fees, from the ledger),
+  sessions shared, "Help ProkNet - Let your phone help nearby users when
+  possible" switch (= RELAY) with what it has carried so far.
+- **Activity**: To pay / To receive / Prok fees as an accounting view ("Prok
+  does not hold your money"), then session cards (who, date, data, cost,
+  payment word). Tap: date/time, data, duration, price, final cost, Prok fee
+  (seller), payment status; MARK AS PAID / RECEIVED / DISPUTE when pending.
+  No hashes, signatures or IDs.
+- **Profile**: name (change), own short Prok ID, "Keep Prok running" switch,
+  background-battery permission, **Developer / Diagnostics -> Open developer
+  screen** = the complete v0.7.1 lab screen (`LabActivity`, same layout and
+  code, class renamed): Start/Stop, Wi-Fi link, Big test, Send file,
+  BUY/SELL/RELAY, Ledger, History, dev provide/use/Net test, peers with
+  IDs, raw state, log, COPY LOG, COPY DIAG.
 
-Audit of every marketplace frame's direction and handler is in
-`TunnelRoutingTest.every_marketplace_frame_is_routed_by_direction_on_both_roles`:
-all 17 types are classified, and the test asserts the count.
+Light and dark themes (`values-night`). Cards, chips, 56 dp primary
+buttons, five vector icons, no AndroidX.
 
-## 3. Regression test
+## 3. The one translation layer
 
-`TunnelRoutingTest.proposal_accept_and_session_start_sequence_on_a_fresh_link`
-runs the real first-frame sequence with the real pure pieces (routing,
-contract encode/decode, `acceptableProposal`, both signatures, contract
-hash, SESSION_START parsing, first checkpoint direction) with only the
-sockets simulated: seller providing, no buyer registered, CONTRACT_PROPOSE
-arrives -> routed to GATEWAY -> validated and signed -> CONTRACT_ACCEPT
-routed to CLIENT -> buyer verifies and stores -> SESSION_START under the
-contract hash routed to GATEWAY and matches.
-`first_contract_proposal_reaches_the_seller_gateway_before_any_buyer_is_registered`
-also evaluates the v0.7.0 rule, kept as a helper in the test, and asserts
-that it misroutes the same frame to CLIENT: the test documents the bug and
-fails against the old rule.
+`core/ProductState` (pure, 4 tests): engine inputs -> `Buyer` /
+`Seller` states -> titles and hints; `cfaShort` ("57 CFA"), `data`
+("11.5 MB"), `duration`, `signalWord`, `upstreamWord`, price / minimum /
+limit lines, payment words, `wallet()` (to pay / to receive / Prok fees over
+pending ledger entries). The test walks the whole buyer setup from IDLE to
+ONLINE and LOST through the real phase / state strings, and asserts that no
+seller title or hint contains "upstream", "gateway" or "provider ready".
+`MainActivity` never formats an engine state itself.
 
-Totals: 83 tests (`TunnelRoutingTest` 3 new), all green; APK gated.
+## 4. Start-up without a Start button
 
-## 4. Preserved
+If every permission is already granted and Bluetooth is on, opening the app
+starts the foreground service. Otherwise the first GET INTERNET / SHARE
+INTERNET / "Keep Prok running" walks the same permission -> notification ->
+Bluetooth flow as the lab screen, then performs the tapped action. VPN
+consent is requested by whichever screen is in front (both set
+`node.vpnRequested` in onStart).
 
-v0.6.1 link, VPN, DNS/TCP, transfers, crypto: untouched. The only code
-changes are `Tunnel.route`, the sink in `ProkNetNode`, the version and docs.
+## 5. Tests and build
 
-## 5. Retest
-
-`docs/TESTING.md` section 15, unchanged. Expected on both phones right after
-WIFI UP: `CONTRACT AGREED ... (both signatures stored)`, then `SESSION OK`,
-`VPN UP` on A, `INTERNET OK`, browsing, `CHECKPOINT #n` lines on both with
-identical "agreed" amounts, `SETTLEMENT` on both after STOP BUY, ledger.
-
-## 6. Exact APK / release
+87 tests (`ProductStateTest` 4 new), all green, APK gated. Build 12,
+versionName 0.8.0, label "Prok", 1.1 MB,
+SHA256 `55cef51f392b46044e5027a9c91d2e266dc9b9a1776bdcfae80062f9cec31721`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.7.1
-Build 11: 1.06 MB, SHA256 `f12bdcb806747f721bf85f348622d8bdbb3c4ced3caa30acc7bcfb47d38c8723`,
-versionCode 11, versionName 0.7.1. Commit `d1b9b22396ab1ba443e5e6dbe8c77ed7c640058c`
-on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.8.0
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 7. Lesson recorded
+## 6. Preserved
 
-Routing that depends on state created later in the same protocol (a
-registered buyer) cannot handle the first frame. Direction + role is the
-right key, and it is now a pure function with a test that enumerates every
-frame type, so adding a frame without classifying it fails the build.
+Everything: same package, same database, same identity and keys, same
+notification, same protocol. A v0.7.1 phone and a v0.8.0 phone
+interoperate. The lab screen is byte-for-byte the v0.7.1 screen apart from
+the class name and layout name.
+
+## 7. Decisions ChatGPT may want to change
+
+- The confirmation screen shows "Minimum: 0 CFA" and "Limit: set by the
+  provider": the BLE advert carries only the price, the minimum and limit
+  arrive in the signed contract. Showing them before CONNECT would need one
+  more byte pair in the scan response (cheap, but a protocol change, so not
+  done in a UI milestone).
+- Home's "Nearby" counts every Prok phone in range, not only sellers.
+- After a lost connection the card stays with "Connection lost / Move
+  closer..." until the user taps Close; nothing reconnects by itself.
+- Earn's relay line shows carried messages; there is no relay reward yet,
+  the text says so.
+
+## 8. Retest
+
+`docs/TESTING.md` section 17 (consumer flow) with its checklist; section 15
+still describes the engine underneath.

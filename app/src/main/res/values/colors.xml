@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#F4F6FA</color>
+    <color name="card">#FFFFFF</color>
+    <color name="card_alt">#EEF3FF</color>
+    <color name="text">#14181F</color>
+    <color name="text_muted">#66707F</color>
+    <color name="brand">#1B5FE0</color>
+    <color name="on_brand">#FFFFFF</color>
+    <color name="ok">#1E9E5A</color>
+    <color name="warn">#E0A100</color>
+    <color name="danger">#D93B3B</color>
+    <color name="chip_bg">#E3EAF7</color>
+    <color name="nav_bg">#FFFFFF</color>
+    <color name="nav_active">#1B5FE0</color>
+    <color name="nav_inactive">#8A93A3</color>
+    <color name="divider">#E1E5EC</color>
+</resources>
