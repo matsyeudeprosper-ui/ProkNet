@@ -129,7 +129,31 @@ class ProkNetService : Service(), ProkNetNode.Listener {
 
     override fun onPeers(peers: List<Peer>) { updateNotification(node.statusLine()) }
     override fun onMessagesChanged() { updateNotification(node.statusLine()) }
-    override fun onStatus(status: String) { updateNotification(status) }
+    override fun onStatus(status: String) { updateNotification(status); checkApproval() }
+
+    private var approvalNotified = false
+    /** The Wi-Fi join dialog only appears while a ProkNet screen is in front: ask the user to open the app. */
+    private fun checkApproval() {
+        val need = node.wifi.approvalNeeded && !ProkNetApp.appVisible()
+        if (need && !approvalNotified) {
+            approvalNotified = true
+            try {
+                val open = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (nm.getNotificationChannel(CHANNEL_ALERT) == null)
+                    nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERT, "ProkNet approvals", NotificationManager.IMPORTANCE_HIGH))
+                nm.notify(NOTIF_APPROVAL, Notification.Builder(this, CHANNEL_ALERT)
+                    .setSmallIcon(R.drawable.ic_notify).setContentTitle("ProkNet: open the app to join Wi-Fi")
+                    .setContentText("Android needs ProkNet in front to show the connect dialog. Tap here, then tap CONNECT.")
+                    .setContentIntent(open).setAutoCancel(true).setCategory(Notification.CATEGORY_CALL).build())
+                DiagLog.i(tag, "approval notification posted (app not visible)")
+            } catch (e: Exception) { DiagLog.w(tag, "approval notification: " + e) }
+        } else if (!node.wifi.approvalNeeded && approvalNotified) {
+            approvalNotified = false
+            try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_APPROVAL) } catch (_: Exception) {}
+        }
+    }
 
     private fun updateNotification(text: String) {
         if (text == lastNotifText || notifPending) return
@@ -181,7 +205,9 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         const val ACTION_START = "net.prok.proknet.START"
         const val ACTION_STOP = "net.prok.proknet.STOP"
         const val CHANNEL_ID = "proknet_node"
+        const val CHANNEL_ALERT = "proknet_alert"
         const val NOTIF_ID = 1001
+        const val NOTIF_APPROVAL = 1002
 
         /** True between onCreate and onDestroy of the service instance. */
         @Volatile var running = false

@@ -36,9 +36,22 @@ class WireTest {
         val offer = Wire.parseControl(Wire.wifiOffer("AndroidShare_1234", "s3cretpass", 47741, listOf("192.168.43.1", "10.0.0.1"))) as Wire.Control.WifiOffer
         assertEquals("AndroidShare_1234", offer.ssid); assertEquals("s3cretpass", offer.pass); assertEquals(47741, offer.port)
         assertEquals(listOf("192.168.43.1", "10.0.0.1"), offer.ips)
+        assertEquals(Wire.SEC_UNKNOWN, offer.security); assertFalse(offer.hidden)
+        val o2 = Wire.parseControl(Wire.wifiOffer("S", "p", 5, listOf("10.0.0.1"), Wire.SEC_WPA3, true)) as Wire.Control.WifiOffer
+        assertEquals(Wire.SEC_WPA3, o2.security); assertTrue(o2.hidden)
+        // a v0.5.0 offer without the trailing fields still parses
+        val old = Wire.wifiOffer("S", "p", 5, listOf("10.0.0.1")).let { it.copyOfRange(0, it.size - 2) }
+        val o3 = Wire.parseControl(old) as Wire.Control.WifiOffer
+        assertEquals("S", o3.ssid); assertEquals(Wire.SEC_UNKNOWN, o3.security)
+        // an offer without IPs is still valid: the client can learn the host from DHCP
+        assertNotNull(Wire.parseControl(Wire.wifiOffer("S", "p", 5, emptyList())))
+        assertEquals(listOf(Wire.SEC_WPA2), Wire.joinAttempts(Wire.SEC_WPA2))
+        assertEquals(listOf(Wire.SEC_WPA3), Wire.joinAttempts(Wire.SEC_WPA3))
+        assertEquals(listOf(Wire.SEC_WPA2, Wire.SEC_WPA3), Wire.joinAttempts(Wire.SEC_TRANSITION))
+        assertEquals(listOf(Wire.SEC_WPA2, Wire.SEC_WPA3), Wire.joinAttempts(Wire.SEC_UNKNOWN))
         assertTrue(Wire.parseControl(Wire.wifiCancel()) is Wire.Control.WifiCancel)
         assertNull(Wire.parseControl(null)); assertNull(Wire.parseControl(ByteArray(0))); assertNull(Wire.parseControl(byteArrayOf(9)))
-        assertNull(Wire.parseControl(Wire.wifiOffer("x", "", 1, listOf("1.2.3.4")).copyOfRange(0, 4)))
+        assertNull(Wire.parseControl(Wire.wifiOffer("xy", "", 1, listOf("1.2.3.4")).copyOfRange(0, 3)))
         val rnd = java.util.Random(5)
         repeat(300) { Wire.parseControl(ByteArray(rnd.nextInt(80)).also { rnd.nextBytes(it) }) }
     }

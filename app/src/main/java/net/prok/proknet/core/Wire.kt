@@ -46,22 +46,43 @@ object Wire {
     const val OP_WIFI_OFFER = 2
     const val OP_WIFI_CANCEL = 3
 
+    /** Hotspot security as reported by the host (v0.5.1). */
+    const val SEC_UNKNOWN = 0
+    const val SEC_WPA2 = 1
+    const val SEC_WPA3 = 2
+    const val SEC_TRANSITION = 3
+    const val SEC_OPEN = 4
+
     sealed class Control {
         class WifiRequest(val port: Int) : Control()
-        class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>) : Control()
+        class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
         object WifiCancel : Control()
+    }
+
+    /**
+     * Which specifier(s) to try for a hotspot of the given security, in order.
+     * A WPA2 specifier matches WPA2 and transition-mode networks; a WPA3
+     * specifier is needed for SAE-only hotspots. Unknown: try both.
+     */
+    fun joinAttempts(security: Int): List<Int> = when (security) {
+        SEC_WPA2 -> listOf(SEC_WPA2)
+        SEC_WPA3 -> listOf(SEC_WPA3)
+        SEC_OPEN -> listOf(SEC_OPEN)
+        SEC_TRANSITION -> listOf(SEC_WPA2, SEC_WPA3)
+        else -> listOf(SEC_WPA2, SEC_WPA3)
     }
 
     fun wifiRequest(port: Int): ByteArray = ByteBuffer.allocate(3).put(OP_WIFI_REQUEST.toByte()).putShort(port.toShort()).array()
     fun wifiCancel(): ByteArray = byteArrayOf(OP_WIFI_CANCEL.toByte())
 
-    fun wifiOffer(ssid: String, pass: String, port: Int, ips: List<String>): ByteArray {
+    fun wifiOffer(ssid: String, pass: String, port: Int, ips: List<String>, security: Int = SEC_UNKNOWN, hidden: Boolean = false): ByteArray {
         val s = ssid.toByteArray(Charsets.UTF_8); val p = pass.toByteArray(Charsets.UTF_8)
         require(s.size <= 255 && p.size <= 255 && ips.size <= 255)
         val ipBytes = ips.map { it.toByteArray(Charsets.UTF_8) }
-        val b = ByteBuffer.allocate(1 + 1 + s.size + 1 + p.size + 2 + 1 + ipBytes.sumOf { 1 + it.size })
+        val b = ByteBuffer.allocate(1 + 1 + s.size + 1 + p.size + 2 + 1 + ipBytes.sumOf { 1 + it.size } + 2)
         b.put(OP_WIFI_OFFER.toByte()).put(s.size.toByte()).put(s).put(p.size.toByte()).put(p).putShort(port.toShort()).put(ips.size.toByte())
         for (ip in ipBytes) { b.put(ip.size.toByte()); b.put(ip) }
+        b.put(security.toByte()).put(if (hidden) 1 else 0)
         return b.array()
     }
 
@@ -79,7 +100,10 @@ object Wire {
                     val n = b.get().toInt() and 0xFF
                     val ips = ArrayList<String>()
                     repeat(n) { val l = b.get().toInt() and 0xFF; ips.add(String(ByteArray(l).also { b.get(it) }, Charsets.UTF_8)) }
-                    if (ssid.isEmpty() || port == 0 || ips.isEmpty()) null else Control.WifiOffer(ssid, pass, port, ips)
+                    // v0.5.1 trailing fields; absent in v0.5.0 offers
+                    val sec = if (b.remaining() >= 1) b.get().toInt() and 0xFF else SEC_UNKNOWN
+                    val hidden = if (b.remaining() >= 1) b.get().toInt() != 0 else false
+                    if (ssid.isEmpty() || port == 0) null else Control.WifiOffer(ssid, pass, port, ips, sec, hidden)
                 }
                 else -> null
             }

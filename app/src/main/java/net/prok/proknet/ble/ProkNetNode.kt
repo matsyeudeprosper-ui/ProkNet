@@ -61,6 +61,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     val wifi = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
         override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
+        override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
     })
     private val transports: List<Transport> get() = listOf(wifi, ble)
 
@@ -331,7 +332,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!isRunning) return bt + " | node stopped | " + q
         val sb = StringBuilder(bt)
         sb.append(" | ble: ").append(ble.linkState())
-        sb.append(" | wifi: ").append(wifi.state.state.name.lowercase()).append(wifi.linkedPeer?.let { " prok-" + it } ?: "")
+        sb.append(" | wifi: ").append(wifi.phase).append(wifi.linkedPeer?.let { " prok-" + it } ?: "")
         sb.append(" | keys ").append(store.peerKeyCount())
         sb.append(" | ").append(q)
         if (extra != null) sb.append(" | ").append(extra)

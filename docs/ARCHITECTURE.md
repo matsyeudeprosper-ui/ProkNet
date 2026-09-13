@@ -354,8 +354,28 @@ initiator (wants bulk)                          host
 ```
 
 - Decisions live in `core/LinkState.kt` (pure, tested): roles, tie-break when
-  both request (lower ID hosts), step timeouts (45 s), retry backoff after
+  both request (lower ID hosts), step timeouts (120 s), retry backoff after
   failures (5 s doubling to 60 s), loss handling.
+- v0.5.1 join details, learned from the first phone test:
+  - The host reads the hotspot's real security type (`SoftApConfiguration`:
+    WPA2, WPA3-SAE, transition or open) and sends it in the offer. The client
+    builds the matching `WifiNetworkSpecifier` (`setWpa2Passphrase` vs
+    `setWpa3Passphrase`); for transition/unknown it tries WPA2 then WPA3.
+    A WPA2 specifier never matches a WPA3-only hotspot: that is one way the
+    request ends in `onUnavailable`.
+  - The client no longer trusts offered IPs first. After `onAvailable` it
+    reads the granted network's `LinkProperties`: the DHCP server address
+    (Android 11+) and the default-route gateway ARE the hotspot phone. Offered
+    IPs are the last resort. On the host, addresses of the phone's own Wi-Fi
+    network are excluded before choosing candidates.
+  - Android shows the "connect to device?" dialog only while the requesting
+    app has a visible Activity. The transport waits for `appVisible()`
+    before calling `requestNetwork`, the UI shows a banner, and the service
+    posts a high-priority notification that opens the app.
+  - Every `NetworkCallback` event is logged with capabilities, SSID, link
+    addresses, routes and DHCP server; a scan diagnostic logs whether the
+    hotspot SSID is visible from the client and on which frequency.
+  - Phases for the UI: REQUESTING -> OFFERED -> JOINING -> TCP -> AUTH -> WIFI UP.
 - Credentials are only ever inside an end-to-end encrypted control message.
 - The link is bound to the peer's identity by the handshake; addresses are
   transport details.

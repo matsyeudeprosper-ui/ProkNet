@@ -53,6 +53,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private lateinit var txtService: TextView
     private lateinit var txtStatus: TextView
     private lateinit var txtDiag: TextView
+    private lateinit var txtWifiBanner: TextView
     private lateinit var txtSelected: TextView
     private lateinit var txtLog: TextView
     private lateinit var scrollLog: ScrollView
@@ -87,6 +88,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         txtService = findViewById(R.id.txtService)
         txtStatus = findViewById(R.id.txtStatus)
         txtDiag = findViewById(R.id.txtDiag)
+        txtWifiBanner = findViewById(R.id.txtWifiBanner)
         txtSelected = findViewById(R.id.txtSelected)
         txtLog = findViewById(R.id.txtLog)
         scrollLog = findViewById(R.id.scrollLog)
@@ -128,6 +130,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     override fun onStart() {
         super.onStart()
+        ProkNetApp.visibleActivities++
         txtLog.text = DiagLog.text() + "\n"
         scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         DiagLog.addListener(logListener)
@@ -140,6 +143,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     override fun onStop() {
+        ProkNetApp.visibleActivities = maxOf(0, ProkNetApp.visibleActivities - 1)
         DiagLog.i(tag, "activity hidden (background) - node continues in the service: " + node.statusLine())
         node.removeListener(this)
         DiagLog.removeListener(logListener)
@@ -250,6 +254,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val peer = selected ?: run { toast("Select a peer first"); return }
         if (!node.isRunning) { toast("Press Start first"); return }
         if (!peer.inRange) { toast("Peer must be in BLE range to negotiate Wi-Fi"); return }
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        if (!wm.isWifiEnabled) {
+            DiagLog.w(tag, "Wi-Fi is off: opening the Wi-Fi panel (turn it on, then press Wi-Fi link again)")
+            toast("Turn Wi-Fi on first (both phones)")
+            try {
+                if (Build.VERSION.SDK_INT >= 29) startActivity(Intent(Settings.Panel.ACTION_WIFI))
+                else @Suppress("DEPRECATION") wm.setWifiEnabled(true)
+            } catch (e: Exception) { DiagLog.w(tag, "wifi panel: " + e) }
+            return
+        }
         DiagLog.i(tag, "Wi-Fi link requested with " + peer.label)
         if (!node.requestWifi(peer)) toast("Cannot start Wi-Fi link now (see log)")
         else toast("Negotiating Wi-Fi with " + peer.label + ": answer the connect dialog if it appears")
@@ -395,6 +409,25 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshDiag() {
+        val phase = node.wifi.phase
+        when {
+            node.wifi.approvalNeeded -> {
+                txtWifiBanner.visibility = android.view.View.VISIBLE
+                txtWifiBanner.setBackgroundColor(0xFFFFE082.toInt())
+                txtWifiBanner.text = "WI-FI: " + phase + "\nAndroid will ask to connect to a network: tap CONNECT. Keep this screen open."
+            }
+            phase == "WIFI UP" -> {
+                txtWifiBanner.visibility = android.view.View.VISIBLE
+                txtWifiBanner.setBackgroundColor(0xFFB9F6CA.toInt())
+                txtWifiBanner.text = "WI-FI UP with prok-" + (node.wifi.linkedPeer ?: "?") + " - big transfers go over Wi-Fi now"
+            }
+            phase == "IDLE" || phase.startsWith("DOWN") -> txtWifiBanner.visibility = android.view.View.GONE
+            else -> {
+                txtWifiBanner.visibility = android.view.View.VISIBLE
+                txtWifiBanner.setBackgroundColor(0xFFE3F2FD.toInt())
+                txtWifiBanner.text = "WI-FI: " + phase + "   (REQUESTING > OFFERED > JOINING > TCP > AUTH > WIFI UP)"
+            }
+        }
         val xfer = node.engine.inFlight?.let { "transfer " + it.substring(0, 6) + " " + node.engine.inFlightProgress + "%" } ?: "no transfer"
         val active = node.wifi.linkedPeer?.let { "wifi (prok-" + it + ")" } ?: "ble"
         txtDiag.text = "fp " + node.identity.fingerprint + "\n" +

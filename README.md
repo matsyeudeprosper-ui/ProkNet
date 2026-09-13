@@ -25,7 +25,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.3.0 | 2B: background operation via foreground service | passed on two real phones (2026-09-13) |
 | v0.4.0 | 2C1: first one-relay STORE -> CARRY -> FORWARD | superseded by v0.4.1 before testing |
 | v0.4.1 | 2C1 hardening: explicit last-hop ID, JVM routing tests gate the build | built, awaiting three-phone test |
-| v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | built, 48 JVM tests pass, awaiting phone test |
+| v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | passed on two phones except the Wi-Fi link (2026-09-13) |
+| v0.5.1 | Wi-Fi join fix: security-aware join, host address from DHCP, approval banner, phase line | built, 48 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 

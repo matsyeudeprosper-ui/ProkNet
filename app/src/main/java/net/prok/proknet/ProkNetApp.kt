@@ -22,5 +22,9 @@ class ProkNetApp : Application() {
     companion object {
         fun node(context: android.content.Context): ProkNetNode =
             (context.applicationContext as ProkNetApp).node
+
+        /** Number of ProkNet activities currently started (visible). The Wi-Fi join dialog needs one. */
+        @Volatile var visibleActivities = 0
+        fun appVisible(): Boolean = visibleActivities > 0
     }
 }

@@ -339,3 +339,33 @@ What to send back: Copy log from both phones after 11.5 and 11.7.
 - [ ] 11.7 Wi-Fi negotiated automatically for a big payload
 - [ ] 11.8 resume after link loss
 - [ ] 11.9 background operation unchanged
+
+## 12. v0.5.1 Wi-Fi link (two phones) - the only goal: WIFI UP once, then 1 MB over Wi-Fi
+
+Both phones on v0.5.1. Wi-Fi ON, Location ON, Bluetooth ON on both. Keep the
+ProkNet screen OPEN on both phones during the whole test.
+
+1. Start both. Wait for `[key]` on both peer lists.
+2. On A select B and press **Wi-Fi link**. Watch the banner on A:
+   `REQUESTING` -> `OFFERED` -> `JOINING (tap CONNECT in the Android dialog)`.
+3. A system dialog appears on A (it may take up to 30 s: Android scans for the
+   hotspot). Tap **CONNECT** (French: "Se connecter"). If the dialog shows a
+   list, choose the AndroidShare_xxxx entry.
+4. Banner: `TCP` -> `AUTH` -> green `WI-FI UP with prok-B`.
+5. On A press **Big test** -> "1 MB binary". It should finish in seconds with
+   `via wifi`. B shows `<= prok-A [xfer e2e received] file test-1m.bin`.
+6. Copy log from BOTH phones, whatever happened.
+
+If it fails, the log now says why. Look for:
+
+| Log line on A (client) | Meaning |
+|---|---|
+| `scan: SSID ... NOT visible` | the hotspot is on a band A cannot see, or not up; retry with B's Wi-Fi on but not connected to any network |
+| `scan: SSID ... visible, 5xxx MHz, caps [...]` then `onUnavailable` | security mismatch or dialog not confirmed; note the caps text |
+| `requestNetwork.onUnavailable ... attempt 1, WPA2` then `retrying ... WPA3` | expected on WPA3 hotspots; the second attempt should succeed |
+| `PHASE JOINING (open the app to approve)` | the app was not in front; open it |
+| `TCP: host candidates in order [...]` then `TCP connect x failed` | joined but the host address is wrong; send both logs |
+| `AUTH: ...` lines | handshake progress; `INVALID` means key mismatch |
+
+Log line on B (host): `hotspot started: ssid=... security=...` and
+`hotspot addresses (own Wi-Fi network excluded): [...]` tell what B offered.
