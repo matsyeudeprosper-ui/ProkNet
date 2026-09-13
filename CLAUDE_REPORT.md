@@ -1,77 +1,86 @@
-# CLAUDE_REPORT - Milestone 2A: queued delayed delivery (ProkNet Lab v0.2.0)
+# CLAUDE_REPORT - Milestone 2B: background operation (ProkNet Lab v0.3.0)
 
-Date: 2026-09-12
+Date: 2026-09-13
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
 Status: **built, released, NOT yet tested on real phones** (Mike has the APK)
 
-Milestone 1 (v0.1.0) passed on two real phones on 2026-09-12: discovery,
-both-direction messages, 300-character message, persistent identity and
-storage, Bluetooth disappearance/reappearance. Its report is in the git
-history at commit `4e394d7`.
+History: Milestone 1 (v0.1.0) passed on two real phones 2026-09-12.
+Milestone 2A (v0.2.0, queued delivery + receipts) passed on two real phones
+2026-09-13: normal delivery, pending while peer unavailable, pending survives
+restart, five queued messages delivered in order, Retry with no duplicates,
+every message exactly once. Earlier reports are in git history
+(`4e394d7`, `db703ca`).
 
 ## 1. What I built
 
-Exactly the 2A list, Kotlin only, no Python:
-
 | Requirement | Done | How |
 |---|---|---|
-| Message stored as pending when peer unavailable | yes | every Send goes through `DeliveryQueue`; a row with status `pending` in SQLite |
-| Auto-retry when the peer reappears, no second Send | yes | scanner diff detects a peer coming back into range, clears its backoff, pumps immediately |
-| States pending / sending / delivered / failed / expired | yes | `MsgStatus`, shown in the message list as `[pending try 3]`, `[delivered]`, `[failed ...]` |
-| Pending survives app restart | yes | SQLite; on start anything stuck in `sending` returns to `pending` |
-| Delivery receipt, not just a BLE write ack | yes | new RECEIPT characteristic read after the write; only `ACCEPTED`/`DUPLICATE` with the matching message ID counts |
-| No duplicate delivery | yes | unique (msg_id, direction) index on the receiver; retries reuse the same message ID; receipt `DUPLICATE` closes the loop |
-| Clear logs for queue, retry, receipt, delivery | yes | `QUEUE:` ENQUEUED / ATTEMPT / RETRY LATER / DELIVERED / FAILED / EXPIRED; `GATT-C:` reading RECEIPT / SEND DELIVERED; `GATT-S:` receipt ACCEPTED/DUPLICATE |
-| UI stays simple | yes | one new **Retry** button, peers marked `NOT IN RANGE`, `queue N` in the status line |
+| Foreground service with persistent notification | yes | `service/ProkNetService.kt`, channel "ProkNet node", notification shows the live status line and a "Stop ProkNet" action |
+| Starting ProkNet starts the service | yes | Start button -> `startForegroundService`; the service calls `node.start()` |
+| Service owns the node lifecycle, not the Activity | yes | node is created by `ProkNetApp` (Application), started/stopped only by the service; Activity only adds/removes itself as a listener |
+| Activity can close and reopen without killing the node | yes | `onStop` detaches, `onStart` re-attaches and re-reads peers/messages/status; `stopWithTask=false` so swiping the app away does not stop the service |
+| Screen off must not stop discovery or queued delivery | yes | foreground service + filtered BLE scan (Android only drops unfiltered screen-off scans) + partial wake lock during each delivery attempt |
+| Queue, receipts, duplicate protection, SQLite unchanged | yes | no change to `MessageStore`, `GattServerNode`, `BleSender`, packet format; `DeliveryQueue` only gained the wake lock |
+| Clear UI status for service running/stopped | yes | `Service: RUNNING (background OK) / STOPPED` line plus battery-exemption state |
+| Diagnostic logs for service start, background state, screen-off continuity, service stop | yes | `SERVICE:` foreground started / SCREEN OFF - node keeps running: <status> / SCREEN ON / app swiped away / STOP requested / service destroyed; `UI:` activity visible / activity hidden - node continues |
+| Kotlin only | yes | |
 
-Not added, as instructed: multi-hop, background service, Wi-Fi Direct,
-Internet sharing, encryption, wallet, payments.
+Also added, because background operation on real phones needs it: a
+**Battery** button that opens Android's "ignore battery optimisations"
+dialog, and a POST_NOTIFICATIONS request on Android 13+ (without it the
+notification is invisible; the service still runs).
+
+Not added: multi-hop, third-party carrying, encryption, Wi-Fi Direct,
+Internet sharing, wallet, payments.
 
 ## 2. Architecture / technology choices and why
 
-**Receipt = read-back, not notification.** After the INBOX write is acked,
-the sender reads a RECEIPT characteristic (`7a0c0004-...`) whose value is
-`[version][status][msgId x8]`, kept per connected central on the receiver.
-This needs no descriptor / indication setup and no extra round trip beyond
-one read inside the same connection. The receiver fills the receipt BEFORE
-sending the write response, so the read can never see a stale value.
+**Application-owned node, service-driven.** The node object must outlive
+any screen, so it is created once per process in `ProkNetApp`. The service
+is the only thing that calls `start()`/`stop()`. The Activity is a listener.
+This keeps the BLE code untouched: nothing in `ble/` knows about services.
 
-**Queue lives in SQLite, not in memory.** `messages` gained `attempts`,
-`next_attempt`, `last_error`, `delivered_at`. Restart-safety came for free.
-Schema v1 -> v2 migration keeps Mike's existing messages (`sent` becomes
-`delivered`).
+**Foreground service type `connectedDevice`.** Android 14 refuses a
+foreground service without a declared type, and this is the type meant for
+Bluetooth work. It requires a granted Bluetooth runtime permission at start
+time, which the UI guarantees before it starts the service.
 
-**Retry policy.** Transport failure or missing receipt: back to `pending`
-with backoff 5 s doubling to 60 s; a peer reappearing resets the backoff for
-its messages. Receiver says REJECTED: `failed`, no retry. 50 attempts:
-`failed`. Older than 48 h: `expired`. One attempt in flight at a time.
+**Node keeps its own listeners list.** The service (for the notification)
+and the Activity (when visible) both observe the node; the old single
+`listener` field became `addListener`/`removeListener`.
 
-**Known peers table** so a peer that is off can still be selected and
-queued for. The BLE address used for an attempt always comes from the live
-scan, never from the table, because Android rotates addresses.
+**Wake lock only during a delivery attempt.** BLE callbacks wake the CPU by
+themselves, but the connect -> MTU -> discover -> write -> read chain has
+gaps where a dozing CPU could stretch the 20 s timeout. A partial wake lock
+for one attempt (auto-released after ~45 s) costs nothing measurable and
+removes that doubt. No wake lock is held while idle.
 
-**Duplicate handling has two layers.** The receiver's unique index makes a
-second copy impossible to store; the DUPLICATE receipt lets the sender mark
-the message delivered even when the first attempt's receipt was lost.
+**No alarm, no job scheduler.** Discovery is event-driven (scan callbacks);
+the queue's 10 s tick is a handler on the main looper, which keeps running
+inside a foreground service. If a vendor kills the process anyway,
+`START_STICKY` asks Android to restart the service; the queue then recovers
+from SQLite (`recoverInterrupted`).
 
-Full detail: `docs/ARCHITECTURE.md`, sections "Delivery receipt" and
-"Delivery queue".
+Full detail: `docs/ARCHITECTURE.md`, section "Background operation".
 
 ## 3. Files / components added or changed
 
 ```
 app/src/main/java/net/prok/proknet/
-  ble/DeliveryQueue.kt     NEW  queue state machine, backoff, reappearance retry, expiry
-  ble/GattServerNode.kt    RECEIPT characteristic; per-central receipts; handle-before-respond
-  ble/BleSender.kt         reads RECEIPT after write; returns DeliveryResult
-  ble/BleConstants.kt      RECEIPT UUID + status codes, queue tuning, DeliveryResult, Peer.inRange
-  ble/ProkNetNode.kt       owns the queue; merges visible + known peers; detects reappearance
-  core/MessageStore.kt     schema v2, MsgStatus, pending/retry/expire queries, peers table
-  ui/MainActivity.kt       Retry button, state display, NOT IN RANGE peers, queue in diagnostics
-app/src/main/res/layout/activity_main.xml   Retry button
-app/build.gradle.kts       versionCode 2, versionName 0.2.0
-README.md, docs/ARCHITECTURE.md, docs/TESTING.md (section 7), CLAUDE_REPORT.md
+  ProkNetApp.kt              NEW  Application: DiagLog init, one node per process
+  service/ProkNetService.kt  NEW  foreground service, notification, screen receiver, Stop action
+  ble/ProkNetNode.kt         listeners list; passes PowerManager to the queue
+  ble/DeliveryQueue.kt       partial wake lock around each attempt
+  ui/MainActivity.kt         observes only; Start/Stop go through the service;
+                             Service line, Battery button, notification permission
+app/src/main/AndroidManifest.xml   application class, service (connectedDevice,
+                             stopWithTask=false), FOREGROUND_SERVICE(+_CONNECTED_DEVICE),
+                             POST_NOTIFICATIONS, WAKE_LOCK, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+app/src/main/res/drawable/ic_notify.xml   status-bar icon
+app/src/main/res/layout/activity_main.xml Service line, Retry/Battery row
+app/build.gradle.kts         versionCode 3, versionName 0.3.0
+README.md, docs/ARCHITECTURE.md, docs/TESTING.md (section 8), CLAUDE_REPORT.md
 ```
 
 ## 4. Exact APK path
@@ -79,85 +88,86 @@ README.md, docs/ARCHITECTURE.md, docs/TESTING.md (section 7), CLAUDE_REPORT.md
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.2.0
-Build 2: 0.86 MB, SHA256 `c499a1da93f922b90446dc4c457e23e9f0bda1f837da0d9e69cc37e2c14af860`,
-versionCode 2, versionName 0.2.0, same package and debug key as v0.1 (installs
-over it, data kept).
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.3.0
+Build 3: 0.84 MB, SHA256 `c69fcb0f318aa9f69c7bb084fbf0068c8d337402ee5a77787f00fe674d5346d9`,
+versionCode 3, versionName 0.3.0. Installs over v0.2, data kept. Manifest
+verified with aapt2: service present, type connectedDevice, stopWithTask=false.
 
 ## 5. Exact build command
 
 ```
 powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1
 ```
-Unchanged from milestone 1. About 65 s per build.
+Unchanged. About 77 s.
 
 ## 6. What Mike needs to do on his phones
 
-Install v0.2.0 over v0.1 on **both** phones (both must be on v0.2, the
-receipt characteristic does not exist in v0.1). Then `docs/TESTING.md`
-section 7. The five tests, in one breath:
+Install v0.3.0 on both phones. On first Start, allow the notification
+permission (Android 13+). Press **Battery** once on each phone and accept.
+Then `docs/TESTING.md` section 8. The one that matters most (8.4):
 
-1. Normal send with B in range: A shows `[delivered]`, A's log has
-   `RECEIPT accepted`, B's log has `receipt ACCEPTED`.
-2. Stop B, wait until A lists it as `NOT IN RANGE`, send two messages from A
-   (`[pending]`, status `queue 2`), start B: both arrive by themselves, in order.
-3. With B off, send from A, kill A completely, reopen, Start: message still
-   `[pending]`; start B: delivered.
-4. Burst of five with B walking out of range and back: each text exactly once on B.
-5. Retry button with B off: nothing breaks.
+1. Stop B. Wait until A shows B as NOT IN RANGE.
+2. On A send "asleep test" to B: `[pending]`.
+3. On A press Home, turn the screen off, leave it off for a minute.
+4. Start B. B must receive "asleep test" within about 30 s, with A untouched.
+5. Then wake A and Copy log. It should show `SCREEN OFF - node keeps running`,
+   B reappearing, `peer ... reappeared ... retry now`, `DELIVERED`, then `SCREEN ON`.
 
-Copy log from both phones after test 2 and test 4 is what I most want to see.
+Also 8.5 (B sends to a sleeping A) and 8.6 (Stop from the notification).
+Copy log from A after 8.4 is the one I most want to see.
 
 ## 7. Known limitations
 
-- Queue only carries this phone's OWN messages. Carrying other people's
-  packets (real STORE-CARRY-FORWARD) is a later milestone.
-- App must be open on both phones (no background service). A pending message
-  is only delivered while A's app is open and sees B.
-- `failed` (50 attempts) and `expired` (48 h) are implemented but not
-  practical to test by hand; they are logged.
-- The receipt proves the receiver STORED the message, not that a human saw it.
-- Peer names: still `prok-<shortId>` on the other phone.
-- Still no encryption; the receipt is as readable over the air as the message.
+- Vendor background killers (Xiaomi, Huawei, Oppo, some Samsung modes) can
+  still kill a foreground service. The Battery exemption reduces this; some
+  phones also need an "autostart" / "no restrictions" toggle in their own
+  settings. The log will show it: a `service created` line with no preceding
+  `STOP requested`.
+- If Android kills the process, pending messages are safe (SQLite) but
+  delivery pauses until the service is restarted by the system
+  (`START_STICKY`) or by the user.
+- Bluetooth turned off by the user while running is not handled specially:
+  the node keeps its "running" state and logs errors. Stop/Start recovers.
+- The notification shows the status line only; no message content.
+- Still: own messages only, no encryption, names are `prok-<id>`.
 
 ## 8. What failed or is uncertain
 
-- **Untested on hardware.** Compiles, manifest verified, logic reviewed twice.
-  The two things I could not exercise: (a) the reappearance trigger timing
-  (scanner expiry is 25 s, so "B is back" is noticed within ~5 s of B
-  advertising again, but the first attempt may hit a stale rotated address
-  once and retry after 1.5 s); (b) the receipt read on Android 8-12, which
-  uses the older `onCharacteristicRead` callback (handled, but a different
-  code path from Android 13+).
-- **Compiler warning**, harmless: the pre-API-33 read callback override is
-  deprecated upstream. Left as is.
-- **VPS disk** is at 1.8 GB free; builds still work. The Windows Update
-  cache cleanup is still pending on Mike's side (needs an RDP session).
-- Repo is still private; ChatGPT's GitHub plugin could not read it at the
-  last review. Mike can make it public in Settings > Danger Zone, or tell me
-  to.
+- **Untested on hardware.** Compiles; manifest verified. The uncertain
+  parts are all phone-specific: whether Doze on a given phone delays the
+  first scan result after B reappears (expect up to ~1 min in deep Doze
+  rather than 5-10 s), and whether the vendor kills the service.
+- **Screen-off scan latency.** With the screen off Android may lengthen
+  the scan interval even with a filter. Delivery should still happen, just
+  later. TESTING 8.4 allows 30 s; if it takes longer but arrives, that is
+  a note, not a failure.
+- **Two compiler warnings** unchanged from 2A (deprecated read callback
+  override, unused `address` parameter). Harmless.
+- **VPS disk** 1.76 GB free; builds fine. Windows Update cache cleanup still
+  pending on Mike's side.
+- Repo still private.
 
 ## 9. Git commit hash
 
-Code + docs: `de603a8f4684f3a8509be532f686d31b830e36b3` on `main`.
-Release tag `v0.2.0` points at it. This report is committed on top.
+Code + docs: `5946b8040f974fcdd78bf0d7e7a04de27b173867` on `main`.
+Release tag `v0.3.0` points at it. This report is committed on top.
 
 ## 10. Recommendation for the next step
 
-Wait for Mike's 2A test. If it passes, my recommendation for 2B is the
-smallest step that makes CARRY real:
+Wait for the 2B test, especially 8.4. If it passes, the phone now
+STORES and can CARRY its own messages while in a pocket. My recommendation
+for the next milestone (2C) is the smallest step that makes FORWARD real:
 
-1. **Foreground service** so A keeps scanning and delivering with the screen
-   off and the app in the background. Without this, "carry while people
-   move" cannot happen: the app dies in the pocket.
-2. **Peer display names** via the IDENTITY characteristic (read once on
-   first contact, cached in the peers table).
-3. Only then: carry other people's packets (destination ID + TTL + hop
-   count in the packet, a per-packet "seen" set, forward on contact). That
-   is the first true multi-phone STORE-CARRY-FORWARD and the point where the
-   Python question should be decided, because routing policy is the logic
-   that would live there.
+1. Packet v2 with **destination ID, TTL, hop count**; the receiver stores
+   any packet whose destination is not itself as "carried", and offers it to
+   every peer it meets (a per-packet seen-set per peer, so it is offered once).
+   Delivery receipt semantics stay the same per hop.
+2. **Peer display names** via the IDENTITY characteristic (cheap, improves
+   the UI for three-phone tests).
+3. Three-phone test: A and C never meet; B walks between them.
 
-Encryption should come before any real user traffic, but after the carry
-mechanics are visible and testable, so the identity/key design is informed by
-what the packets actually need.
+That is the first true STORE-CARRY-FORWARD across phones, and the moment to
+decide the Python question: the carry/forward policy (what to accept, how
+long to keep, whom to offer) is the logic that would live in Python if we go
+that way. Encryption should follow immediately after, before any real use,
+because carried packets pass through strangers' phones.
