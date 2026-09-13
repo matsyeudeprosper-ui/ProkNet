@@ -1,181 +1,225 @@
-# CLAUDE_REPORT - Milestone 2C1-HARDENING (ProkNet Lab v0.4.1)
+# CLAUDE_REPORT - ProkNet v0.5.0 "Secure Fast Link"
 
 Date: 2026-09-13
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 23/23 automated tests pass, released, NOT yet tested on phones** (three phones needed; v0.4.0 was never tested and is superseded)
+Status: **built, 48/48 automated tests pass, released, NOT yet tested on phones**
 
-History: M1 v0.1.0 passed 2026-09-12. M2A v0.2.0 passed 2026-09-13.
-M2B v0.3.0 passed 2026-09-13. M2C1 v0.4.0 built 2026-09-13, untested.
-Earlier reports: git history (`4e394d7`, `db703ca`, `c3619cf`, `2867eda`).
+History: M1 v0.1.0, M2A v0.2.0, M2B v0.3.0 passed on two real phones.
+M2C1 v0.4.0/v0.4.1 (one-relay carry-forward, hardened) built, untested
+(needs three phones). Earlier reports in git history
+(`4e394d7`, `db703ca`, `c3619cf`, `2867eda`, `acf9ca0`).
 
-## 1. What I built
+## 1. What I built (one branch, one release)
 
-### 1.1 Explicit last-hop identity (packet v3)
-
-| Rule | Done | Where |
+| Block | Done | Summary |
 |---|---|---|
-| lastHopId field in the wire packet | yes | `Packet.kt`: 16 bytes at offset 36, header now 72 bytes, text max 440 |
-| originId never changes | yes | set by the origin; `stamped()` copies it; test `origin_destination_and_message_id_never_change_through_a_relay` |
-| destinationId never changes | yes | same |
-| messageId never changes | yes | same |
-| lastHopId = the phone physically transmitting this hop | yes | `Routing.outgoingPacket()` stamps `myId` on every transmission: A->B = A, B->C = B; test `last_hop_changes_A_to_B_to_C_and_hops_increment` |
-| C displays "received from A via B" | yes | `ProkNetNode.onPacketReceived` takes `via` from `pkt.lastHopShort`; list shows `<- prok-A [received via prok-B, 1 hop]` |
-| No Bluetooth MAC address in routing/accounting | yes | the only remaining use of the address is the GATT server's per-connection receipt map (transport bookkeeping) and a debug note in one log line |
-| Backward decoding | yes | v2 (no last hop -> "?") and v1 (no destination -> addressed to receiver) decode; tests `v2_packets_still_decode_with_unknown_last_hop`, `v1_packets_still_decode_as_addressed_to_the_receiver` |
+| A. Cryptographic identity | yes | P-256 key pair per install; ID derived from the public key; private key in app-private storage; survives restart/update; public record exchanged over BLE and Wi-Fi; v0.4 random ID kept as legacy |
+| B. End-to-end encryption | yes | sign-then-encrypt: ECDSA inside; ephemeral ECDH + HKDF + AES-256-GCM outside; routing header as authenticated data; relay sees metadata only; direct A->B works with two phones; relay path keeps ciphertext byte-identical |
+| C. Transport abstraction | yes | `transport/Transport.kt` interface; BLE and Wi-Fi implement it; routing, queue and transfer engine never touch Bluetooth or sockets |
+| D. Wi-Fi transport | yes | local-only hotspot on the responder, `WifiNetworkSpecifier` join on the initiator (legacy join on Android 8-9), TCP link with signed mutual handshake, negotiated over encrypted BLE control messages; link state machine with timeouts and retry backoff |
+| E. Large payloads | yes | any text length, files up to ~2 MB, whole-blob encryption, 400-byte chunks on either transport, file-backed reassembly with persisted mask, SHA-256 + signature verification, progress %, pending/sending/delivered/failed and receiving/received/failed states, automatic Wi-Fi negotiation above 4 KB with BLE fallback |
+| F. Preserve behaviour | yes | discovery, queue, receipts, dedup, foreground service, screen-off, swipe-away and one-relay logic are unchanged in code path; all v0.4.1 routing tests still pass (adapted to packet v4) |
+| G. Tests | yes | 48 JVM tests gate the build (were 23); see section 4 |
+| H. UI / diagnostics | yes | fingerprint, `[key]`/`[no key]` per peer, BLE and Wi-Fi link state, active transport, bytes tx/rx per transport, transfer %, `e2e`/`PLAIN` per message, `signed`/`unverified`, real version from `PackageInfo` |
+| I. Scope | kept | no wallet, payments, marketplace, multi-hop, economics; the Wi-Fi socket is ready to carry a tunnel frame type |
 
-### 1.2 Automated protocol/routing tests on the VPS
+## 2. Cryptography architecture
 
-All routing decisions were extracted into `core/Routing.kt`, a pure Kotlin
-object with no Android, BLE or database imports. `DeliveryQueue` and
-`ProkNetNode` now only feed it facts and execute its answers. 23 JUnit 4
-tests in `app/src/test/java/net/prok/proknet/core/` run on the VPS JVM.
-No Robolectric, no emulator, no mocking library.
+- **Curve/primitives:** P-256 (secp256r1) for both ECDH and ECDSA-SHA256,
+  AES-256-GCM, HKDF-SHA256 (HMAC-based, own 40-line implementation). All
+  standard JCA on Android API 26+ and on the VPS JVM. Curve25519/Ed25519 were
+  not chosen because they are not guaranteed in JCA below API 33.
+- **Identity:** `ID = SHA-256(X||Y)[0..16]`. The 16-byte ID format, short IDs,
+  scan responses, SQLite keys and routing are untouched. Fingerprint = 32 hex
+  chars of the same hash. The identity record `[2][id][pub 64][name]` is
+  self-authenticating: a record whose ID does not derive from its key, or
+  whose key is not on the curve, is rejected (invalid-curve defence added
+  after a test caught that the JDK does not check it).
+- **Key storage:** PKCS#8 bytes, Base64, in `SharedPreferences` MODE_PRIVATE.
+  AndroidKeyStore was not used: it cannot do ECDH below API 31 and would have
+  split the code path. The key never leaves `Identity` (only `sign`, `open`,
+  `buildSigned` are exposed) and is never logged, exported or displayed.
+- **Envelope:** `[ephPub 64][nonce 12][GCM(ct)+tag]`, key =
+  HKDF(ECDH(eph, destStatic), salt "ProkNet-v5", info = ephPub||destPub||aad).
+  `aad = origin||dest||msgId||ts||type`, so a relay changing any of those breaks
+  the tag; `lastHop` and `hops` are outside the aad and are the only fields a
+  relay may change. Plaintext = `[sigLen][ECDSA sig][kind][body]`, signature
+  over `aad||kind||body`, so the destination knows the origin wrote exactly
+  this and a relay cannot even see the signature. Fresh ephemeral key and
+  nonce per message (per-message forward secrecy). Overhead: 92 bytes
+  envelope + ~72 bytes signature -> 275 bytes of text still fit one BLE packet;
+  longer text becomes a transfer automatically.
+- **Key learning:** on first sight of a peer the node reads its identity
+  record over one short BLE connection; every later send reads it on the same
+  connection if still unknown; the Wi-Fi handshake also delivers it. To
+  encrypt for C, A must have met C once. No plaintext fallback: an unknown
+  key refuses the send with a clear log and toast.
+- **Wi-Fi handshake:** HELLO (record + 16-byte nonce) both ways, then AUTH =
+  signature over `"ProkNet-wifi-1"||myId||peerId||myNonce||peerNonce`. Both
+  verified before the link is UP; the link is bound to identities, not
+  addresses. The Wi-Fi payload itself is NOT additionally encrypted at the
+  link layer: every frame on it is already an end-to-end envelope (the WPA2
+  hotspot adds its own layer as well).
 
-| Required test | Test name(s) |
+## 3. Exact Wi-Fi mechanism
+
+`WifiManager.startLocalOnlyHotspot` on the host (responder) + on the
+initiator `ConnectivityManager.requestNetwork` with a `WifiNetworkSpecifier`
+(SSID + WPA2 passphrase) on Android 10+, or the legacy
+`WifiConfiguration/enableNetwork` on Android 8-9. Credentials, host IPv4
+candidates and port (47741) travel inside an encrypted BLE control message
+(`WIFI_REQUEST` / `WIFI_OFFER` / `WIFI_CANCEL`). Sockets are created through
+the granted `Network` so they bind to the hotspot even when mobile data is
+on. Frames: `[u32 len][type][payload]`, every PACKET answered by a RECEIPT
+frame; same receipt codes as BLE. Roles: whoever wants the link initiates
+and joins; if both request at once the lower ID hosts. Not Wi-Fi Direct:
+see `docs/ARCHITECTURE.md` "Wi-Fi link" for the reasoning.
+
+The next milestone's Internet tunnel is another frame type on this same
+socket (client side `VpnService` -> frames -> host side sockets); nothing in
+the link needs to change for it.
+
+## 4. Automated tests: what worked
+
+`dist\test-results.txt`: `total=48 failed=0 errors=0 skipped=0`, 108 s
+including the APK.
+
+| Required | Test |
 |---|---|
-| packet encode/decode round trip | `encode_decode_round_trip_keeps_every_field`, `max_text_fits_in_512_bytes_and_longer_is_refused` |
-| origin/destination/message ID unchanged through relay | `origin_destination_and_message_id_never_change_through_a_relay`, `outgoing_packet_never_alters_identity_...` |
-| lastHop changes A -> B -> C | `last_hop_changes_A_to_B_to_C_and_hops_increment`, `end_to_end_A_hands_to_B_who_forwards_to_C_...` |
-| hop count increments | same two |
-| TTL rejection | `ttl_exhausted_is_rejected_for_relay_but_not_for_destination` |
-| direct delivery wins when destination present | `direct_delivery_wins_when_destination_is_present` |
-| handoff produces handed_off, never false delivered | `handoff_produces_handed_off_never_delivered` |
-| relay accepts custody | `destination_accepts_final_and_relay_accepts_custody` |
-| relay forwards only to exact destination | `relay_forwards_only_to_the_exact_destination` |
-| one-relay limit enforced | `one_relay_limit_a_second_relay_refuses_custody`, end-to-end test (phone D refuses) |
-| duplicate packet not delivered twice | `duplicate_packet_is_not_delivered_twice` (direct retry, relayed copy, relay-side duplicate) |
-| malformed/truncated packets rejected without crashing | `malformed_and_truncated_packets_decode_to_null_without_throwing` (every truncation length of a valid packet + 500 random blobs), `malformed_packet_is_rejected_not_crashed` |
-| old format decoding/migration safe | `v2_packets_still_decode_...`, `v1_packets_still_decode_...`, `legacy_destination_padding_matches_the_receiver_by_short_id` |
-| extra | `carried_packets_go_before_own_messages_and_backoff_is_respected`, `direct_and_forward_results_map_to_final_states`, `transport_failures_back_off_then_give_up`, `handoff_goes_to_strongest_other_peer_when_destination_absent`, `isFor_matches_full_id_and_short_id_form_only` |
+| crypto identity persistence model | `CryptoTest.identity_is_derived_from_the_public_key_and_is_stable` (PKCS#8 round trip, same ID, fingerprint) |
+| encrypt/decrypt success | `seal_and_open_succeed_for_the_destination_only` |
+| wrong destination cannot decrypt | same test: relay B and sender A both fail |
+| tampered ciphertext fails | `tampered_ciphertext_or_header_fails_to_open` (byte flips in eph key, nonce, ct, tag; truncation; wrong aad) |
+| sender authentication | `signed_plaintext_authenticates_the_sender_inside_the_envelope` (wrong signer, wrong header, altered body all fail) |
+| relay cannot decrypt payload | `relay_sees_only_routing_metadata_and_cannot_read_or_alter_the_payload` (B cannot open; forwarded ciphertext byte-identical; header tamper and origin relabel fail at C) |
+| packet routing metadata remains valid | `RoutingTest.encrypted_envelope_keeps_routing_metadata_valid_through_a_relay`, `PacketTest.envelope_and_chunk_types_carry_opaque_payloads` (aad excludes lastHop/hops/ttl) |
+| transport selection | `TransferTest.transport_selection_prefers_wifi_when_up_and_negotiates_only_for_big_payloads` |
+| fragmentation/reassembly | `chunking_round_trip_in_order`, `out_of_order_duplicate_and_missing_chunks` (shuffled order, duplicate ignored, wrong geometry refused, mask survives restart), `malformed_chunks_are_rejected_without_throwing` |
+| large payload integrity | `corrupted_payload_fails_integrity_and_relay_cannot_open_blob`, `text_larger_than_one_packet_goes_through_the_blob_path_intact` (2400 chars) |
+| reconnect/retry behaviour | `LinkStateTest` x4: initiator and host paths, tie-break, loss -> DOWN -> retry backoff 5 s..60 s capped, success resets, step timeout, UP never times out |
+| identity record / handshake / control messages | `WireTest` x4 (self-authenticating record, control TLVs + fuzz, handshake binding to nonces and keys, receipt frames) |
+| everything from v0.4.1 | `PacketTest` 11 (v4 + v1/v2/v3 decoding), `RoutingTest` 16 incl. the three-phone A->B->C simulation and `chunk_packets_are_delivered_direct_only_and_never_relayed` |
 
-**Build gate:** `build.ps1` now runs `testDebugUnitTest` before
-`assembleDebug`. A failing test fails Gradle, the script throws, and no APK
-is copied to `dist\`. It also refuses if zero tests ran. Summary written to
-`dist\test-results.txt`. Verified: the first run of this pass had one
-failing test (a bug in the test itself: random garbage arrays could be
-shorter than 2 bytes) and the script correctly refused the APK.
+Two test-side findings during the pass: (1) the JDK accepted an off-curve
+public key, so an explicit on-curve check was added to `Crypto.publicKeyFrom`;
+(2) a missing import in a test. The build gate refused the APK both times.
 
-**Result of the final run:** `total=23 failed=0 errors=0 skipped=0`
-(PacketTest 9, RoutingTest 14), 44 s including the APK.
+## 5. What still requires physical-phone testing
 
-### 1.3 Static robustness review: issues found and fixed
+Everything in `docs/TESTING.md` section 11, in this order of risk:
 
-| Area | Finding | Fix |
-|---|---|---|
-| Malformed packets | `Packet.decode` could throw on a truncated buffer (BufferUnderflow) and accepted trailing bytes | strict decode: exact length, known version and type, whole body in try/catch -> null; fuzz-tested |
-| Malformed packets | an exception inside the packet handler (store, decision) would crash the Bluetooth binder thread | `GattServerNode.handle` wraps `onPacket` in try/catch and answers REJECTED |
-| Malformed scan records | `BleScanner.onResult` could throw on an odd manufacturer record and kill the scan callback | guarded, logged, ignored |
-| Stale BLE addresses | relay identity ("via") was derived by matching the GATT client's address against the scanner's peer list; wrong when addresses rotate or differ between roles | replaced by the packet's lastHopId (the point of this milestone) |
-| Stale BLE addresses | sending uses the live `Peer` object whose address the scanner updates | reviewed, unchanged; planner only ever targets in-range peers, never a stored last address |
-| Duplicate receipt races | receipt is written before the write response and cleared on disconnect; a receipt read on a fresh connection without a write returns REJECTED with a zero message ID, which the sender maps to NO_RECEIPT (retry), not to a false success | reviewed, unchanged, now covered by `resultFor` tests |
-| Duplicate detection | `MessageStore.knows()` matched ANY outgoing row with the same message ID regardless of origin | now matches outgoing rows only when their origin is the packet's origin |
-| Restart during custody | `forwarding` rows were reset to `carrying` and `sending` to `pending` on start | reviewed, unchanged; service is START_STICKY |
-| Destination appears during a handoff | the in-flight handoff completes (handed_off); if it fails, the next plan prefers DIRECT because the planner checks the destination first | reviewed; behaviour documented and tested (`direct_delivery_wins_...`) |
-| Relay disappears during transfer | transport failure -> pending with backoff; next plan may choose another relay or direct; relay side drops a half-received prepared write on disconnect | reviewed, unchanged |
-| Rows from v0.2/v0.3 | no destination stored -> corrupt packet (found and fixed in v0.4.0) | migration pads dest with zeros; `Routing.destBytes` guards again; a row that still cannot build a packet is marked failed instead of crashing the queue |
-| Migration v0.3 -> v0.4.1 | schema v3 unchanged from v0.4.0; lastHop is stored in the existing `via` column | reviewed; SQLite itself cannot run on the JVM without Robolectric, so the SQL is reviewed, not unit-tested |
-| Full-ID advertisement failure | a chipset that rejects the 21-byte scan response would leave the phone undiscoverable | `BleAdvertiser` retries with the 4-byte short-ID payload on DATA_TOO_LARGE; such a phone is addressed in short-ID form, which the receiver matches |
-| Peers without a scan response | showed as `prok-?xxxxxx` and could be selected; sending would throw in hex parsing | listed as "(no ID yet)", cannot be a destination, never remembered as a known peer, never used as relay |
-| Handoff to a peer that turns out to be the destination | receipt ACCEPTED on a HANDOFF | mapped to `delivered` (trust the receipt), tested |
+1. **Key learning over BLE** (11.1): the extra IDENTITY read inside a batch
+   op is new code on the GATT client state machine.
+2. **Encrypted direct message** (11.2): first real use of `open`/`verify` on
+   Android's Conscrypt provider (same JCA names; expected to match the JVM).
+3. **Hotspot bring-up** (11.5): `startLocalOnlyHotspot` behaviour, SSID
+   readability per Android version (API 30+ `SoftApConfiguration` vs older
+   `WifiConfiguration`), the AP interface address heuristic (`ap0`/`swlan0`/
+   `wlan1`, address ending `.1`), and whether the host can hotspot while its
+   Wi-Fi STA is connected (vendor-dependent).
+4. **Joining** (11.5): the `WifiNetworkSpecifier` dialog, and whether the
+   socket bound to that `Network` reaches the host (should, via DHCP subnet).
+5. **Throughput and the 1 MB test** (11.6): per-chunk receipt over TCP is
+   ~2500 round trips for 1 MB; expected seconds, not minutes.
+6. **Loss/resume** (11.8) and **automatic negotiation** (11.7), including the
+   dialog appearing while the app is in the background.
+7. **Migration**: an upgraded install gets a new ID; old peers show as stale
+   entries; v0.4 pending plaintext rows are marked failed with an explanation
+   (they cannot be encrypted after the fact).
 
-## 2. Architecture / technology choices and why
+## 6. Android permissions and system dialogs
 
-- **Last hop in the packet, not inferred.** A 16-byte field costs 16 bytes
-  of the 512-byte budget and removes a whole class of wrong-attribution bugs.
-  The header is now 72 bytes; 440 bytes of text remain.
-- **Pure routing module.** Every decision the three-phone test depends on
-  is now a function of plain values, so it can be tested on the VPS in
-  seconds. The BLE classes shrank; nothing about the air interface changed
-  except the packet version.
-- **JUnit 4 only.** One test dependency (`junit:junit:4.13.2`). The simulated
-  phones in `RoutingTest` are 15 lines each and mirror exactly what the SQLite
-  unique index does.
-- **Fail closed.** The build script refuses the APK on a failing test and on
-  zero tests executed, so a broken test configuration cannot silently pass.
+| When | What the user sees |
+|---|---|
+| Start, Android 13+ | "Nearby devices" (Bluetooth + Wi-Fi), then notifications |
+| Start, Android 12 | Bluetooth "Nearby devices" + Location (fine + coarse, must be requested together) |
+| Start, Android 8-11 | Location |
+| Host side of a Wi-Fi link | none, but Wi-Fi ON and Location ON are required by the system for a hotspot on most versions; failure reasons are logged (`hotspot failed, reason N (hint)`) |
+| Initiator side, Android 10+ | one system dialog "ProkNet Lab wants to use a temporary Wi-Fi network / connect to <ssid>": tap Connect. Once per link set-up. |
+| Initiator side, Android 8-9 | none (legacy join) |
+| Send file | the system document picker |
 
-## 3. Files / components added or changed
+Manifest additions: `NEARBY_WIFI_DEVICES` (neverForLocation), `ACCESS_FINE/
+COARSE_LOCATION` up to API 32, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`,
+`ACCESS_NETWORK_STATE`, `CHANGE_NETWORK_STATE`, `INTERNET` (sockets; no
+Internet is used).
+
+## 7. Known OEM limitations
+
+- **Hotspot while connected to Wi-Fi** (STA+AP concurrency) is not
+  supported on some chipsets; the host may need Wi-Fi on but not connected.
+  The failure is logged with the Android reason code.
+- **Hotspot band/channel:** some phones start the local-only hotspot on 5 GHz;
+  a joining phone without 5 GHz support will not see it (`onUnavailable`).
+- **Vendor battery managers** (Xiaomi, Huawei, Oppo, some Samsung) can kill
+  the hotspot or the service; the Battery button and the existing v0.3
+  mitigations apply.
+- **Android 10+ specifier networks** are app-scoped: only ProkNet's sockets
+  use the hotspot; the phone's normal connectivity is untouched (good for
+  us, but it means the link exists only while the service holds the request).
+- **Legacy join (Android 8-9)** may not route to the hotspot subnet if the
+  phone prefers mobile data; best effort only.
+- **Scan-response size**: unchanged from v0.4.1 (short-ID fallback exists).
+
+## 8. Files / components
 
 ```
-app/src/main/java/net/prok/proknet/
-  core/Packet.kt            v3 with lastHopId, stamped(), strict never-throwing decode, v1/v2 kept
-  core/Routing.kt           NEW  DeliveryResult, decideReceive, receiptFor/resultFor, plan, applyResult,
-                                 outgoingPacket, destBytes, legacyDestHex, backoff constants
-  core/MessageStore.kt      knows() origin-scoped
-  ble/BleConstants.kt       receipt codes delegate to Routing; ADV_VERSION_SHORT; Peer.hasId
-  ble/BleAdvertiser.kt      DATA_TOO_LARGE -> short-ID payload fallback
-  ble/BleScanner.kt         guarded callbacks
-  ble/BleSender.kt          uses Routing.resultFor
-  ble/GattServerNode.kt     guarded handler, logs wire version and last hop
-  ble/DeliveryQueue.kt      executor only; Routing.plan / applyResult / outgoingPacket
-  ble/ProkNetNode.kt        Routing.decideReceive; via = lastHop; sendText refuses ID-less peers
-  ui/MainActivity.kt        toast when a peer cannot be addressed
-app/src/test/java/net/prok/proknet/core/PacketTest.kt    NEW  9 tests
-app/src/test/java/net/prok/proknet/core/RoutingTest.kt   NEW  14 tests
-app/build.gradle.kts      junit dependency, unit test options, versionCode 5 / 0.4.1
-build.ps1                 tests gate the APK, dist/test-results.txt
-README.md, docs/ARCHITECTURE.md, docs/TESTING.md (sections 9 and 10), CLAUDE_REPORT.md
+core/Crypto.kt        NEW  keys, id derivation, fingerprint, sign/verify, seal/open, Signed plaintext
+core/Identity.kt      key-backed identity, migration, sign/open/buildSigned
+core/Packet.kt        v4: opaque payload, types, aad(); v1-v3 decoding
+core/Transfer.kt      NEW  chunking, assembler, blob body (pure)
+core/LinkState.kt     NEW  Wi-Fi link state machine (pure)
+core/Wire.kt          NEW  identity record, control TLVs, TCP frames, handshake data (pure)
+core/Routing.kt       CHUNK decisions, transport selection, payload-based outgoingPacket
+core/MessageStore.kt  schema v4: payload/enc/verified/transport, peer_keys, transfers
+transport/Transport.kt, BleTransport.kt, WifiTransport.kt   NEW
+node/TransferEngine.kt   NEW
+ble/BleSender.kt      batch sends on one connection, identity reads, resume after reconnect
+ble/GattServerNode.kt identity record v2, bytes counter
+ble/DeliveryQueue.kt  transport-agnostic, opaque payloads
+ble/ProkNetNode.kt    transports, key learning, encryption/decryption, control routing, engine
+ui/MainActivity.kt    diagnostics, Wi-Fi link / Big test / Send file, real version
+app/src/test/...      CryptoTest, TransferTest, WireTest, LinkStateTest (new), PacketTest, RoutingTest (updated)
+build.ps1             discards stale test reports before each run
+AndroidManifest.xml   Wi-Fi/network permissions; build.gradle.kts versionCode 6 / 0.5.0
+README.md, docs/ARCHITECTURE.md (identity, E2E, transports, Wi-Fi, transfers), docs/TESTING.md section 11
 ```
 
-## 4. Exact APK path
+## 9. Exact APK / release / build
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.4.1
-Build 5: 0.86 MB, SHA256 `f2d92d9c428662e390a1743c47a7cfe639e93dd818efa3b26289e04cdd91202d`,
-versionCode 5, versionName 0.4.1. Test summary: `C:\Projects\ProkNet\dist\test-results.txt`.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.5.0
+Build 6: 0.99 MB, SHA256 `3860d25b07612890b48beb35f50e8cfa452f6ce50514caf2e4810a59ad0f28b3`,
+versionCode 6, versionName 0.5.0. Build command unchanged:
+`powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1`
+(runs the 48 tests first; no APK on failure).
+Code + tests + docs: commit `bfb3719fb3bbdfa1a854887bbbf5c6170c9b89ae` on `main`.
+This report is committed on top.
 
-## 5. Exact build command
+## 10. Known limitations and honest uncertainties
 
-```
-powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1
-```
-Now runs the unit tests first. `-SkipTests` exists for emergencies only and
-marks the summary file as skipped. About 45-75 s.
+- Chunked transfers are direct only; a relay refuses CHUNK packets.
+  Carrying encrypted blobs for others is the next relay milestone.
+- After a handoff the origin still stops (2C1 rule), unchanged.
+- Received files stay in the app's private `files/received/`; the UI shows
+  name, size and SHA-256 but does not export them yet (needs a content
+  provider or MediaStore write; deferred to keep the scope).
+- The 1 MB transfer keeps the whole blob in memory on both sides (fine at
+  the 2 MB cap; a streaming path is needed before larger files).
+- Per-chunk DB and file writes on the receiver may make a 1 MB Wi-Fi
+  transfer take ~10-20 s instead of ~2 s; measured only on the phone.
+- One hotspot per phone: while hosting a link to A, B cannot host one for C.
+- The VPS disk is at 1.66 GB free; the build script stops below 1 GB.
 
-## 6. What Mike needs to do on his phones
+## 11. Recommendation
 
-Nothing new to learn: install v0.4.1 on all three phones (v0.4.0 must not
-be mixed in: different wire version) and run `docs/TESTING.md` section 9
-when the third phone is available. Test 9.1 is unchanged. The new thing to
-look for in C's log is `FINAL RECEIVED ... via relay prok-B after 1 hop(s)`
-where prok-B is B's real short ID, and in B's log
-`ACCEPTED FOR RELAY ... (handed by prok-A)`.
-
-## 7. Known limitations
-
-- Unchanged from 2C1: one relay only, origin stops after handoff, relay
-  choice is "strongest other peer", carried packets are plaintext.
-- The SQLite migration and the BLE layer are reviewed but not unit-tested
-  (would need Robolectric or a device).
-- Two harmless compiler warnings remain (deprecated read callback override,
-  unused parameter).
-
-## 8. What failed or is uncertain
-
-- One test failed on the first run; it was a bug in the test (random blobs
-  of length < 2). Fixed; the gate behaved correctly (no APK).
-- Still untested on hardware. The remaining risk for the first three-phone
-  try is BLE timing and vendor behaviour, not routing logic.
-- VPS disk 1.71 GB free. Repo still private.
-
-## 9. Git commit hash
-
-Code + tests + docs: `3c496ae8168ca837c6427629596704149aaa60c7` on `main`.
-Release tag `v0.4.1` points at it. This report is committed on top.
-
-## 10. Recommendation for the next step
-
-Run the three-phone test on v0.4.1 when the third phone exists. Until then,
-nothing else should change on the wire. If you want more confidence before
-that day, the one addition worth its cost is a **two-phone rehearsal of the
-relay path**: with only A and B, A sends to a known-but-absent C (C's ID is
-in A's peers table from any earlier contact). Expected: A `handed_off via
-prok-B`, B `carrying ... for prok-C`, B never forwards. That exercises
-handoff, custody receipt, carrying persistence and the no-flooding rule with
-two phones; only the final forward needs the third. I added nothing for this;
-it works with the current build.
-
-After 2C1 passes: encryption (2D) before any relay-policy work, as argued
-in the previous report.
+Test section 11 on two phones. The three things that decide whether the
+Wi-Fi mechanism is right for the target devices are 11.5 (link comes up),
+11.6 (1 MB in seconds) and 11.7 (automatic). If hotspot bring-up fails on
+Mike's phones for a vendor reason, the fallback design is Wi-Fi Direct
+behind the same `Transport` interface: nothing above the transport changes.
+After that, the Internet tunnel (client `VpnService` over the Wi-Fi socket)
+is the natural next block.
