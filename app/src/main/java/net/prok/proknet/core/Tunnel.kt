@@ -32,6 +32,28 @@ object Tunnel {
     const val T_USAGE_ACK = 17        // buyer -> seller: [checkpoint 45][sigLen 1][buyer sig]  (or ERROR with reason)
     const val T_LAST = 17
 
+    /** Frames a BUYER sends to a SELLER. */
+    val BUYER_TO_SELLER = setOf(T_CONTRACT_PROPOSE, T_SESSION_START, T_OPEN_TCP, T_DNS_REQUEST, T_USAGE_ACK)
+    /** Frames a SELLER sends to a BUYER. */
+    val SELLER_TO_BUYER = setOf(T_CONTRACT_ACCEPT, T_CONTRACT_REJECT, T_SESSION_OK, T_TCP_OPEN_OK, T_DNS_RESPONSE, T_UPSTREAM_STATE, T_USAGE_CHECKPOINT)
+    // The rest (SESSION_END, TCP_DATA, TCP_CLOSE, ERROR, KEEPALIVE) flow both ways.
+
+    enum class Side { GATEWAY, CLIENT, MISDIRECTED }
+
+    /**
+     * Where an incoming tunnel frame goes on THIS phone (v0.7.1). Decided by
+     * the frame's direction and this phone's role only: NEVER by whether a
+     * buyer is already registered, because the first frame of a negotiation
+     * (CONTRACT_PROPOSE) arrives before any buyer exists. A phone is either
+     * selling or buying on a link, not both (enforced by the node).
+     */
+    fun route(type: Int, providing: Boolean): Side = when {
+        providing && type in SELLER_TO_BUYER -> Side.MISDIRECTED   // a seller never receives seller->buyer frames
+        providing -> Side.GATEWAY
+        type in BUYER_TO_SELLER -> Side.MISDIRECTED                 // a buyer never receives buyer->seller frames
+        else -> Side.CLIENT
+    }
+
     const val VERSION = 1
     const val MAX_DATA = 16 * 1024
     const val HEADER = 5

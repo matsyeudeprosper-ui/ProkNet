@@ -536,13 +536,23 @@ Wi-Fi-authenticated link on both sides, price locked by the signed contract,
 malformed / negative / overflow values rejected at decode (contracts,
 checkpoints, offers, prices, fees).
 
+**Frame routing (v0.7.1)**: `Tunnel.route(type, providing)` decides whether an
+incoming tunnel frame goes to the seller Gateway or the buyer TunnelClient,
+from the frame's direction (buyer->seller: CONTRACT_PROPOSE, SESSION_START,
+OPEN_TCP, DNS_REQUEST, USAGE_ACK; seller->buyer: CONTRACT_ACCEPT/REJECT,
+SESSION_OK, TCP_OPEN_OK, DNS_RESPONSE, UPSTREAM_STATE, USAGE_CHECKPOINT; the
+rest both ways) and this phone's role only, never from whether a buyer is
+already registered. v0.7.0 routed on "SESSION_START or known buyer", so the
+first CONTRACT_PROPOSE on a fresh link went to the seller's own buyer client
+and was never answered. A phone sells or buys on a link, not both.
+
 **RELAY**: a flag in the offer plus counts of packets this phone actually
 forwarded for others (existing carry-forward). No live multi-hop Internet.
 
-## Automated tests (80)
+## Automated tests (83)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

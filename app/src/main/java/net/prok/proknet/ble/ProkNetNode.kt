@@ -171,8 +171,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     private val tunnelSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {
         override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) {
-            if (gateway.providing && (frame.type == Tunnel.T_SESSION_START || gateway.buyerShort == peerShort)) gateway.onFrame(peerShort, frame)
-            else tunnel.onFrame(peerShort, frame)
+            // v0.7.1: routed by frame direction and role only (a CONTRACT_PROPOSE arrives before any buyer is known).
+            when (Tunnel.route(frame.type, gateway.providing)) {
+                Tunnel.Side.GATEWAY -> gateway.onFrame(peerShort, frame)
+                Tunnel.Side.CLIENT -> tunnel.onFrame(peerShort, frame)
+                Tunnel.Side.MISDIRECTED -> DiagLog.w(tag, "tunnel frame " + Tunnel.typeName(frame.type) + " from prok-" + peerShort + " ignored: wrong direction for my role (" + (if (gateway.providing) "seller" else "buyer") + ")")
+            }
         }
         override fun onLinkClosed(peerShort: String, reason: String) { gateway.onLinkClosed(peerShort, reason); tunnel.onLinkClosed(peerShort, reason) }
     }

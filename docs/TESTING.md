@@ -486,3 +486,10 @@ What to send back: COPY DIAG from both phones after 15.4.
 - [ ] 15.4 same final cost on both; ledger entries (gross + fee)
 - [ ] 15.5 paid / received marks
 - [ ] 15.6 price locked for the running session
+
+## 16. v0.7.1 retest
+
+Section 15 unchanged. The v0.7.0 failure (`no contract answer within 15s`)
+is fixed at the root. Expected on both phones right after the Wi-Fi link is
+up: `CONTRACT AGREED ... (both signatures stored)`, then `SESSION OK`, VPN
+UP on A, and `CHECKPOINT #1` lines within 30 s of the first traffic.
