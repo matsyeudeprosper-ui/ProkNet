@@ -32,6 +32,7 @@ import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.Dir
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MsgStatus
 import net.prok.proknet.service.ProkNetService
@@ -266,14 +267,15 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun diagnosticText(): String {
         val pending = node.store.pending()
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        return "ProkNet Lab v0.3 diagnostic\n" +
+        return "ProkNet Lab v0.4 diagnostic\n" +
             "device: " + Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n" +
             "id: " + node.identity.idHex + " name: " + node.identity.displayName + "\n" +
             "service: " + (if (ProkNetService.running) "RUNNING" else "stopped") + ", battery-exempt: " + pm.isIgnoringBatteryOptimizations(packageName) + "\n" +
             "status: " + node.statusLine() + "\n" +
             "peers: " + peers.joinToString("; ") { it.describe() } + "\n" +
-            "messages stored: " + node.store.count() + ", pending: " + pending.size + "\n" +
+            "messages stored: " + node.store.count() + ", pending: " + pending.size + ", carrying: " + node.store.carryingCount() + "\n" +
             pending.joinToString("") { "  pending msg=" + it.msgId + " to " + it.peerName + " attempts=" + it.attempts + " last=" + it.lastError + "\n" } +
+            node.store.carrying().joinToString("") { "  carrying msg=" + it.msgId + " from " + it.peerName + " for prok-" + it.destShort + " hops=" + it.hops + "/" + it.ttl + " attempts=" + it.attempts + "\n" } +
             "----- log -----\n" + DiagLog.text() + "\n"
     }
 
@@ -293,13 +295,20 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     override fun onMessagesChanged() {
         val rows = node.store.recent(60).map { m ->
-            val arrow = if (m.direction == "in") "<- " else "-> "
             val extra = when (m.status) {
-                MsgStatus.PENDING -> if (m.attempts > 0) " try " + m.attempts else ""
+                MsgStatus.PENDING, MsgStatus.CARRYING -> if (m.attempts > 0) " try " + m.attempts else ""
+                MsgStatus.HANDED_OFF -> " via prok-" + m.via + ", not final"
+                MsgStatus.FORWARDED -> " to prok-" + m.destShort
                 MsgStatus.FAILED, MsgStatus.EXPIRED -> " " + m.lastError.take(40)
+                MsgStatus.RECEIVED -> if (m.via.isNotEmpty()) " via prok-" + m.via + ", " + m.hops + " hop" else ""
                 else -> ""
             }
-            timeFmt.format(Date(m.timestamp)) + " " + arrow + m.peerName + " [" + m.status + extra + "]: " + m.text
+            val head = when (m.direction) {
+                Dir.IN -> "<- " + m.peerName
+                Dir.CARRY -> "~ carrying " + m.peerName + " -> prok-" + m.destShort
+                else -> "-> " + m.peerName
+            }
+            timeFmt.format(Date(m.timestamp)) + " " + head + " [" + m.status + extra + "]: " + m.text
         }
         messagesAdapter.clear()
         messagesAdapter.addAll(rows)
@@ -318,7 +327,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshIdentity() {
-        txtIdentity.text = "ProkNet Lab v0.3  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
+        txtIdentity.text = "ProkNet Lab v0.4  |  " + node.identity.displayName + "  |  id " + node.identity.shortIdHex
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

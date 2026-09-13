@@ -62,9 +62,12 @@ class BleScanner(
         val address = result.device?.address ?: return
         val record = result.scanRecord
         val mfg = record?.getManufacturerSpecificData(BleConstants.MANUFACTURER_ID)
-        val shortId: String = if (mfg != null && mfg.size >= 1 + Identity.SHORT_ID_LEN &&
-            (mfg[0].toInt() and 0xFF) == BleConstants.ADV_VERSION
-        ) {
+        val advVer = if (mfg != null && mfg.isNotEmpty()) (mfg[0].toInt() and 0xFF) else 0
+        var fullId: String? = null
+        val shortId: String = if (mfg != null && advVer == 2 && mfg.size >= 1 + Identity.ID_LEN) {
+            fullId = mfg.copyOfRange(1, 1 + Identity.ID_LEN).toHex()
+            fullId.substring(0, Identity.SHORT_ID_LEN * 2)
+        } else if (mfg != null && advVer == 1 && mfg.size >= 1 + Identity.SHORT_ID_LEN) {
             mfg.copyOfRange(1, 1 + Identity.SHORT_ID_LEN).toHex()
         } else {
             // Service UUID matched but no scan response (yet): show by address so it can still be used.
@@ -75,10 +78,11 @@ class BleScanner(
         synchronized(peers) {
             val p = peers[shortId]
             if (p == null) {
-                peers[shortId] = Peer(shortId, address, result.rssi, now); isNew = true
+                peers[shortId] = Peer(shortId, address, result.rssi, now, fullId = fullId); isNew = true
             } else {
                 if (p.address != address) DiagLog.i(tag, "peer " + p.label + " address changed " + p.address + " -> " + address)
                 p.address = address; p.rssi = result.rssi; p.lastSeen = now
+                if (fullId != null) p.fullId = fullId
             }
         }
         if (isNew) DiagLog.i(tag, "NEW peer prok-" + shortId + " addr=" + address + " rssi=" + result.rssi +

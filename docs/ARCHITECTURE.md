@@ -42,9 +42,12 @@ and stopped by `service/ProkNetService.kt`, never by the Activity.
 non-ProkNet devices are never listed.
 
 **Scan response**: manufacturer data, company ID `0xFFFF` (reserved by the
-Bluetooth SIG for testing), payload `[advVersion=1][shortId x4]`. The short ID
-is the first 4 bytes of the device identity. Peers are keyed by short ID, not
-by MAC address, because Android rotates BLE addresses.
+Bluetooth SIG for testing). Since v0.4 the payload is `[advVersion=2][fullId x16]`
+(21 bytes with headers, fits the 31-byte limit), so every phone learns the
+full 16-byte ID of every phone it sees and can address packets to it without
+a GATT read. v1 peers (`[1][shortId x4]`) are still understood. Peers are
+keyed by short ID (first 4 bytes), not by MAC address, because Android
+rotates BLE addresses.
 
 **GATT service** `7a0c0001-...`:
 
@@ -54,20 +57,28 @@ by MAC address, because Android rotates BLE addresses.
 | INBOX | `7a0c0003-...` | write (with response) | one encoded Packet per write |
 | RECEIPT | `7a0c0004-...` | read | v0.2: `[ver=1][status][msgId x8]` for the last packet this central wrote |
 
-**Packet** (`core/Packet.kt`), big-endian, max 512 bytes:
+**Packet v2** (`core/Packet.kt`, since v0.4), big-endian, max 512 bytes:
 
 ```
 0   2  magic "PK"
-2   1  version = 1
+2   1  version = 2
 3   1  type    = 1 (TEXT)
-4  16  sender ID
-20  8  message ID (random)
-28  8  timestamp ms
-36  2  text length N
-38  N  text UTF-8   (N <= 474)
+4  16  origin ID       (who wrote it; never changes on relay)
+20 16  destination ID  (final recipient; never changes on relay)
+36  8  message ID      (random, chosen by the origin; never changes)
+44  8  timestamp ms    (origin's clock)
+52  1  TTL             (max custody transfers, default 3)
+53  1  hops            (custody transfers so far; a relay adds 1 when forwarding)
+54  2  text length N
+56  N  text UTF-8      (N <= 456)
 ```
 
-The message ID makes duplicate delivery harmless (unique index in SQLite).
+(origin, message ID) is the global identity of a message. Every phone keeps
+a unique index on it per direction, so a retry, a duplicate handoff or a
+second route can never store a second copy. A destination whose last 12
+bytes are zero is matched on the short ID only (used when a peer's full ID
+is unknown). v1 packets still decode and are treated as addressed to the
+receiver.
 The sender requests MTU 517 so a full packet fits in one write; when the peer
 grants less, Android automatically uses the GATT long-write procedure and the
 server reassembles the prepared-write chunks.
@@ -98,10 +109,15 @@ handled, and the sender reads it right after the write:
 
 | Receipt status | Receiver did | Sender marks |
 |---|---|---|
-| 1 ACCEPTED | parsed and stored the message | delivered |
-| 2 DUPLICATE | already had this message ID (an earlier attempt got through but its receipt was lost) | delivered |
-| 0 REJECTED | packet did not parse | failed, no retry |
+| 1 ACCEPTED | it is the destination and stored the message | delivered (final) |
+| 3 ACCEPTED_RELAY | it is NOT the destination and took custody (v0.4) | handed_off (NOT final) |
+| 2 DUPLICATE | already had this (origin, message ID) as received or carried | delivered / handed_off, matching the attempt |
+| 0 REJECTED | did not parse, TTL exhausted, or already relayed once | failed (direct) / keep looking for another relay (handoff) |
 | missing / wrong msgId | old app version or a race | not delivered, retry later |
+
+A hop receipt means "the relay accepted custody", never "the destination has
+it". The UI keeps the two apart: `handed_off` on the origin, `carrying` /
+`forwarded` on the relay, `received ... via` on the destination.
 
 The receipt is filled BEFORE the write response is sent, so the read that
 follows can never see a stale value. It is cleared on disconnect.
@@ -137,7 +153,43 @@ persisted in SQLite (`messages.status`, `attempts`, `next_attempt`,
 - Retries re-encode the SAME message ID and timestamp, so a retry can never
   create a second copy on the receiver.
 
-Known peers (`peers` table: short ID, label, last seen, last address) are shown
+## One-relay STORE -> CARRY -> FORWARD (milestone 2C1)
+
+```
+A (origin)                 B (relay)                     C (destination)
+pending for C
+  C not in range,
+  B in range  --packet(dest=C,hops=0)-->  not for me, hops 0 < TTL,
+                                          unknown (origin,msgId):
+  <-- receipt ACCEPTED_RELAY --           store as CARRYING     [ACCEPTED FOR RELAY]
+handed_off via B                          ...B walks...
+(A is done; NOT final)                    C appears           [DESTINATION SEEN]
+                                          --packet(hops=1)-->  for me: store as
+                                                               received from A via B
+                                          <-- receipt ACCEPTED  [FINAL RECEIVED]
+                                          forwarded (custody complete)
+```
+
+Rules, all in `DeliveryQueue.pump()` and `ProkNetNode.onPacketReceived()`:
+
+- The origin sends **direct** whenever the destination is in range. Only when
+  it is not, and some other peer is, does it hand off, to the strongest one.
+  One handoff: after `handed_off` the origin stops trying.
+- A relay forwards a carried packet **only to its exact destination**. It never
+  offers it to another phone, so there is no flooding.
+- A relay refuses custody when TTL is exhausted or when the packet already
+  has hops >= 1 (one relay per message in 2C1). It answers REJECTED; the
+  origin keeps the message pending and may try another relay later.
+- Duplicate detection on every phone is (origin, message ID) across received,
+  carried and forwarded rows; the receipt says DUPLICATE and the sender treats
+  it as success for that step.
+- Carried packets share the 48 h expiry and the backoff/attempt rules of own
+  messages. Carrying survives restarts (SQLite, `forwarding` -> `carrying`
+  on start).
+- Log vocabulary: `ACCEPTED FOR RELAY`, `CARRYING`, `DESTINATION SEEN`,
+  `FORWARDING`, `FORWARDED`, `HANDING OFF`, `HANDED OFF`, `FINAL RECEIVED`.
+
+Known peers (`peers` table: short ID, label, last seen, last address, full ID) are shown
 in the list as "NOT IN RANGE" so a message can be queued for a phone that is
 currently off. Address at send time always comes from the live scan result,
 never from the table, because Android rotates BLE addresses.
@@ -235,6 +287,5 @@ the box after a build, and refuses to build with under 1 GB free disk.
 
 ## What is deliberately NOT here
 
-Encryption, multi-hop routing, store-and-forward for other people's messages
-(the queue only carries this phone's own), Wi-Fi Direct, Internet sharing,
-wallet or payments.
+Encryption, multi-hop routing (more than one relay, route choice, flooding),
+Wi-Fi Direct, Internet sharing, wallet or payments.

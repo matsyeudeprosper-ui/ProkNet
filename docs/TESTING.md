@@ -140,7 +140,7 @@ the code paths are logged as `FAILED msg=...` and `EXPIRED msg=...`.
 - [ ] 7.5 Retry with B off does nothing harmful
 - [ ] old v0.1 messages still listed after upgrading (schema migration)
 
-## 8. Milestone 2B (v0.3): background operation
+## 8. Milestone 2B (v0.3): background operation - passed 2026-09-13
 
 Both phones on v0.3.0. On first Start, Android 13+ asks for notification
 permission: allow it, otherwise the persistent notification stays hidden
@@ -198,3 +198,62 @@ If a phone's vendor killed ProkNet, its log will show a gap and a
 - [ ] 8.5 message received while asleep
 - [ ] 8.6 Stop from the notification works
 - [ ] all 2A behaviour unchanged (queue, receipts, no duplicates, old messages still listed)
+
+## 9. Milestone 2C1 (v0.4): one relay, STORE -> CARRY -> FORWARD
+
+Three phones on v0.4.0: A (origin), B (relay), C (destination). Before the
+test, let all three see each other once with the app running, so every phone
+has learned the others' full IDs (they appear in the peers list). Then:
+
+**9.1 THE test: A -> B carries -> C.**
+1. Turn C off (Stop, or Bluetooth off). Wait until A and B show C as
+   `NOT IN RANGE`.
+2. On A, tap **C** in the list (the NOT IN RANGE entry) and send "relay test".
+   Within ~10 s A shows `-> prok-C [handed_off via prok-B, not final]`.
+   A's log: `HANDING OFF msg=... to relay prok-B`, then
+   `HANDED OFF ... custody accepted, NOT final delivery`.
+   B's log: `ACCEPTED FOR RELAY msg=... from prok-A for prok-C ... CARRYING`.
+   B's list: `~ carrying prok-A -> prok-C [carrying]`. B's status: `carry 1`.
+3. Turn A off completely (Stop, or Bluetooth off). A must play no further part.
+4. Turn C on (Bluetooth on, app, Start).
+5. Within ~30 s: B's log `DESTINATION SEEN: prok-C ... forward now`,
+   `FORWARDING msg=... to its destination prok-C (hop 1/3)`, `FORWARDED ... custody complete`.
+   B's list: `[forwarded to prok-C]`.
+   C's list: `<- prok-A [received via prok-B, 1 hop]: relay test`.
+   C's log: `FINAL RECEIVED msg=... from prok-A via relay prok-B after 1 hop(s)`.
+6. C must show the message **once**, and **from prok-A**, not from prok-B.
+
+**9.2 Direct still wins.**
+All three on and in range. A sends to C. A's log shows `ATTEMPT 1 ... direct`,
+`DELIVERED ... final`. Nothing on B.
+
+**9.3 No duplicate through two routes.**
+1. C off. A sends "dup test" to C -> handed off to B.
+2. Bring C on **while A is still on** and near both. A is done after the
+   handoff (state `handed_off`), so only B forwards. C gets it once via B.
+3. Now press **Retry pending** on A: nothing happens for that message
+   (it is `handed_off`, not pending). C still has exactly one copy.
+
+**9.4 Relay survives restart.**
+With B carrying a packet for C (C off), close B completely and reopen it,
+Start. Log: `CARRYING msg=... for prok-C`. Turn C on: forwarded.
+
+**9.5 No flooding.**
+With B carrying for C, bring a fourth phone D (or A again) near B, C still
+off. B must NOT hand the packet to anyone: no `FORWARDING` line until C
+itself appears.
+
+**9.6 Old data.**
+Messages from v0.1-v0.3 still listed after upgrading; any still-pending
+v0.3 message is delivered normally (it is addressed by short ID now).
+
+### Checklist for the 2C1 report
+
+- [ ] 9.1 A -> B -> C with A off during the forward; C shows sender A, once
+- [ ] 9.1 A shows `handed_off ... not final`, never `delivered`
+- [ ] 9.1 B shows `carrying` then `forwarded`
+- [ ] 9.2 direct delivery unchanged when C is in range
+- [ ] 9.3 exactly one copy on C
+- [ ] 9.4 carried packet survives B restart
+- [ ] 9.5 B forwards only to C
+- [ ] background operation (v0.3) still works: do 9.1 with B's screen off

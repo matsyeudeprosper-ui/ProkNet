@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.Dir
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.MsgStatus
@@ -14,8 +15,8 @@ import net.prok.proknet.core.StoredMessage
 
 /**
  * One ProkNet node = identity + GATT server (receive) + advertiser (be found)
- * + scanner (find others) + sender (deliver) + delivery queue (milestone 2A).
- * This is the only object the UI talks to.
+ * + scanner (find others) + sender (deliver) + delivery/carry queue.
+ * Created once per process by ProkNetApp, started/stopped by ProkNetService.
  */
 class ProkNetNode(private val context: Context) {
     private val tag = "NODE"
@@ -30,7 +31,7 @@ class ProkNetNode(private val context: Context) {
         fun onStatus(status: String)
     }
 
-    /** Milestone 2B: several observers (the service for its notification, the Activity when visible). */
+    /** Several observers (the service for its notification, the Activity when visible). */
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<Listener>()
     fun addListener(l: Listener) { if (!listeners.contains(l)) listeners.add(l) }
     fun removeListener(l: Listener) { listeners.remove(l) }
@@ -97,7 +98,7 @@ class ProkNetNode(private val context: Context) {
 
     private fun onScannerPeers(seen: List<Peer>) {
         visible = seen
-        for (p in seen) store.rememberPeer(p.shortId, p.label, p.address, p.lastSeen)
+        for (p in seen) store.rememberPeer(p.shortId, p.label, p.address, p.lastSeen, p.fullId)
         val ids = seen.map { it.shortId }.toSet()
         val appeared = seen.filter { it.shortId !in lastVisibleIds }
         lastVisibleIds = ids
@@ -114,30 +115,80 @@ class ProkNetNode(private val context: Context) {
         val visIds = vis.map { it.shortId }.toSet()
         val known = store.knownPeers()
             .filter { it.shortId !in visIds }
-            .map { Peer(it.shortId, it.lastAddress, 0, it.lastSeen, inRange = false) }
+            .map { Peer(it.shortId, it.lastAddress, 0, it.lastSeen, inRange = false, fullId = it.fullId) }
         return vis + known
     }
 
-    /** Milestone 2A: never sends directly; always goes through the queue. */
+    /** Never sends directly; always goes through the queue (direct, or via one relay when the destination is away). */
     fun sendText(peer: Peer, text: String) {
         if (!isRunning) { DiagLog.e(tag, "cannot queue: node not running"); return }
-        queue.enqueue(peer.shortId, peer.label, text)
+        val full = peer.fullId ?: store.knownPeers().firstOrNull { it.shortId == peer.shortId }?.fullId
+        if (full == null) DiagLog.w(tag, peer.label + " full ID unknown (v1 peer?) - addressing by short ID; relays can still carry it")
+        queue.enqueue(peer.shortId, full, peer.label, text)
     }
 
-    /** Returns true if stored (new), false if duplicate. Called on a binder thread. */
-    private fun onPacketReceived(pkt: Packet, address: String): Boolean {
-        val senderShort = pkt.senderIdHex.substring(0, Identity.SHORT_ID_LEN * 2)
+    /**
+     * A packet arrived over GATT. Returns the receipt code:
+     *   ACCEPTED       it is for me and I stored it            (FINAL RECEIVED)
+     *   ACCEPTED_RELAY it is for someone else, I took custody  (ACCEPTED FOR RELAY)
+     *   DUPLICATE      I already have it (as received, carried or forwarded)
+     *   REJECTED       TTL exhausted or addressed to nobody
+     * Called on a binder thread.
+     */
+    private fun onPacketReceived(pkt: Packet, address: String): Int {
+        val via = visible.firstOrNull { it.address == address }?.shortId ?: address
+        val viaIsOrigin = via == pkt.originShort
+        if (pkt.isFor(identity)) {
+            val fresh = store.insert(
+                StoredMessage(
+                    0, pkt.msgIdHex, Dir.IN, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED,
+                    destId = identity.idHex, originId = pkt.originIdHex, via = if (viaIsOrigin) "" else via, ttl = pkt.ttl, hops = pkt.hops,
+                )
+            )
+            if (!fresh) {
+                DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + pkt.originShort + " ignored (receipt DUPLICATE)")
+                return BleConstants.RECEIPT_DUPLICATE
+            }
+            DiagLog.i(tag, "FINAL RECEIVED msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort +
+                (if (viaIsOrigin) " directly" else " via relay prok-" + via + " after " + pkt.hops + " hop(s)") + ": \"" + pkt.text + "\"")
+            main.post { listener.onMessagesChanged(); pushStatus("received from prok-" + pkt.originShort) }
+            return BleConstants.RECEIPT_ACCEPTED
+        }
+        // Not for me: relay custody (milestone 2C1, one relay, no flooding).
+        if (pkt.hops + 1 > pkt.ttl) {
+            DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + " for prok-" + pkt.destShort + ": TTL exhausted (hops " + pkt.hops + "/" + pkt.ttl + ")")
+            return BleConstants.RECEIPT_REJECTED
+        }
+        if (pkt.hops >= 1) {
+            // 2C1 rule: a packet that already passed through a relay is not re-relayed. Only the origin hands off.
+            DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + ": already relayed once (hops " + pkt.hops + "), 2C1 allows one relay")
+            return BleConstants.RECEIPT_REJECTED
+        }
+        val known = store.knows(pkt.msgIdHex, pkt.originShort)
+        if (known != null) {
+            DiagLog.w(tag, "already have msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " (" + known + ") - receipt DUPLICATE")
+            return BleConstants.RECEIPT_DUPLICATE
+        }
         val fresh = store.insert(
-            StoredMessage(0, pkt.msgIdHex, "in", senderShort, "prok-" + senderShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED)
+            StoredMessage(
+                0, pkt.msgIdHex, Dir.CARRY, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.CARRYING,
+                destId = pkt.destIdHex, originId = pkt.originIdHex, via = via, ttl = pkt.ttl, hops = pkt.hops,
+            )
         )
-        if (!fresh) DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + senderShort + " ignored (receipt says DUPLICATE)")
-        main.post { listener.onMessagesChanged(); pushStatus("received from prok-" + senderShort) }
-        return fresh
+        if (!fresh) return BleConstants.RECEIPT_DUPLICATE
+        DiagLog.i(tag, "ACCEPTED FOR RELAY msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " for prok-" + pkt.destShort +
+            " (hops " + pkt.hops + "/" + pkt.ttl + ") - CARRYING until I meet prok-" + pkt.destShort)
+        main.post {
+            listener.onMessagesChanged(); pushStatus("carrying for prok-" + pkt.destShort)
+            // If the destination happens to be in range right now, forward immediately.
+            queue.pump("relay accepted")
+        }
+        return BleConstants.RECEIPT_ACCEPTED_RELAY
     }
 
     fun statusLine(extra: String? = null): String {
         val bt = if (adapter == null) "no BT" else if (adapter.isEnabled) "BT on" else "BT OFF"
-        val q = "queue " + store.pendingCount() + (if (queue.inFlightMsg() != null) " (1 sending)" else "")
+        val q = "queue " + store.pendingCount() + " carry " + store.carryingCount() + (if (queue.inFlightMsg() != null) " (1 sending)" else "")
         if (!isRunning) return bt + " | node stopped | " + q
         val sb = StringBuilder(bt)
         sb.append(" | server ").append(if (server?.isReady == true) "ready" else "not ready")

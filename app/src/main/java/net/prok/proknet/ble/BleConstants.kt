@@ -16,22 +16,26 @@ object BleConstants {
     /**
      * Readable (milestone 2A): delivery receipt for the last packet THIS central wrote.
      * Value = [RECEIPT_VERSION][status][msgId x8]. The sender reads it right after
-     * its write is acknowledged; only a matching msgId with status ACCEPTED or
-     * DUPLICATE counts as delivered.
+     * its write is acknowledged; only a matching msgId counts.
+     *   ACCEPTED       = the receiver IS the destination and stored it (final delivery)
+     *   DUPLICATE      = the receiver already had it (final or carried)
+     *   ACCEPTED_RELAY = the receiver is NOT the destination and took custody (2C1)
+     *   REJECTED       = malformed, or TTL exhausted
      */
     val CHAR_RECEIPT_UUID: UUID = UUID.fromString("7a0c0004-9b1e-4c5a-8d7f-0b6e2f3a4c5d")
     const val RECEIPT_VERSION = 1
     const val RECEIPT_REJECTED = 0
     const val RECEIPT_ACCEPTED = 1
     const val RECEIPT_DUPLICATE = 2
+    const val RECEIPT_ACCEPTED_RELAY = 3
 
     /**
      * Manufacturer-specific data company ID. 0xFFFF is reserved by the Bluetooth
      * SIG for internal use / testing, which is exactly what a lab build is.
-     * The scan-response payload is: [advVersion:1][shortId:4].
+     * Scan-response payload: v1 = [1][shortId x4]; v2 (2C1) = [2][fullId x16].
      */
     const val MANUFACTURER_ID = 0xFFFF
-    const val ADV_VERSION = 1
+    const val ADV_VERSION = 2
 
     /** Largest MTU Android allows; a 512-byte packet fits in one write when granted. */
     const val REQUEST_MTU = 517
@@ -41,7 +45,7 @@ object BleConstants {
     const val MTU_FALLBACK_MS = 3_000L
 
     // ---- delivery queue (milestone 2A) ----
-    const val QUEUE_TTL_MS = 48L * 3600_000L       // pending longer than this -> expired
+    const val QUEUE_TTL_MS = 48L * 3600_000L       // pending/carrying longer than this -> expired
     const val QUEUE_TICK_MS = 10_000L              // periodic pump
     const val BACKOFF_BASE_MS = 5_000L             // wait after a failed attempt, doubles each time
     const val BACKOFF_MAX_MS = 60_000L
@@ -50,9 +54,10 @@ object BleConstants {
 
 /** Outcome of one delivery attempt, as seen by the sender. */
 enum class DeliveryResult {
-    DELIVERED,        // receipt: peer stored the message
-    DUPLICATE,        // receipt: peer already had it (an earlier attempt got through) -> counts as delivered
-    REJECTED,         // receipt: peer refused the packet -> failed, no retry
+    DELIVERED,        // receipt ACCEPTED: the destination stored the message (final)
+    DUPLICATE,        // receipt DUPLICATE: peer already had it -> counts as delivered / handed off
+    RELAYED,          // receipt ACCEPTED_RELAY: a relay took custody (NOT final delivery)
+    REJECTED,         // receipt REJECTED: peer refused the packet -> failed, no retry
     NO_RECEIPT,       // write acked but receipt missing/mismatched -> retry later
     TRANSPORT_FAILED, // could not connect / write -> retry later
 }
@@ -64,6 +69,8 @@ class Peer(
     @Volatile var rssi: Int,
     @Volatile var lastSeen: Long,
     @Volatile var inRange: Boolean = true,
+    /** Full 16-byte ID hex when the peer advertises v2; null for v1 peers. */
+    @Volatile var fullId: String? = null,
 ) {
     val label: String get() = "prok-" + shortId
 

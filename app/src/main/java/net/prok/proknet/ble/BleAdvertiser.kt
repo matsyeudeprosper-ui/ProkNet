@@ -53,9 +53,11 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
             .build()
-        val payload = ByteArray(1 + Identity.SHORT_ID_LEN)
+        // v2 (2C1): the scan response carries the FULL 16-byte ID so peers can address
+        // packets to us without a GATT read. 2+2+1+16 = 21 bytes, fits in 31.
+        val payload = ByteArray(1 + Identity.ID_LEN)
         payload[0] = BleConstants.ADV_VERSION.toByte()
-        System.arraycopy(identity.shortIdBytes, 0, payload, 1, Identity.SHORT_ID_LEN)
+        System.arraycopy(identity.idBytes, 0, payload, 1, Identity.ID_LEN)
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addManufacturerData(BleConstants.MANUFACTURER_ID, payload)

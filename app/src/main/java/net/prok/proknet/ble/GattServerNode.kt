@@ -21,16 +21,17 @@ import net.prok.proknet.core.Packet
  * writes larger than MTU-3 into "prepared writes" followed by an execute; both
  * paths are handled and reassembled here.
  *
- * Milestone 2A: after handling a packet the server stores a receipt for that
- * central (keyed by its address). The central reads RECEIPT to learn whether
- * the packet was stored (ACCEPTED), already known (DUPLICATE) or REJECTED.
+ * After handling a packet the server stores a receipt for that central (keyed
+ * by its address). The central reads RECEIPT to learn whether the packet was
+ * stored as final (ACCEPTED), taken into custody for relay (ACCEPTED_RELAY),
+ * already known (DUPLICATE) or REJECTED.
  *
- * [onPacket] must return true if the packet was stored, false if it was a duplicate.
+ * [onPacket] returns one of the BleConstants.RECEIPT_* codes.
  */
 class GattServerNode(
     private val context: Context,
     private val identity: Identity,
-    private val onPacket: (Packet, String) -> Boolean,
+    private val onPacket: (Packet, String) -> Int,
 ) {
     private val tag = "GATT-S"
     private var server: BluetoothGattServer? = null
@@ -72,7 +73,7 @@ class GattServerNode(
                         DiagLog.w(tag, "RECEIPT read by " + device.address + " but no packet was received from it on this connection")
                         receiptBytes(BleConstants.RECEIPT_REJECTED, ByteArray(8))
                     } else {
-                        DiagLog.i(tag, "RECEIPT read by " + device.address + ": status=" + r[1] + " msg=" + hex(r, 2, 8))
+                        DiagLog.i(tag, "RECEIPT read by " + device.address + ": " + statusName(r[1].toInt()) + " msg=" + hex(r, 2, 8))
                         r
                     }
                 }
@@ -131,11 +132,10 @@ class GattServerNode(
             synchronized(receipts) { receipts[address] = receiptBytes(BleConstants.RECEIPT_REJECTED, ByteArray(8)) }
             return
         }
-        val stored = onPacket(pkt, address)
-        val status = if (stored) BleConstants.RECEIPT_ACCEPTED else BleConstants.RECEIPT_DUPLICATE
+        val status = onPacket(pkt, address)
         synchronized(receipts) { receipts[address] = receiptBytes(status, pkt.msgId) }
-        DiagLog.i(tag, "PACKET from " + pkt.senderIdHex.substring(0, 8) + " msg=" + pkt.msgIdHex +
-            " text=\"" + pkt.text + "\" -> receipt " + (if (stored) "ACCEPTED" else "DUPLICATE"))
+        DiagLog.i(tag, "PACKET origin=" + pkt.originShort + " dest=" + pkt.destShort + " msg=" + pkt.msgIdHex +
+            " hops=" + pkt.hops + "/" + pkt.ttl + " text=\"" + pkt.text + "\" -> receipt " + statusName(status))
     }
 
     private fun receiptBytes(status: Int, msgId: ByteArray): ByteArray {
@@ -144,6 +144,14 @@ class GattServerNode(
         r[1] = status.toByte()
         System.arraycopy(msgId, 0, r, 2, minOf(8, msgId.size))
         return r
+    }
+
+    private fun statusName(s: Int) = when (s) {
+        BleConstants.RECEIPT_ACCEPTED -> "ACCEPTED"
+        BleConstants.RECEIPT_DUPLICATE -> "DUPLICATE"
+        BleConstants.RECEIPT_ACCEPTED_RELAY -> "ACCEPTED_RELAY"
+        BleConstants.RECEIPT_REJECTED -> "REJECTED"
+        else -> "status " + s
     }
 
     private fun hex(b: ByteArray, from: Int, len: Int): String {

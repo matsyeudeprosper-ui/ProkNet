@@ -181,8 +181,9 @@ class BleSender(private val context: Context, private val adapter: BluetoothAdap
                     finish(op, DeliveryResult.NO_RECEIPT, "receipt is for msg " + rMsg.toHex() + ", expected " + op.msgId.toHex()); return@post
                 }
                 when (rStatus) {
-                    BleConstants.RECEIPT_ACCEPTED -> finish(op, DeliveryResult.DELIVERED, "RECEIPT accepted (mtu " + op.mtu + ", attempt " + op.attempt + ")")
+                    BleConstants.RECEIPT_ACCEPTED -> finish(op, DeliveryResult.DELIVERED, "RECEIPT accepted: destination stored it (mtu " + op.mtu + ", attempt " + op.attempt + ")")
                     BleConstants.RECEIPT_DUPLICATE -> finish(op, DeliveryResult.DUPLICATE, "RECEIPT duplicate: peer already had it")
+                    BleConstants.RECEIPT_ACCEPTED_RELAY -> finish(op, DeliveryResult.RELAYED, "RECEIPT accepted_relay: " + op.peer.label + " took custody (NOT final delivery)")
                     else -> finish(op, DeliveryResult.REJECTED, "RECEIPT rejected by peer")
                 }
             }
