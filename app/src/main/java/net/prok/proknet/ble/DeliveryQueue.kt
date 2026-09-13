@@ -12,25 +12,35 @@ import net.prok.proknet.core.Packet
 import net.prok.proknet.core.Routing
 import net.prok.proknet.core.StoredMessage
 import net.prok.proknet.core.hexToBytes
+import net.prok.proknet.transport.Frame
+import net.prok.proknet.transport.Transport
 
 /**
- * STORE -> CARRY -> FORWARD executor. All DECISIONS live in core/Routing.kt
- * (pure, unit-tested); this class only reads the store, calls the planner,
- * drives BleSender and writes the transition back.
+ * STORE -> CARRY -> FORWARD executor for control-sized packets. All DECISIONS
+ * live in core/Routing.kt (pure, unit-tested); this class only reads the store,
+ * calls the planner, drives a Transport and writes the transition back.
  *
- * pump() is triggered by: a new message, the scanner seeing a peer, a 10 s tick,
- * and the end of every attempt. One attempt in flight at a time.
+ * v0.5: transport-agnostic (BLE or Wi-Fi, chosen by [Hooks.transportFor]);
+ * payloads are opaque bytes (end-to-end encrypted ENVELOPEs); the queue never
+ * sees plaintext of carried packets.
+ *
+ * pump() is triggered by: a new message, the scanner seeing a peer, a Wi-Fi
+ * link change, a 10 s tick, and the end of every attempt. One attempt in flight.
  */
 class DeliveryQueue(
     private val store: MessageStore,
     private val identity: Identity,
-    private val senderProvider: () -> BleSender?,
-    private val peersProvider: () -> List<Peer>,
-    private val onChanged: () -> Unit,
+    private val hooks: Hooks,
     private val powerManager: android.os.PowerManager? = null,
 ) {
+    interface Hooks {
+        /** Peers a frame could reach right now (BLE in range with an ID, or Wi-Fi linked), with signal strength. */
+        fun reachablePeers(): List<Routing.PeerView>
+        fun transportFor(peerShort: String): Transport?
+        fun onChanged()
+    }
+
     private val tag = "QUEUE"
-    /** Keep the CPU awake for the few seconds of a delivery attempt when the screen is off. */
     private val wakeLock: android.os.PowerManager.WakeLock? =
         powerManager?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ProkNet:delivery")?.apply { setReferenceCounted(false) }
     private val main = Handler(Looper.getMainLooper())
@@ -49,9 +59,9 @@ class DeliveryQueue(
         if (running) return
         running = true
         val recovered = store.recoverInterrupted()
-        if (recovered > 0) DiagLog.w(tag, recovered.toString() + " message(s) were mid-attempt at last shutdown, back to waiting")
+        if (recovered > 0) DiagLog.w(tag, recovered.toString() + " message(s)/transfer(s) were mid-attempt at last shutdown, back to waiting")
         DiagLog.i(tag, "queue started, pending=" + store.pendingCount() + " carrying=" + store.carryingCount())
-        for (c in store.carrying()) DiagLog.i(tag, "CARRYING msg=" + c.msgId + " from prok-" + c.peerId + " for prok-" + c.destShort + " (hops " + c.hops + "/" + c.ttl + ")")
+        for (c in store.carrying()) DiagLog.i(tag, "CARRYING msg=" + c.msgId + " from prok-" + c.peerId + " for prok-" + c.destShort + " (hops " + c.hops + "/" + c.ttl + ", " + (if (c.enc == 1) "encrypted" else "plaintext") + ")")
         expire()
         main.postDelayed(ticker, 2000)
     }
@@ -66,27 +76,25 @@ class DeliveryQueue(
     fun carryingCount(): Long = store.carryingCount()
     fun inFlightMsg(): String? = inFlight
 
-    /** Own message for [destShortId]. [destFullId] may be null for v1 peers (short-ID addressing then). */
-    fun enqueue(destShortId: String, destFullId: String?, peerLabel: String, text: String) {
+    /** Own message: [payload] already encrypted for the destination (ENVELOPE), stored with the plaintext for the local list only. */
+    fun enqueue(destShortId: String, destFullId: String?, peerLabel: String, text: String, msgId: ByteArray, timestamp: Long, payload: ByteArray) {
         val dest = if (destFullId != null && destFullId.length == Packet.ID_LEN * 2) destFullId.hexToBytes() else Packet.destFromShort(destShortId)
-        val pkt = Packet.text(identity.idBytes, dest, text)
+        val msgIdHex = msgId.toHexString()
         store.insert(
             StoredMessage(
-                0, pkt.msgIdHex, Dir.OUT, destShortId, peerLabel, text, pkt.timestamp, MsgStatus.PENDING,
-                destId = pkt.destIdHex, originId = identity.idHex, ttl = pkt.ttl, hops = 0,
+                0, msgIdHex, Dir.OUT, destShortId, peerLabel, text, timestamp, MsgStatus.PENDING,
+                destId = dest.toHexString(), originId = identity.idHex, ttl = Packet.DEFAULT_TTL, hops = 0, payload = payload, enc = 1,
             )
         )
-        DiagLog.i(tag, "ENQUEUED msg=" + pkt.msgIdHex + " for " + peerLabel + " (" + text.length + " chars, ttl " + pkt.ttl +
+        DiagLog.i(tag, "ENQUEUED msg=" + msgIdHex + " for " + peerLabel + " (" + text.length + " chars, " + payload.size + " bytes encrypted, ttl " + Packet.DEFAULT_TTL +
             (if (destFullId == null) ", short-ID addressing" else "") + "), pending=" + store.pendingCount())
-        onChanged()
+        hooks.onChanged()
         pump("enqueue")
     }
 
-    /** Called by the node whenever the scanner's peer list changes. */
-    fun onPeersChanged(peers: List<Peer>) {
-        if (!running) return
-        if (peers.any { it.inRange }) pump("peer seen")
-    }
+    private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
+
+    fun onPeersChanged() { if (running) pump("peer seen") }
 
     /** A peer that was out of range is visible again: anything addressed to it skips its backoff. */
     fun onPeerAppeared(peer: Peer) {
@@ -110,7 +118,7 @@ class DeliveryQueue(
         val cutoff = System.currentTimeMillis() - Routing.QUEUE_TTL_MS
         val victims = store.expireOlderThan(cutoff)
         for (v in victims) DiagLog.w(tag, "EXPIRED " + v.direction + " msg=" + v.msgId + " for prok-" + v.destShort + " (older than " + (Routing.QUEUE_TTL_MS / 3600_000) + "h)")
-        if (victims.isNotEmpty()) onChanged()
+        if (victims.isNotEmpty()) hooks.onChanged()
     }
 
     private fun item(m: StoredMessage) = Routing.Item(m.msgId, m.direction == Dir.CARRY, m.destShort, m.ttl, m.hops, m.nextAttempt, m.attempts)
@@ -118,9 +126,7 @@ class DeliveryQueue(
     fun pump(reason: String) {
         if (!running) return
         if (inFlight != null) return
-        val sender = senderProvider() ?: return
-        if (sender.isBusy) return
-        val inRange = peersProvider().filter { it.inRange && it.hasId }
+        val inRange = hooks.reachablePeers()
         if (inRange.isEmpty()) return
         val now = System.currentTimeMillis()
         val carrying = store.carrying()
@@ -129,7 +135,7 @@ class DeliveryQueue(
         val byId = HashMap<String, StoredMessage>()
         for (m in carrying) byId[m.msgId + "/carry"] = m
         for (m in pending) byId[m.msgId + "/out"] = m
-        val plan = Routing.plan(carrying.map { item(it) }, pending.map { item(it) }, inRange.map { Routing.PeerView(it.shortId, it.rssi) }, now)
+        val plan = Routing.plan(carrying.map { item(it) }, pending.map { item(it) }, inRange, now)
         if (plan == null) {
             if (reason == "enqueue" || reason == "manual" || reason == "peer reappeared") {
                 val waiting = pending.count { it.nextAttempt > now } + carrying.count { it.nextAttempt > now }
@@ -138,22 +144,24 @@ class DeliveryQueue(
             return
         }
         val row = byId[plan.item.msgId + (if (plan.item.isCarry) "/carry" else "/out")] ?: return
-        val peer = inRange.firstOrNull { it.shortId == plan.targetShort } ?: return
-        attempt(row, peer, sender, reason, plan.kind)
+        val transport = hooks.transportFor(plan.targetShort) ?: return
+        attempt(row, plan.targetShort, transport, reason, plan.kind)
     }
 
-    private fun attempt(m: StoredMessage, peer: Peer, sender: BleSender, reason: String, kind: Routing.Kind) {
+    private fun attempt(m: StoredMessage, peerShort: String, transport: Transport, reason: String, kind: Routing.Kind) {
         inFlight = m.msgId
         try { wakeLock?.acquire(BleConstants.SEND_TIMEOUT_MS * 2 + 5000) } catch (e: Exception) { DiagLog.w(tag, "wakelock: " + e) }
         val isCarry = m.direction == Dir.CARRY
-        store.setStatus(m.msgId, if (isCarry) MsgStatus.FORWARDING else MsgStatus.SENDING, bumpAttempts = true, direction = m.direction)
-        onChanged()
+        store.setStatus(m.msgId, if (isCarry) MsgStatus.FORWARDING else MsgStatus.SENDING, bumpAttempts = true, direction = m.direction, transport = transport.name)
+        hooks.onChanged()
         val attemptNo = m.attempts + 1
         val pkt: Packet = try {
+            val payload = m.payload ?: (if (m.enc == 0) m.text.toByteArray(Charsets.UTF_8) else throw IllegalStateException("encrypted row without payload"))
             Routing.outgoingPacket(
                 originId = if (isCarry) m.originId.hexToBytes() else identity.idBytes,
                 destId = Routing.destBytes(m.destId, m.peerId),
-                msgId = m.msgId.hexToBytes(), timestamp = m.timestamp, text = m.text,
+                msgId = m.msgId.hexToBytes(), timestamp = m.timestamp, payload = payload,
+                type = if (m.enc == 1) Packet.TYPE_ENVELOPE else Packet.TYPE_TEXT,
                 ttl = m.ttl, hops = m.hops, isCarry = isCarry, myId = identity.idBytes,
             )
         } catch (e: Exception) {
@@ -161,28 +169,28 @@ class DeliveryQueue(
             store.setStatus(m.msgId, MsgStatus.FAILED, "corrupt row: " + e.message, direction = m.direction)
             inFlight = null
             try { if (wakeLock?.isHeld == true) wakeLock.release() } catch (_: Exception) {}
-            onChanged()
+            hooks.onChanged()
             return
         }
         when (kind) {
-            Routing.Kind.FORWARD -> DiagLog.i(tag, "FORWARDING msg=" + m.msgId + " from prok-" + m.peerId + " to its destination " + peer.label + " (hop " + pkt.hops + "/" + pkt.ttl + ", lastHop=me, attempt " + attemptNo + ", trigger: " + reason + ")")
-            Routing.Kind.HANDOFF -> DiagLog.i(tag, "HANDING OFF msg=" + m.msgId + " for prok-" + m.destShort + " to relay " + peer.label + " (destination not in range, attempt " + attemptNo + ", trigger: " + reason + ")")
-            Routing.Kind.DIRECT -> DiagLog.i(tag, "ATTEMPT " + attemptNo + " msg=" + m.msgId + " -> " + peer.label + " direct (trigger: " + reason + ")")
+            Routing.Kind.FORWARD -> DiagLog.i(tag, "FORWARDING msg=" + m.msgId + " from prok-" + m.peerId + " to its destination prok-" + peerShort + " over " + transport.name + " (hop " + pkt.hops + "/" + pkt.ttl + ", lastHop=me, attempt " + attemptNo + ", trigger: " + reason + ")")
+            Routing.Kind.HANDOFF -> DiagLog.i(tag, "HANDING OFF msg=" + m.msgId + " for prok-" + m.destShort + " to relay prok-" + peerShort + " over " + transport.name + " (destination not in range, attempt " + attemptNo + ", trigger: " + reason + ")")
+            Routing.Kind.DIRECT -> DiagLog.i(tag, "ATTEMPT " + attemptNo + " msg=" + m.msgId + " -> prok-" + peerShort + " direct over " + transport.name + " (trigger: " + reason + ")")
         }
-        sender.send(peer, pkt.msgId, pkt.encode()) { result, detail ->
-            main.post { onResult(m, attemptNo, peer, kind, result, detail) }
+        transport.send(peerShort, Frame(pkt.msgId, pkt.encode())) { result, detail ->
+            main.post { onResult(m, attemptNo, peerShort, kind, result, detail, transport.name) }
         }
     }
 
-    private fun onResult(m: StoredMessage, attemptNo: Int, peer: Peer, kind: Routing.Kind, result: DeliveryResult, detail: String) {
+    private fun onResult(m: StoredMessage, attemptNo: Int, peerShort: String, kind: Routing.Kind, result: DeliveryResult, detail: String, transportName: String) {
         inFlight = null
         try { if (wakeLock?.isHeld == true) wakeLock.release() } catch (_: Exception) {}
-        val t = Routing.applyResult(kind, result, attemptNo, peer.shortId)
+        val t = Routing.applyResult(kind, result, attemptNo, peerShort)
         val nextAt = if (t.backoffMs > 0) System.currentTimeMillis() + t.backoffMs else 0L
-        store.setStatus(m.msgId, t.status, detail, nextAt, direction = m.direction, via = t.via)
-        val line = "msg=" + m.msgId + ": " + t.log
+        store.setStatus(m.msgId, t.status, detail, nextAt, direction = m.direction, via = t.via, transport = transportName)
+        val line = "msg=" + m.msgId + " (" + transportName + "): " + t.log
         when (t.level) { 'E' -> DiagLog.e(tag, line); 'W' -> DiagLog.w(tag, line); else -> DiagLog.i(tag, line) }
-        onChanged()
+        hooks.onChanged()
         main.postDelayed({ pump("after attempt") }, 500)
     }
 }

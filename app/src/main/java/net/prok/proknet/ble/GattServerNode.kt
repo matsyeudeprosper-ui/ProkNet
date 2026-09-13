@@ -11,33 +11,31 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import java.io.ByteArrayOutputStream
 import net.prok.proknet.core.DiagLog
-import net.prok.proknet.core.Identity
 import net.prok.proknet.core.Packet
 
 /**
- * The receiving side: a GATT server exposing the ProkNet service.
+ * The BLE receiving side: a GATT server exposing the ProkNet service.
  *
- * Peers write one encoded Packet into the INBOX characteristic. Android splits
- * writes larger than MTU-3 into "prepared writes" followed by an execute; both
- * paths are handled and reassembled here.
+ *   IDENTITY (read)  the identity record from [identityRecord]: [2][id 16][pub 64][name]
+ *   INBOX (write)    one encoded Packet per write; long writes reassembled
+ *   RECEIPT (read)   [ver][status][msgId 8] for the last packet THIS central wrote
  *
- * After handling a packet the server stores a receipt for that central (keyed
- * by its address). The central reads RECEIPT to learn whether the packet was
- * stored as final (ACCEPTED), taken into custody for relay (ACCEPTED_RELAY),
- * already known (DUPLICATE) or REJECTED.
- *
- * [onPacket] returns one of the BleConstants.RECEIPT_* codes.
+ * The receipt is written BEFORE the write response, so the central's read can never
+ * see a stale value. Receipts are keyed by the central's transport address only as
+ * connection bookkeeping; routing never uses that address.
  */
 class GattServerNode(
     private val context: Context,
-    private val identity: Identity,
-    private val onPacket: (Packet, String) -> Int,
+    private val identityRecord: () -> ByteArray,
+    private val onPacket: (Packet) -> Int,
 ) {
     private val tag = "GATT-S"
     private var server: BluetoothGattServer? = null
     private val prepared = HashMap<String, ByteArrayOutputStream>()
     private val receipts = HashMap<String, ByteArray>()
     @Volatile var isReady = false
+        private set
+    @Volatile var bytesReceived = 0L
         private set
 
     private val callback = object : BluetoothGattServerCallback() {
@@ -64,18 +62,15 @@ class GattServerNode(
         ) {
             val full: ByteArray = when (characteristic.uuid) {
                 BleConstants.CHAR_IDENTITY_UUID -> {
-                    DiagLog.i(tag, "identity read by " + device.address + " offset=" + offset)
-                    (identity.idHex + "|" + identity.displayName).toByteArray(Charsets.UTF_8)
+                    if (offset == 0) DiagLog.i(tag, "identity record read by " + device.address)
+                    try { identityRecord() } catch (e: Exception) { ByteArray(0) }
                 }
                 BleConstants.CHAR_RECEIPT_UUID -> {
                     val r = synchronized(receipts) { receipts[device.address] }
                     if (r == null) {
                         DiagLog.w(tag, "RECEIPT read by " + device.address + " but no packet was received from it on this connection")
                         receiptBytes(BleConstants.RECEIPT_REJECTED, ByteArray(8))
-                    } else {
-                        DiagLog.i(tag, "RECEIPT read by " + device.address + ": " + statusName(r[1].toInt()) + " msg=" + hex(r, 2, 8))
-                        r
-                    }
+                    } else r
                 }
                 else -> { respond(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, 0, null); return }
             }
@@ -98,11 +93,8 @@ class GattServerNode(
                     if (buf.size() != offset) DiagLog.w(tag, "prepared write offset " + offset + " but buffered " + buf.size())
                     buf.write(bytes)
                 }
-                DiagLog.i(tag, "prepared write chunk from " + device.address + " offset=" + offset + " len=" + bytes.size)
                 if (responseNeeded) respond(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, bytes)
             } else {
-                DiagLog.i(tag, "write from " + device.address + " len=" + bytes.size)
-                // Handle BEFORE responding so the receipt exists before the central can read it.
                 handle(bytes, device.address)
                 if (responseNeeded) respond(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
             }
@@ -110,13 +102,8 @@ class GattServerNode(
 
         override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
             val buf = synchronized(prepared) { prepared.remove(device.address) }
-            if (execute && buf != null) {
-                val bytes = buf.toByteArray()
-                DiagLog.i(tag, "execute write from " + device.address + " total=" + bytes.size)
-                handle(bytes, device.address)
-            } else {
-                DiagLog.w(tag, "execute write cancelled/empty from " + device.address)
-            }
+            if (execute && buf != null) handle(buf.toByteArray(), device.address)
+            else DiagLog.w(tag, "execute write cancelled/empty from " + device.address)
             respond(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
         }
     }
@@ -126,6 +113,7 @@ class GattServerNode(
     }
 
     private fun handle(bytes: ByteArray, address: String) {
+        bytesReceived += bytes.size
         val pkt = Packet.decode(bytes)
         if (pkt == null) {
             DiagLog.w(tag, "invalid packet from " + address + " (" + bytes.size + " bytes) - REJECTED")
@@ -133,13 +121,14 @@ class GattServerNode(
             return
         }
         // Never let a bad packet or a store error kill the Bluetooth binder thread: answer REJECTED instead.
-        val status = try { onPacket(pkt, address) } catch (e: Exception) {
+        val status = try { onPacket(pkt) } catch (e: Exception) {
             DiagLog.e(tag, "packet handler crashed for msg=" + pkt.msgIdHex + " - answering REJECTED", e)
             BleConstants.RECEIPT_REJECTED
         }
         synchronized(receipts) { receipts[address] = receiptBytes(status, pkt.msgId) }
-        DiagLog.i(tag, "PACKET v" + pkt.wireVersion + " origin=" + pkt.originShort + " dest=" + pkt.destShort + " lastHop=" + (if (pkt.hasLastHop) pkt.lastHopShort else "?") +
-            " msg=" + pkt.msgIdHex + " hops=" + pkt.hops + "/" + pkt.ttl + " text=\"" + pkt.text + "\" -> receipt " + statusName(status))
+        DiagLog.i(tag, "PACKET v" + pkt.wireVersion + " type=" + pkt.type + " origin=" + pkt.originShort + " dest=" + pkt.destShort +
+            " lastHop=" + (if (pkt.hasLastHop) pkt.lastHopShort else "?") + " msg=" + pkt.msgIdHex + " hops=" + pkt.hops + "/" + pkt.ttl +
+            " len=" + pkt.payload.size + " -> receipt " + statusName(status))
     }
 
     private fun receiptBytes(status: Int, msgId: ByteArray): ByteArray {
@@ -158,12 +147,6 @@ class GattServerNode(
         else -> "status " + s
     }
 
-    private fun hex(b: ByteArray, from: Int, len: Int): String {
-        val sb = StringBuilder()
-        for (i in from until minOf(b.size, from + len)) sb.append(String.format("%02x", b[i]))
-        return sb.toString()
-    }
-
     fun start(): Boolean {
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         return try {
@@ -171,27 +154,9 @@ class GattServerNode(
             if (srv == null) { DiagLog.e(tag, "openGattServer returned null"); return false }
             server = srv
             val service = BluetoothGattService(BleConstants.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-            service.addCharacteristic(
-                BluetoothGattCharacteristic(
-                    BleConstants.CHAR_IDENTITY_UUID,
-                    BluetoothGattCharacteristic.PROPERTY_READ,
-                    BluetoothGattCharacteristic.PERMISSION_READ,
-                )
-            )
-            service.addCharacteristic(
-                BluetoothGattCharacteristic(
-                    BleConstants.CHAR_INBOX_UUID,
-                    BluetoothGattCharacteristic.PROPERTY_WRITE,
-                    BluetoothGattCharacteristic.PERMISSION_WRITE,
-                )
-            )
-            service.addCharacteristic(
-                BluetoothGattCharacteristic(
-                    BleConstants.CHAR_RECEIPT_UUID,
-                    BluetoothGattCharacteristic.PROPERTY_READ,
-                    BluetoothGattCharacteristic.PERMISSION_READ,
-                )
-            )
+            service.addCharacteristic(BluetoothGattCharacteristic(BleConstants.CHAR_IDENTITY_UUID, BluetoothGattCharacteristic.PROPERTY_READ, BluetoothGattCharacteristic.PERMISSION_READ))
+            service.addCharacteristic(BluetoothGattCharacteristic(BleConstants.CHAR_INBOX_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, BluetoothGattCharacteristic.PERMISSION_WRITE))
+            service.addCharacteristic(BluetoothGattCharacteristic(BleConstants.CHAR_RECEIPT_UUID, BluetoothGattCharacteristic.PROPERTY_READ, BluetoothGattCharacteristic.PERMISSION_READ))
             val ok = srv.addService(service)
             DiagLog.i(tag, "gatt server opened (identity, inbox, receipt), addService=" + ok)
             ok

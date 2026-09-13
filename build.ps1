@@ -39,6 +39,9 @@ $tasks += "assembleDebug"
 $args = @("--no-daemon", "--console=plain", "--warning-mode=none") + $tasks
 if ($Offline) { $args += "--offline" }
 
+# Stale reports from a previous run must never count as this run's results.
+$staleReports = Join-Path $root "app/build/test-results/testDebugUnitTest"
+if (Test-Path $staleReports) { Remove-Item $staleReports -Recurse -Force }
 $sw = [Diagnostics.Stopwatch]::StartNew()
 & "$root\gradlew.bat" @args
 $gradleExit = $LASTEXITCODE

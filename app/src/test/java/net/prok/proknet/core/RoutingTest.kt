@@ -1,5 +1,6 @@
 package net.prok.proknet.core
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -236,6 +237,33 @@ class RoutingTest {
         val d = Phone(D)
         assertEquals(Routing.RECEIPT_REJECTED, d.receive(onAirB.encode()))
         assertTrue(d.rows.isEmpty())
+    }
+
+    @Test
+    fun chunk_packets_are_delivered_direct_only_and_never_relayed() {
+        val chunk = Packet(A, C, ByteArray(8) { 4 }, 0, ByteArray(50), Packet.TYPE_CHUNK, ttl = 3, hops = 0)
+        assertEquals(Routing.Receive.CHUNK, Routing.decideReceive(chunk, C, false))
+        assertEquals(Routing.RECEIPT_ACCEPTED, Routing.receiptFor(Routing.Receive.CHUNK))
+        assertEquals(Routing.Receive.REJECT_NOT_RELAYABLE, Routing.decideReceive(chunk, B, false))
+        assertEquals(Routing.RECEIPT_REJECTED, Routing.receiptFor(Routing.Receive.REJECT_NOT_RELAYABLE))
+        // a chunk arriving twice is still CHUNK: the assembler, not the router, ignores duplicates
+        assertEquals(Routing.Receive.CHUNK, Routing.decideReceive(chunk, C, true))
+    }
+
+    @Test
+    fun encrypted_envelope_keeps_routing_metadata_valid_through_a_relay() {
+        val opaque = ByteArray(120) { (it * 3).toByte() }
+        val env = Packet(A, C, ByteArray(8) { 6 }, 99L, opaque, Packet.TYPE_ENVELOPE, ttl = 3, hops = 0)
+        val b = Phone(B); val c = Phone(C)
+        val fromA = Routing.outgoingPacket(env.originId, env.destId, env.msgId, env.timestamp, env.payload, env.type, env.ttl, 0, isCarry = false, myId = A)
+        assertEquals(Routing.RECEIPT_ACCEPTED_RELAY, b.receive(fromA.encode()))
+        val atB = Packet.decode(fromA.encode())!!
+        val fromB = Routing.outgoingPacket(atB.originId, atB.destId, atB.msgId, atB.timestamp, atB.payload, atB.type, atB.ttl, atB.hops, isCarry = true, myId = B)
+        assertArrayEquals(opaque, fromB.payload)          // ciphertext untouched
+        assertArrayEquals(env.aad(), fromB.aad())         // authenticated header untouched
+        assertEquals(1, fromB.hops); assertEquals(short(B), fromB.lastHopShort)
+        assertEquals(Routing.RECEIPT_ACCEPTED, c.receive(fromB.encode()))
+        assertEquals(short(A), c.receivedFrom[0].first); assertEquals(short(B), c.receivedFrom[0].second)
     }
 
     @Test

@@ -27,6 +27,16 @@
         android:textSize="12sp"
         android:text="status" />
 
+    <TextView
+        android:id="@+id/txtDiag"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="11sp"
+        android:typeface="monospace"
+        android:background="#F3F3F3"
+        android:padding="4dp"
+        android:text="diagnostics" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -37,6 +47,8 @@
             android:layout_height="wrap_content" android:text="Stop" />
         <Button android:id="@+id/btnRename" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="Name" />
+        <Button android:id="@+id/btnBattery" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Battery" />
     </LinearLayout>
 
     <LinearLayout
@@ -44,21 +56,25 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal">
         <Button android:id="@+id/btnRetry" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Retry pending" />
-        <Button android:id="@+id/btnBattery" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Battery" />
+            android:layout_height="wrap_content" android:text="Retry" />
+        <Button android:id="@+id/btnWifi" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Wi-Fi link" />
+        <Button android:id="@+id/btnBigTest" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Big test" />
+        <Button android:id="@+id/btnSendFile" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Send file" />
     </LinearLayout>
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Nearby ProkNet devices (tap to select):"
+        android:text="Peers (tap to select; [key] = can encrypt for it):"
         android:textSize="12sp" />
 
     <ListView
         android:id="@+id/listPeers"
         android:layout_width="match_parent"
-        android:layout_height="110dp"
+        android:layout_height="100dp"
         android:background="#EEEEEE" />
 
     <TextView
@@ -73,8 +89,8 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal">
         <EditText android:id="@+id/editMessage" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:hint="Message" android:inputType="text"
-            android:maxLength="400" android:imeOptions="actionSend" />
+            android:layout_height="wrap_content" android:hint="Message (encrypted)" android:inputType="text"
+            android:maxLength="20000" android:imeOptions="actionSend" />
         <Button android:id="@+id/btnSend" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="Send" />
     </LinearLayout>
@@ -82,7 +98,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Messages:"
+        android:text="Messages and transfers:"
         android:textSize="12sp" />
 
     <ListView

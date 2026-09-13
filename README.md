@@ -25,6 +25,7 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.3.0 | 2B: background operation via foreground service | passed on two real phones (2026-09-13) |
 | v0.4.0 | 2C1: first one-relay STORE -> CARRY -> FORWARD | superseded by v0.4.1 before testing |
 | v0.4.1 | 2C1 hardening: explicit last-hop ID, JVM routing tests gate the build | built, awaiting three-phone test |
+| v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | built, 48 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 
@@ -78,7 +79,26 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 - One relay only, no flooding: a packet that already passed through a relay is
   refused by other relays. TTL and 48 h expiry bound everything.
 
-Still not here: encryption, multi-hop routing, Wi-Fi Direct.
+### v0.5 - Secure Fast Link
+
+- **Cryptographic identity.** Each install has a P-256 key pair; the ProkNet ID
+  is derived from the public key. The private key never leaves the app.
+- **End-to-end encryption.** Every message is signed by the origin and encrypted
+  for the destination (ECDH + HKDF + AES-256-GCM). A relay sees only routing
+  metadata and cannot read or alter the payload without detection.
+- **Transport abstraction.** Routing talks to a `Transport` interface. BLE is
+  one implementation; Wi-Fi is the second.
+- **Wi-Fi link.** Local-only hotspot on one phone, joined by the other, TCP with a
+  signed mutual handshake. Credentials travel inside an encrypted BLE message.
+  No router, no Internet. One system "connect" dialog on the joining phone.
+- **Large payloads.** Text of any length and files up to ~2 MB: encrypted once,
+  cut into 400-byte chunks, sent over Wi-Fi when the link is up, else BLE.
+  Integrity by GCM tag plus SHA-256; progress and retry states in the UI.
+- Diagnostics: identity fingerprint, peer key status, BLE and Wi-Fi link
+  state, active transport, bytes sent/received, transfer progress, real
+  version number from the package.
+
+Still not here: multi-hop routing, Internet tunnelling, wallet, payments.
 
 ## Build (on the VPS)
 

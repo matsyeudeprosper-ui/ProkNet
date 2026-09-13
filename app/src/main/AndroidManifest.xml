@@ -16,11 +16,22 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <!-- On Android 8-11 BLE scan results are only delivered with location permission. -->
+    <!-- Android 8-11: BLE scan results need location. Android 8-12: the local-only
+         Wi-Fi hotspot needs fine location. Android 13+ uses NEARBY_WIFI_DEVICES instead. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="30" />
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="tiramisu" />
+
+    <!-- v0.5 Wi-Fi transport: local-only hotspot, joining it, TCP sockets. No Internet is used. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Milestone 2B: foreground service with a persistent notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

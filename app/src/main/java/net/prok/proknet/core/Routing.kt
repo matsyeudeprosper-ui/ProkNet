@@ -12,15 +12,17 @@ enum class DeliveryResult {
 
 /**
  * All routing DECISIONS of ProkNet, as pure functions. No Android, no BLE, no
- * database: the BLE layer feeds them facts and executes what they return.
+ * database: the transport layer feeds them facts and executes what they return.
  * This is what the JVM unit tests exercise.
  *
- * Milestone 2C1 rules:
+ * Rules (2C1 + v0.5):
  *  - direct delivery whenever the destination is in range
  *  - otherwise ONE handoff to one relay, then the origin is done (handed_off)
  *  - a relay forwards only to the exact destination, never to another relay
  *  - a relay refuses packets that already passed a relay, or whose TTL is spent
+ *  - CHUNK packets (large payloads) are direct only: never relayed
  *  - (origin, message ID) identifies a message everywhere
+ *  - a relay never needs, and never gets, the plaintext: ENVELOPE payloads are opaque bytes
  */
 object Routing {
     const val MAX_ATTEMPTS = 50
@@ -28,9 +30,12 @@ object Routing {
     const val BACKOFF_MAX_MS = 60_000L
     const val QUEUE_TTL_MS = 48L * 3600_000L
 
+    const val TRANSPORT_BLE = "ble"
+    const val TRANSPORT_WIFI = "wifi"
+
     // ---- receive side ------------------------------------------------------------------------
 
-    enum class Receive { FINAL, RELAY, DUPLICATE, REJECT_MALFORMED, REJECT_TTL, REJECT_ALREADY_RELAYED }
+    enum class Receive { FINAL, RELAY, CHUNK, DUPLICATE, REJECT_MALFORMED, REJECT_TTL, REJECT_ALREADY_RELAYED, REJECT_NOT_RELAYABLE }
 
     /**
      * What to do with a packet that just arrived.
@@ -38,6 +43,7 @@ object Routing {
      */
     fun decideReceive(pkt: Packet?, myId: ByteArray, alreadyKnown: Boolean): Receive {
         if (pkt == null) return Receive.REJECT_MALFORMED
+        if (pkt.isChunk) return if (pkt.isFor(myId)) Receive.CHUNK else Receive.REJECT_NOT_RELAYABLE
         if (pkt.isFor(myId)) return if (alreadyKnown) Receive.DUPLICATE else Receive.FINAL
         if (pkt.hops + 1 > pkt.ttl) return Receive.REJECT_TTL
         if (pkt.hops >= 1) return Receive.REJECT_ALREADY_RELAYED
@@ -46,7 +52,7 @@ object Routing {
 
     /** Receipt code the receiver answers for a decision. */
     fun receiptFor(r: Receive): Int = when (r) {
-        Receive.FINAL -> RECEIPT_ACCEPTED
+        Receive.FINAL, Receive.CHUNK -> RECEIPT_ACCEPTED
         Receive.RELAY -> RECEIPT_ACCEPTED_RELAY
         Receive.DUPLICATE -> RECEIPT_DUPLICATE
         else -> RECEIPT_REJECTED
@@ -131,7 +137,6 @@ object Routing {
                 Kind.HANDOFF -> if (result == DeliveryResult.DUPLICATE)
                     Transition(MsgStatus.HANDED_OFF, 0, peerShort, "HANDED OFF to relay prok-" + peerShort + " (relay already had it) - NOT final delivery", 'I')
                 else
-                    // A relay answered ACCEPTED: it says it IS the destination. Trust the receipt.
                     Transition(MsgStatus.DELIVERED, 0, null, "DELIVERED to prok-" + peerShort + " (handoff target was the destination) - final", 'I')
                 Kind.DIRECT -> Transition(MsgStatus.DELIVERED, 0, null,
                     "DELIVERED to prok-" + peerShort + " after " + attemptNo + " attempt(s)" +
@@ -160,14 +165,20 @@ object Routing {
         }
     }
 
-    /** The bytes to transmit for a stored message: identity untouched, last hop = me, hops+1 when forwarding. */
+    /** The packet to transmit for a stored message: identity and payload untouched, last hop = me, hops+1 when forwarding. */
+    fun outgoingPacket(
+        originId: ByteArray, destId: ByteArray, msgId: ByteArray, timestamp: Long, payload: ByteArray, type: Int,
+        ttl: Int, hops: Int, isCarry: Boolean, myId: ByteArray,
+    ): Packet {
+        val base = Packet(originId, destId, msgId, timestamp, payload, type, if (ttl > 0) ttl else Packet.DEFAULT_TTL, hops)
+        return base.stamped(myId, if (isCarry) 1 else 0)
+    }
+
+    /** Plaintext-text convenience kept for older call sites and tests. */
     fun outgoingPacket(
         originId: ByteArray, destId: ByteArray, msgId: ByteArray, timestamp: Long, text: String,
         ttl: Int, hops: Int, isCarry: Boolean, myId: ByteArray,
-    ): Packet {
-        val base = Packet(originId, destId, msgId, timestamp, text, if (ttl > 0) ttl else Packet.DEFAULT_TTL, hops)
-        return base.stamped(myId, if (isCarry) 1 else 0)
-    }
+    ): Packet = outgoingPacket(originId, destId, msgId, timestamp, text.toByteArray(Charsets.UTF_8), Packet.TYPE_TEXT, ttl, hops, isCarry, myId)
 
     /** Destination bytes for a stored row: full ID when we have all 32 hex chars, else short-ID form. */
     fun destBytes(destIdHex: String, destShortHex: String): ByteArray =
@@ -175,4 +186,14 @@ object Routing {
 
     /** Padding used by the v0.2/v0.3 -> v0.4 migration: short ID + 24 zero hex chars. */
     fun legacyDestHex(peerShort: String): String = peerShort + "000000000000000000000000"
+
+    // ---- transport selection (v0.5) --------------------------------------------------------
+
+    /** Which transport carries the next frame to a peer: Wi-Fi whenever its link is up, else BLE, else none. */
+    fun chooseTransport(wifiUp: Boolean, bleReachable: Boolean): String? =
+        if (wifiUp) TRANSPORT_WIFI else if (bleReachable) TRANSPORT_BLE else null
+
+    /** Should we spend a Wi-Fi negotiation on this payload before sending it? */
+    fun wantWifi(blobBytes: Int, wifiUp: Boolean, bleReachable: Boolean, wifiIdle: Boolean): Boolean =
+        blobBytes > Transfer.WIFI_THRESHOLD_BYTES && !wifiUp && bleReachable && wifiIdle
 }

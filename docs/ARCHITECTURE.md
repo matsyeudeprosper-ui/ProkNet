@@ -265,12 +265,129 @@ JUnit tests over these functions and the packet format, including a full
 A -> B -> C simulation with three in-memory phones. `build.ps1` runs them
 before assembling; a failure means no APK.
 
-## Identity
+## Identity (v0.5: cryptographic)
 
-`core/Identity.kt`: 16 random bytes from `SecureRandom`, generated once,
-stored in SharedPreferences. Display name is local only (default
-`prok-<first 8 hex>`). This is a placeholder for a real key pair in a later
-milestone; the API surface is intentionally tiny so the swap is cheap.
+`core/Identity.kt` + `core/Crypto.kt`. One P-256 (secp256r1) key pair per
+installation, generated with the platform `KeyPairGenerator` and stored as
+PKCS#8 in the app's private SharedPreferences (MODE_PRIVATE: no other app can
+read it; it is never exported, logged or shown). The ProkNet ID is
+`SHA-256(X||Y)[0..16]`, so the 16-byte ID format, short IDs, scan responses
+and routing are unchanged, and an ID is now a claim only its key holder can
+back. Fingerprint = 32 hex chars of the same hash, shown in the UI.
+
+Public keys travel in the **identity record** `[2][id 16][pub 64][name]`,
+readable over the BLE IDENTITY characteristic and exchanged in the Wi-Fi
+handshake. A record is accepted only if its ID really derives from its key
+and the key is a valid curve point (invalid-curve attacks are rejected).
+Keys are learned automatically: on first sight of a peer the node reads its
+record (one short BLE connection), and every later send reads it on the same
+connection if still unknown. Learned keys live in the `peer_keys` table.
+
+Migration: an install upgraded from v0.4 gets a new key-derived ID; the old
+random ID is kept as `legacy_id_hex`. Other phones' peer lists will show the
+old ID as "not in range" until it ages out.
+
+Why P-256 and not Curve25519: on Android API 26-32 `X25519`/`Ed25519` are
+not guaranteed in JCA; P-256 ECDH and ECDSA are, on every version and on the
+VPS JVM where the tests run.
+
+## End-to-end encryption (v0.5)
+
+Packet v4 gained an opaque payload and a type. Type 2 = ENVELOPE:
+
+```
+plaintext = [sigLen 1][ECDSA-SHA256 sig by ORIGIN][kind 1][body]
+              sig covers aad || kind || body
+envelope  = [ephemeral P-256 pub 64][nonce 12][AES-256-GCM(plaintext) + tag 16]
+              key = HKDF-SHA256(ECDH(ephemeral, destination static), salt "ProkNet-v5", info = ephPub || destPub || aad)
+aad       = origin(16) || dest(16) || msgId(8) || timestamp(8) || type(1)   (the immutable header)
+```
+
+Properties, each with a JVM test in `CryptoTest`:
+
+| Property | Mechanism |
+|---|---|
+| only the destination can read | ECDH with the destination's static key |
+| sender authenticated | ECDSA signature inside the envelope, checked against the origin's learned key |
+| tamper-evident | GCM tag; the routing header is associated data, so changing origin/dest/msgId/ts/type breaks decryption |
+| relay learns nothing | payload is opaque bytes; lastHop and hops are outside the aad and are the only fields a relay changes |
+| replay / duplicate | (origin, message ID) index as before |
+| forward secrecy per message | fresh ephemeral key and nonce per envelope |
+
+Kinds inside the plaintext: TEXT (a message), CONTROL (Wi-Fi negotiation),
+BLOB (a large payload body). A phone sends nothing in plaintext any more;
+v1-v3 plaintext packets are still accepted and shown as `PLAIN`.
+
+To encrypt for C, A must hold C's key, learned during any earlier BLE contact.
+If the key is unknown the send is refused with a clear log line (no
+plaintext fallback). A message that does not decrypt, or whose signature
+fails, is REJECTED at the receiver.
+
+## Transport abstraction (v0.5)
+
+```
+transport/Transport.kt     interface: start/stop, canReach(peer), bulkCapable, sendBatch(frames), stats
+transport/BleTransport.kt  advertise + scan + GATT server + GATT client; identity record reads
+transport/WifiTransport.kt local-only hotspot + TCP link with signed handshake
+```
+
+`DeliveryQueue`, `TransferEngine` and `ProkNetNode` never touch Bluetooth or
+sockets. Routing picks the transport per frame with
+`Routing.chooseTransport`: Wi-Fi whenever its link to that peer is up, else
+BLE. Both transports answer every frame with the same receipt codes.
+
+## Wi-Fi link (v0.5)
+
+Mechanism: **LocalOnlyHotspot + WifiNetworkSpecifier**, not Wi-Fi Direct.
+
+```
+initiator (wants bulk)                          host
+   --BLE ENVELOPE(CONTROL WIFI_REQUEST)-->
+                                                startLocalOnlyHotspot() -> SSID, passphrase, AP address
+                                                ServerSocket :47741
+   <--BLE ENVELOPE(CONTROL WIFI_OFFER ssid/pass/ips/port)--
+   requestNetwork(WifiNetworkSpecifier)          (Android 10+: one system dialog "connect to device?")
+   TCP connect via that Network
+   HELLO(identity record + nonce)  <->  HELLO
+   AUTH(sig over both IDs + both nonces) <-> AUTH     both keys verified -> LINK UP
+   frames [u32 len][type][payload], PACKET answered by RECEIPT
+```
+
+- Decisions live in `core/LinkState.kt` (pure, tested): roles, tie-break when
+  both request (lower ID hosts), step timeouts (45 s), retry backoff after
+  failures (5 s doubling to 60 s), loss handling.
+- Credentials are only ever inside an end-to-end encrypted control message.
+- The link is bound to the peer's identity by the handshake; addresses are
+  transport details.
+- Why not Wi-Fi Direct: group formation is slower and flakier across vendors,
+  needs an invitation dialog too, and yields the same thing in the end (an IP
+  link). A hotspot gives a plain TCP socket to a known host address, which is
+  exactly what an Internet tunnel needs next (the future tunnel is just
+  another frame type on this socket).
+- Cost: on Android 10+ the joining phone sees one system dialog per link
+  set-up; the host needs Wi-Fi on and Location on (system requirement for
+  hotspots on most versions). Android 8-9 use the legacy `WifiConfiguration`
+  join without a dialog.
+
+## Large payloads (v0.5)
+
+`core/Transfer.kt` (pure) + `node/TransferEngine.kt`. The whole payload
+(`[type][sha256][name][data]`) is signed and encrypted ONCE as a blob, then
+cut into 400-byte chunks `[tid 8][index][count][total][data]` that fit a v4
+CHUNK packet on any transport. The receiver writes chunks by index into a
+file, persists the received mask per chunk (restart-safe), and when complete
+opens the envelope, verifies the origin's signature and the SHA-256, and
+saves the data under `files/received/`. Chunks are direct only (never
+relayed). Transfers above 4 KB ask for a Wi-Fi link first and fall back to
+BLE after 45 s. States: pending, sending (with %), delivered, failed /
+receiving, received, failed. Text longer than one packet automatically
+becomes a transfer.
+
+## Automated tests (48)
+
+`app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
+WireTest 4, LinkStateTest 4. `build.ps1` runs them first and refuses the APK
+on any failure.
 
 ## Storage
 
@@ -321,5 +438,6 @@ the box after a build, and refuses to build with under 1 GB free disk.
 
 ## What is deliberately NOT here
 
-Encryption, multi-hop routing (more than one relay, route choice, flooding),
-Wi-Fi Direct, Internet sharing, wallet or payments.
+Multi-hop routing (more than one relay, route choice, flooding), Internet
+tunnelling over the Wi-Fi link (next), wallet or payments. Relayed messages
+are encrypted; relayed CHUNKS are not supported yet (direct only).

@@ -279,3 +279,63 @@ phones. Results: `dist\test-results.txt`. A failing test produces no APK.
 What they do NOT cover (needs phones): BLE timing, MTU and long writes,
 Android address rotation, the SQLite migration itself, vendor background
 killers.
+
+## 11. v0.5 Secure Fast Link (two phones)
+
+Install v0.5.0 on both. On first Start each phone generates its key: its ID
+CHANGES (new `prok-xxxxxxxx`). Old peer entries can be ignored. Press Start
+on both; grant the new "Nearby devices" (Android 13+) or Location permission.
+
+**11.1 Keys are learned automatically.** Within ~10 s of seeing each other,
+each phone lists the other as `[key] prok-... "name"`, and the log shows
+`KEY FETCH` then `KEY LEARNED for prok-... via ble: fingerprint ...`.
+Compare the fingerprint shown on A for B with B's own `fp` line: they must match.
+
+**11.2 Encrypted direct message.** Send a text A -> B. A: `[e2e delivered]`.
+B: `<- prok-A [e2e received, signed]`. B's log: `FINAL RECEIVED ... E2E decrypted, signature VERIFIED`.
+Both directions.
+
+**11.3 Queue and relay behaviour unchanged.** Repeat 7.2 (queue while B
+off) and, with three phones, 9.1. Relay B's list shows `~ carrying prok-A -> prok-C [e2e carrying]: (opaque)`.
+
+**11.4 Long text over BLE.** Big test -> "2 KB text". A: `=> prok-B [xfer e2e sending 33%..]`
+then `delivered`. B: `<= prok-A [xfer e2e received] text 2016 B: ProkNet big test...`.
+Log on B: `RECEIVED transfer ... sha256 OK, signature VERIFIED`.
+
+**11.5 Wi-Fi link by hand.** Both phones: Wi-Fi ON, Location ON. Select B on
+A, press **Wi-Fi link**. Expected within ~30 s: A log `NEGOTIATE: sending WIFI_REQUEST`,
+B log `WIFI_REQUEST from prok-A`, `hotspot UP ssid=...`, A log `WIFI_OFFER from prok-B`,
+then on A a system dialog "ProkNet Lab wants to connect to <ssid>": tap Connect.
+Then both: `LINK UP with prok-... (authenticated by signature)`; the peers list
+shows `[WIFI UP]`; diagnostics show `wifi: UP (...)`.
+
+**11.6 Fast transfer.** With the link up, Big test -> "200 KB binary" or
+"1 MB binary". Should complete in seconds; the row shows `via wifi`. Then
+"Send file" with a photo (< 2 MB). B's log shows the SHA-256 and `sha256 OK`.
+Compare A's `sha256` in the diagnostic text with B's.
+
+**11.7 Automatic Wi-Fi.** Stop the link (Stop/Start on one phone). Send a
+200 KB test WITHOUT pressing Wi-Fi link: A must request the link by itself
+(`asking prok-B for a Wi-Fi link first`), the dialog appears on A, and the
+transfer goes `via wifi`. If the dialog is declined, after 45 s it falls back
+to BLE (slow but must complete).
+
+**11.8 Loss and reconnect.** With a transfer running over Wi-Fi, turn B's
+Wi-Fi off. A: `link failed`, transfer `RETRY LATER ... at chunk N`. Turn Wi-Fi
+back on: the next attempt resumes from chunk N (log `chunks N..`).
+
+**11.9 Background.** Repeat 8.4 with an encrypted message. Unchanged.
+
+What to send back: Copy log from both phones after 11.5 and 11.7.
+
+### Checklist for the v0.5 report
+
+- [ ] 11.1 keys learned, fingerprints match
+- [ ] 11.2 encrypted message both ways, `signature VERIFIED`
+- [ ] 11.3 queue (and relay if three phones) still work
+- [ ] 11.4 2 KB text over BLE arrives intact
+- [ ] 11.5 Wi-Fi link comes up, `[WIFI UP]`
+- [ ] 11.6 200 KB / 1 MB / photo over Wi-Fi, SHA-256 matches
+- [ ] 11.7 Wi-Fi negotiated automatically for a big payload
+- [ ] 11.8 resume after link loss
+- [ ] 11.9 background operation unchanged
