@@ -59,10 +59,13 @@ class Peer(
     @Volatile var inRange: Boolean = true,
     /** Full 16-byte ID hex when the peer advertises v2; null for v1 peers. */
     @Volatile var fullId: String? = null,
-    /** v0.6 capability bits from the scan response: bit0 = providing Internet. */
+    /** v0.6/0.7 capability bits from the scan response: Market.flags(). */
     @Volatile var capabilities: Int = 0,
+    /** v0.7: advertised price in CFA per MB. */
+    @Volatile var pricePerMb: Int = 0,
 ) {
     val providesInternet: Boolean get() = capabilities and CAP_INTERNET != 0
+    fun offer(): net.prok.proknet.core.Market.Offer = net.prok.proknet.core.Market.Offer(shortId, pricePerMb, capabilities, rssi, lastSeen)
     val label: String get() = "prok-" + shortId
 
     /** False for devices seen without a scan response: they have no ProkNet ID yet and cannot be addressed. */

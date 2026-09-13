@@ -48,6 +48,22 @@
         android:visibility="gone"
         android:text="" />
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button android:id="@+id/btnBuy" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="BUY" />
+        <Button android:id="@+id/btnSell" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="SELL" />
+        <Button android:id="@+id/btnRelay" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="RELAY" />
+        <Button android:id="@+id/btnLedger" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="Ledger" />
+        <Button android:id="@+id/btnHistory" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="History" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/txtInternet"
         android:layout_width="match_parent"
@@ -63,9 +79,9 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal">
         <Button android:id="@+id/btnProvide" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Provide Internet" />
+            android:layout_height="wrap_content" android:text="dev: provide" />
         <Button android:id="@+id/btnUseInternet" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="Use Internet" />
+            android:layout_height="wrap_content" android:text="dev: use" />
         <Button android:id="@+id/btnNetTest" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="Net test" />
         <Button android:id="@+id/btnCopyDiag" android:layout_width="0dp" android:layout_weight="1"
@@ -113,7 +129,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Peers (tap to select; [key] = can encrypt for it):"
+        android:text="Nearby (tap to select; [SELL price] = Internet offer, [key] = can encrypt):"
         android:textSize="12sp" />
 
     <ListView

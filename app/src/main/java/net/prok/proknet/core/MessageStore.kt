@@ -96,7 +96,14 @@ class StoredTransfer(
 }
 
 /** Local SQLite store: messages, delivery/carry queue, known peers, peer keys, transfers. Plain SQLiteOpenHelper. */
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 4) {
+/** A session's agreed terms plus what happened (v0.7). */
+class StoredSession(
+    val sessionHex: String, val role: String, val contract: ByteArray, val buyerSig: ByteArray?, val sellerSig: ByteArray?,
+    val status: String, val startTs: Long, val endTs: Long, val bytesUp: Long, val bytesDown: Long, val lastSeq: Int,
+    val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
+)
+
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -126,6 +133,51 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         createIndexV3(db)
         createPeers(db)
         createV4(db)
+        createV5(db)
+    }
+
+    private fun createV5(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS sessions(" +
+                "session_id TEXT PRIMARY KEY," +
+                "role TEXT NOT NULL," +
+                "contract BLOB NOT NULL," +
+                "buyer_sig BLOB," +
+                "seller_sig BLOB," +
+                "status TEXT NOT NULL," +
+                "start_ts INTEGER NOT NULL," +
+                "end_ts INTEGER NOT NULL DEFAULT 0," +
+                "bytes_up INTEGER NOT NULL DEFAULT 0," +
+                "bytes_down INTEGER NOT NULL DEFAULT 0," +
+                "last_seq INTEGER NOT NULL DEFAULT 0," +
+                "last_checkpoint BLOB," +
+                "final_centimes INTEGER NOT NULL DEFAULT 0," +
+                "disconnect_reason TEXT NOT NULL DEFAULT ''," +
+                "peer_short TEXT NOT NULL DEFAULT '')"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS checkpoints(" +
+                "session_id TEXT NOT NULL," +
+                "seq INTEGER NOT NULL," +
+                "body BLOB NOT NULL," +
+                "seller_sig BLOB," +
+                "buyer_sig BLOB," +
+                "ts INTEGER NOT NULL," +
+                "PRIMARY KEY(session_id, seq))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS ledger(" +
+                "id TEXT PRIMARY KEY," +
+                "session_id TEXT NOT NULL," +
+                "payer TEXT NOT NULL," +
+                "recipient TEXT NOT NULL," +
+                "amount INTEGER NOT NULL," +
+                "reason TEXT NOT NULL," +
+                "ts INTEGER NOT NULL," +
+                "status TEXT NOT NULL," +
+                "paid_at INTEGER NOT NULL DEFAULT 0," +
+                "received_at INTEGER NOT NULL DEFAULT 0)"
+        )
     }
 
     private fun createIndexV3(db: SQLiteDatabase) {
@@ -212,6 +264,104 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
             db.execSQL("UPDATE messages SET status='failed', last_error='v0.5: pending plaintext row cannot be encrypted after the fact; resend' WHERE direction='out' AND status IN ('pending','sending')")
             db.execSQL("UPDATE messages SET status='expired', last_error='v0.5: carried plaintext packet dropped on upgrade' WHERE direction='carry' AND status IN ('carrying','forwarding')")
         }
+        if (oldVersion < 5) createV5(db)
+    }
+
+    // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
+
+    fun insertSession(s: StoredSession): Boolean {
+        val cv = ContentValues().apply {
+            put("session_id", s.sessionHex); put("role", s.role); put("contract", s.contract)
+            if (s.buyerSig != null) put("buyer_sig", s.buyerSig); if (s.sellerSig != null) put("seller_sig", s.sellerSig)
+            put("status", s.status); put("start_ts", s.startTs); put("end_ts", s.endTs); put("bytes_up", s.bytesUp); put("bytes_down", s.bytesDown)
+            put("last_seq", s.lastSeq); if (s.lastCheckpoint != null) put("last_checkpoint", s.lastCheckpoint)
+            put("final_centimes", s.finalCentimes); put("disconnect_reason", s.disconnectReason); put("peer_short", s.peerShort)
+        }
+        return writableDatabase.insertWithOnConflict("sessions", null, cv, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun updateSession(sessionHex: String, status: String? = null, endTs: Long? = null, bytesUp: Long? = null, bytesDown: Long? = null, lastSeq: Int? = null,
+                      lastCheckpoint: ByteArray? = null, finalCentimes: Long? = null, reason: String? = null, buyerSig: ByteArray? = null, sellerSig: ByteArray? = null) {
+        val cv = ContentValues()
+        if (status != null) cv.put("status", status); if (endTs != null) cv.put("end_ts", endTs)
+        if (bytesUp != null) cv.put("bytes_up", bytesUp); if (bytesDown != null) cv.put("bytes_down", bytesDown)
+        if (lastSeq != null) cv.put("last_seq", lastSeq); if (lastCheckpoint != null) cv.put("last_checkpoint", lastCheckpoint)
+        if (finalCentimes != null) cv.put("final_centimes", finalCentimes); if (reason != null) cv.put("disconnect_reason", reason)
+        if (buyerSig != null) cv.put("buyer_sig", buyerSig); if (sellerSig != null) cv.put("seller_sig", sellerSig)
+        if (cv.size() > 0) writableDatabase.update("sessions", cv, "session_id=?", arrayOf(sessionHex))
+    }
+
+    fun session(sessionHex: String): StoredSession? {
+        readableDatabase.rawQuery("SELECT * FROM sessions WHERE session_id=?", arrayOf(sessionHex)).use { c -> return if (c.moveToFirst()) sessionRow(c) else null }
+    }
+
+    fun sessions(limit: Int = 50): List<StoredSession> {
+        val out = ArrayList<StoredSession>()
+        readableDatabase.rawQuery("SELECT * FROM sessions ORDER BY start_ts DESC LIMIT " + limit, null).use { c -> while (c.moveToNext()) out.add(sessionRow(c)) }
+        return out
+    }
+
+    fun sessionIds(): Set<String> {
+        val out = HashSet<String>()
+        readableDatabase.rawQuery("SELECT session_id FROM sessions", null).use { c -> while (c.moveToNext()) out.add(c.getString(0)) }
+        return out
+    }
+
+    private fun sessionRow(c: Cursor) = StoredSession(
+        c.getString(c.getColumnIndexOrThrow("session_id")), c.getString(c.getColumnIndexOrThrow("role")), c.getBlob(c.getColumnIndexOrThrow("contract")),
+        c.getColumnIndex("buyer_sig").let { if (it >= 0 && !c.isNull(it)) c.getBlob(it) else null },
+        c.getColumnIndex("seller_sig").let { if (it >= 0 && !c.isNull(it)) c.getBlob(it) else null },
+        c.getString(c.getColumnIndexOrThrow("status")), c.getLong(c.getColumnIndexOrThrow("start_ts")), c.getLong(c.getColumnIndexOrThrow("end_ts")),
+        c.getLong(c.getColumnIndexOrThrow("bytes_up")), c.getLong(c.getColumnIndexOrThrow("bytes_down")), c.getInt(c.getColumnIndexOrThrow("last_seq")),
+        c.getColumnIndex("last_checkpoint").let { if (it >= 0 && !c.isNull(it)) c.getBlob(it) else null },
+        c.getLong(c.getColumnIndexOrThrow("final_centimes")), c.getString(c.getColumnIndexOrThrow("disconnect_reason")), c.getString(c.getColumnIndexOrThrow("peer_short")),
+    )
+
+    /** Returns false when (session, seq) already exists: duplicates are never stored twice. */
+    fun insertCheckpoint(sessionHex: String, seq: Int, body: ByteArray, sellerSig: ByteArray?, buyerSig: ByteArray?, ts: Long): Boolean {
+        val cv = ContentValues().apply {
+            put("session_id", sessionHex); put("seq", seq); put("body", body); put("ts", ts)
+            if (sellerSig != null) put("seller_sig", sellerSig); if (buyerSig != null) put("buyer_sig", buyerSig)
+        }
+        return writableDatabase.insertWithOnConflict("checkpoints", null, cv, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun setCheckpointBuyerSig(sessionHex: String, seq: Int, buyerSig: ByteArray) {
+        val cv = ContentValues().apply { put("buyer_sig", buyerSig) }
+        writableDatabase.update("checkpoints", cv, "session_id=? AND seq=?", arrayOf(sessionHex, seq.toString()))
+    }
+
+    fun checkpointCount(sessionHex: String): Long = DatabaseUtils.queryNumEntries(readableDatabase, "checkpoints", "session_id=?", arrayOf(sessionHex))
+
+    fun insertLedger(e: Market.Entry): Boolean {
+        val cv = ContentValues().apply {
+            put("id", e.id); put("session_id", e.sessionHex); put("payer", e.payer); put("recipient", e.recipient); put("amount", e.amountCentimes)
+            put("reason", e.reason); put("ts", e.ts); put("status", e.status); put("paid_at", e.paidAt); put("received_at", e.receivedAt)
+        }
+        return writableDatabase.insertWithOnConflict("ledger", null, cv, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun updateLedger(e: Market.Entry) {
+        val cv = ContentValues().apply { put("status", e.status); put("paid_at", e.paidAt); put("received_at", e.receivedAt) }
+        writableDatabase.update("ledger", cv, "id=?", arrayOf(e.id))
+    }
+
+    fun ledger(limit: Int = 200): List<Market.Entry> {
+        val out = ArrayList<Market.Entry>()
+        readableDatabase.rawQuery("SELECT id,session_id,payer,recipient,amount,reason,ts,status,paid_at,received_at FROM ledger ORDER BY ts DESC LIMIT " + limit, null).use { c ->
+            while (c.moveToNext()) out.add(Market.Entry(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getLong(4), c.getString(5), c.getLong(6), c.getString(7), c.getLong(8), c.getLong(9)))
+        }
+        return out
+    }
+
+    fun ledgerEntry(id: String): Market.Entry? = ledger(1000).firstOrNull { it.id == id }
+
+    /** Relay activity already happening in the network: packets this phone carried and delivered for others. */
+    fun relayStats(): Pair<Long, Long> {
+        val n = DatabaseUtils.queryNumEntries(readableDatabase, "messages", "direction='carry' AND status='forwarded'")
+        var bytes = 0L
+        readableDatabase.rawQuery("SELECT COALESCE(SUM(LENGTH(payload)),0) FROM messages WHERE direction='carry' AND status='forwarded'", null).use { c -> if (c.moveToFirst()) bytes = c.getLong(0) }
+        return n to bytes
     }
 
     // ---- messages ------------------------------------------------------------------------------

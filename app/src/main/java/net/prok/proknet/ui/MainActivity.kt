@@ -40,6 +40,7 @@ import net.prok.proknet.core.Routing
 import net.prok.proknet.core.Transfer
 import net.prok.proknet.service.ProkNetService
 import net.prok.proknet.core.Tunnel
+import net.prok.proknet.core.Market
 import net.prok.proknet.vpn.ProkVpnService
 
 /**
@@ -100,6 +101,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         btnProvide.setOnClickListener { toggleProvide() }
         btnUseInternet.setOnClickListener { toggleUseInternet() }
         findViewById<Button>(R.id.btnNetTest).setOnClickListener { netTest() }
+        findViewById<Button>(R.id.btnBuy).setOnClickListener { buy() }
+        findViewById<Button>(R.id.btnSell).setOnClickListener { sell() }
+        findViewById<Button>(R.id.btnRelay).setOnClickListener { node.setRelay(!node.relayOn); toast("RELAY " + (if (node.relayOn) "on" else "off")); refreshInternetLine() }
+        findViewById<Button>(R.id.btnLedger).setOnClickListener { ledgerDialog() }
+        findViewById<Button>(R.id.btnHistory).setOnClickListener { historyDialog() }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         node.vpnRequested = { startVpnWithConsent() }
@@ -251,6 +257,91 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         }
     }
 
+    // ---- v0.7 marketplace ------------------------------------------------------------------------
+
+    private fun buy() {
+        if (!node.isRunning) { toast("Press Start first"); return }
+        if (node.tunnel.session != null || node.tunnel.contract != null || node.buyerWanted != null) {
+            DiagLog.i(tag, "Stop buying pressed"); node.stopInternet("stopped by buyer"); refreshInternetLine(); return
+        }
+        val offers = node.offers()
+        val sel = selected
+        val peer = if (sel != null && sel.offer().selling) sel else null
+        if (peer == null) {
+            if (offers.isEmpty()) { toast("No Internet offers nearby (sellers show [SELL price])"); return }
+            val labels = offers.map { it.describe() }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Buy Internet from").setItems(labels) { _, i ->
+                val p = peers.firstOrNull { it.shortId == offers[i].sellerShort } ?: return@setItems
+                selected = p; txtSelected.text = "Selected: " + describe(p)
+                startBuy(p)
+            }.setNegativeButton("Cancel", null).show()
+            return
+        }
+        startBuy(peer)
+    }
+
+    private fun startBuy(peer: Peer) {
+        val o = peer.offer()
+        if (!node.hasKey(peer.shortId)) { toast(peer.label + "'s key not known yet, wait a few seconds"); return }
+        DiagLog.i(tag, "BUY pressed: prok-" + peer.shortId + " " + o.pricePerMb + " CFA/MB")
+        if (!node.buy(peer)) toast("Cannot buy (see log)") else toast("Buying from prok-" + peer.shortId + " at " + o.pricePerMb + " CFA/MB: approve the Wi-Fi and VPN prompts")
+        refreshInternetLine()
+    }
+
+    private fun sell() {
+        if (!node.isRunning) { toast("Press Start first"); return }
+        if (node.sellOn) { node.setSelling(false); toast("SELL off"); refreshInternetLine(); return }
+        val layout = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; setPadding(24, 8, 24, 8) }
+        val price = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "price per MB (CFA)"; setText(node.sellPrice.toString()) }
+        val min = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "minimum session price (CFA, 0 = none)"; setText(node.sellMinPrice.toString()) }
+        val max = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "max MB per session (0 = unlimited)"; setText(node.sellMaxMb.toString()) }
+        layout.addView(TextView(this).apply { text = "Price per MB (CFA)" }); layout.addView(price)
+        layout.addView(TextView(this).apply { text = "Minimum session price (CFA)" }); layout.addView(min)
+        layout.addView(TextView(this).apply { text = "Max MB per session (0 = unlimited)" }); layout.addView(max)
+        layout.addView(TextView(this).apply { text = "Prok network fee: " + node.feePct + "% of what the buyer pays"; textSize = 12f })
+        AlertDialog.Builder(this).setTitle("SELL Internet").setView(layout).setPositiveButton("Start selling") { _, _ ->
+            val err = node.setSelling(true, price.text.toString().toIntOrNull() ?: -1, min.text.toString().toIntOrNull() ?: -1, max.text.toString().toIntOrNull() ?: -1)
+            if (err != null) toast("Cannot sell: " + err)
+            else if (!node.gateway.upstreamReady) toast("SELL on, but this phone has no Internet yet (turn mobile data on)")
+            else toast("SELLING at " + node.sellPrice + " CFA/MB via " + node.gateway.upstreamDescription())
+            refreshInternetLine()
+        }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun ledgerDialog() {
+        val entries = node.store.ledger(100)
+        val bal = Market.balance(entries, node.me)
+        if (entries.isEmpty()) { AlertDialog.Builder(this).setTitle("Ledger").setMessage("No entries yet. Finish a paid session first.").setPositiveButton("OK", null).show(); return }
+        val labels = entries.map { e -> (if (e.payer == node.me) "I owe " else if (e.recipient == node.me) "owed to me " else "") + e.describe() + "  " + timeFmt.format(Date(e.ts)) }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Ledger  (my balance: " + Market.cfa(bal) + ")").setItems(labels) { _, i ->
+            val e = entries[i]
+            val actions = ArrayList<String>()
+            if (e.status == Market.ST_PENDING) {
+                if (e.payer == node.me && e.paidAt == 0L) actions.add("paid")
+                if (e.recipient == node.me && e.receivedAt == 0L) actions.add("received")
+                actions.add("dispute"); if (e.paidAt == 0L && e.receivedAt == 0L) actions.add("cancel")
+            }
+            if (actions.isEmpty()) { toast("No action possible in state " + e.status); return@setItems }
+            AlertDialog.Builder(this).setTitle(e.describe()).setItems(actions.map { "MARK AS " + it.uppercase() }.toTypedArray()) { _, j ->
+                val err = node.ledgerAction(e.id, actions[j]); toast(err ?: "Marked " + actions[j]); refreshInternetLine()
+            }.show()
+        }.setPositiveButton("Close", null).show()
+    }
+
+    private fun historyDialog() {
+        val sessions = node.store.sessions(30)
+        if (sessions.isEmpty()) { AlertDialog.Builder(this).setTitle("History").setMessage("No sessions yet.").setPositiveButton("OK", null).show(); return }
+        val lines = sessions.map { s ->
+            val c = Market.Contract.decode(s.contract)
+            val cp = Market.Checkpoint.decode(s.lastCheckpoint)
+            val dur = if (s.endTs > 0) (s.endTs - s.startTs) / 1000 else 0
+            (if (s.role == "buyer") "BOUGHT from " else "SOLD to ") + "prok-" + s.peerShort + "  " + java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(s.startTs)) +
+                "\n  " + Market.mb(cp?.billable ?: 0) + " signed (" + Market.mb(s.bytesUp + s.bytesDown) + " counted), " + dur + " s, " + (c?.pricePerMb ?: 0) + " CFA/MB -> " +
+                Market.cfa(s.finalCentimes) + "  [" + s.status + (if (s.disconnectReason.isNotEmpty()) ": " + s.disconnectReason else "") + "]"
+        }
+        AlertDialog.Builder(this).setTitle("Session history").setMessage(lines.joinToString("\n\n")).setPositiveButton("OK", null).show()
+    }
+
     // ---- v0.6 Internet roles ------------------------------------------------------------------
 
     private fun toggleProvide() {
@@ -304,15 +395,23 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun refreshInternetLine() {
         val g = node.gateway; val t = node.tunnel
         val text = when {
-            g.providing -> "PROVIDER: " + g.state + " | upstream " + g.upstreamDescription() + (g.session?.let { s -> " | buyer prok-" + s.peerShort + " up " + s.bytesUp + " B down " + s.bytesDown + " B, " + (s.durationMs / 1000) + " s, streams " + g.activeStreams() } ?: "")
-            t.session != null || node.buyerWanted != null -> "BUYER: " + t.state + (t.providerShort?.let { " via prok-" + it } ?: "") + " | VPN " + (if (ProkVpnService.running) "UP" else "off") +
-                " | upstream " + Tunnel.upstreamName(t.upstreamType) + (t.session?.let { s -> " | up " + s.bytesUp + " B down " + s.bytesDown + " B, " + (s.durationMs / 1000) + " s, flows " + t.activeFlows() + ", dns " + t.dnsCount } ?: "") +
-                (if (t.lastError.isNotEmpty()) " | last error: " + t.lastError else "")
-            else -> "Internet: off (Provide Internet on the phone with data; Use Internet on the other)"
+            g.providing -> "SELL: " + g.state + " | " + node.sellPrice + " CFA/MB" + (if (node.sellMinPrice > 0) ", min " + node.sellMinPrice else "") + (if (node.sellMaxMb > 0) ", max " + node.sellMaxMb + " MB" else "") +
+                " | upstream " + g.upstreamDescription() + " | sold " + Market.mb(g.totalSoldBytes) + ", earned " + Market.cfa(g.totalEarnedCentimes) +
+                (g.session?.let { s -> "\nbuyer prok-" + s.peerShort + ": " + Market.mb(s.bytesUp + s.bytesDown) + " (up " + s.bytesUp + " B, down " + s.bytesDown + " B), " + (s.durationMs / 1000) + " s, running " + Market.cfa(g.runningCost()) +
+                    ", agreed " + Market.cfa(g.agreedCost()) + " (checkpoint #" + (g.lastSigned?.seq ?: 0) + ")" } ?: "")
+            t.session != null || t.contract != null || node.buyerWanted != null -> "BUY: " + t.state + (t.providerShort?.let { " from prok-" + it } ?: "") + " | VPN " + (if (ProkVpnService.running) "UP" else "off") +
+                (t.contract?.let { c -> " | " + c.pricePerMb + " CFA/MB agreed" } ?: "") +
+                (t.session?.let { s -> "\n" + Market.mb(s.bytesUp + s.bytesDown) + " used, " + (s.durationMs / 1000) + " s, running " + Market.cfa(t.runningCost()) + ", agreed " + Market.cfa(t.agreedCost()) +
+                    " (checkpoint #" + (t.lastAccepted?.seq ?: 0) + "), flows " + t.activeFlows() + ", dns " + t.dnsCount } ?: "") +
+                (if (t.disputed.isNotEmpty()) "\nDISPUTE: " + t.disputed else "") + (if (t.lastError.isNotEmpty()) "\nlast error: " + t.lastError else "")
+            else -> "Market: " + node.offers().size + " Internet offer(s) nearby | balance " + Market.cfa(node.balance()) + (if (node.relayOn) " | RELAY on" else "") + " | spent " + Market.cfa(t.totalSpentCentimes)
         }
         txtInternet.text = text
-        btnProvide.text = if (g.providing) "Stop providing" else "Provide Internet"
-        btnUseInternet.text = if (t.session != null || node.buyerWanted != null) "Stop Internet" else "Use Internet"
+        btnProvide.text = if (g.providing) "dev: stop" else "dev: provide"
+        btnUseInternet.text = if (t.session != null || node.buyerWanted != null) "dev: stop" else "dev: use"
+        findViewById<Button>(R.id.btnBuy).text = if (t.session != null || t.contract != null || node.buyerWanted != null) "STOP BUY" else "BUY"
+        findViewById<Button>(R.id.btnSell).text = if (g.providing) "STOP SELL" else "SELL"
+        findViewById<Button>(R.id.btnRelay).text = if (node.relayOn) "RELAY on" else "RELAY"
     }
 
     // ---- actions -----------------------------------------------------------------------------
@@ -428,6 +527,14 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             "wifi: " + node.linkState(Routing.TRANSPORT_WIFI) + " | sent " + node.wifi.bytesSent + " B, recv " + node.wifi.bytesReceived + " B\n" +
             "peers: " + peers.joinToString("; ") { describe(it) } + "\n" +
             "keys known: " + node.store.peerKeyCount() + "\n" +
+            "market: SELL " + (if (node.sellOn) "on " + node.sellPrice + " CFA/MB min " + node.sellMinPrice + " max " + node.sellMaxMb + " MB" else "off") + ", RELAY " + node.relayOn + ", fee " + node.feePct + "%, offers nearby " + node.offers().joinToString("; ") { it.describe() } + "\n" +
+            "selected offer: " + (selected?.offer()?.describe() ?: "none") + "\n" +
+            "buyer contract: " + (node.tunnel.contract?.let { c -> c.sessionHex.substring(0, 8) + " " + c.pricePerMb + " CFA/MB min " + c.minPriceCfa + " max " + c.maxMb + " fee " + c.feePct + "%" } ?: "none") +
+            " | seller contract: " + (node.gateway.contract?.let { c -> c.sessionHex.substring(0, 8) + " " + c.pricePerMb + " CFA/MB" } ?: "none") + "\n" +
+            "billable/cost: buyer " + (node.tunnel.session?.let { Market.mb(it.bytesUp + it.bytesDown) } ?: "-") + " running " + Market.cfa(node.tunnel.runningCost()) + " agreed " + Market.cfa(node.tunnel.agreedCost()) + " cp#" + (node.tunnel.lastAccepted?.seq ?: 0) +
+            " | seller " + (node.gateway.session?.let { Market.mb(it.bytesUp + it.bytesDown) } ?: "-") + " running " + Market.cfa(node.gateway.runningCost()) + " agreed " + Market.cfa(node.gateway.agreedCost()) + " cp#" + (node.gateway.lastSigned?.seq ?: 0) + "\n" +
+            "ledger: balance " + Market.cfa(node.balance()) + ", entries " + node.store.ledger(5).joinToString("; ") { it.describe() } + "\n" +
+            "relay activity: " + node.store.relayStats().let { it.first.toString() + " packets forwarded, " + it.second + " B" } + "\n" +
             "provider: " + node.gateway.state + ", upstream " + node.gateway.upstreamDescription() + ", streams " + node.gateway.activeStreams() + " [" + node.gateway.streamSummary() + "]\n" +
             "buyer: " + node.tunnel.state + ", vpn " + ProkVpnService.running + ", flows " + node.tunnel.activeFlows() + " [" + node.tunnel.flowSummary() + "], dns " + node.tunnel.dnsCount + ", last error: " + node.tunnel.lastError + "\n" +
             (node.tunnel.session ?: node.gateway.session)?.let { "session: " + it.summary() + "\n" }.orEmpty() +
@@ -444,7 +551,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     // ---- node listener -----------------------------------------------------------------------
 
     private fun describe(p: Peer): String {
-        val key = (if (node.hasKey(p.shortId)) "[key] " else "[no key] ") + (if (p.providesInternet) "[NET] " else "")
+        val o = p.offer()
+        val key = (if (node.hasKey(p.shortId)) "[key] " else "[no key] ") + (if (o.selling) "[SELL " + o.pricePerMb + " CFA/MB " + Tunnel.upstreamName(o.upstreamType) + (if (o.validated) "" else " unverified") + "] " else "") + (if (o.relaying) "[RELAY] " else "")
         val name = node.peerName(p.shortId).let { if (it != p.label) " \"" + it + "\"" else "" }
         val wifi = if (node.wifi.linkedPeer == p.shortId) " [WIFI UP]" else ""
         return key + p.describe() + name + wifi

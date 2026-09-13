@@ -81,7 +81,7 @@ class BleTransport(
     fun visiblePeers(): List<Peer> = visible
 
     /** v0.6: capability bits in the scan response (bit0 = providing Internet). */
-    fun setCapabilities(flags: Int) { advertiser?.setCapabilities(flags) }
+    fun setCapabilities(flags: Int, price: Int = 0) { advertiser?.setCapabilities(flags, price) }
 
     private fun peer(short: String): Peer? = visible.firstOrNull { it.shortId == short && it.inRange && it.hasId }
 

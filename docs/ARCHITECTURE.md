@@ -487,10 +487,62 @@ line, bytes and latency. It does not depend on the VPN.
 **Not in v0.6**: UDP other than DNS, IPv6, ICMP (ping), relayed/multi-hop
 Internet, any economics.
 
-## Automated tests (71)
+## Connectivity marketplace (v0.7)
+
+All economics live in `core/Market.kt` (pure, tested); networking code only
+carries bytes and calls it.
+
+**Offer in the scan response**: `[2][id 16][flags 1][price u16]` (24 bytes
+with headers). Flags: bit0 SELL (seller on and upstream present), bit1
+RELAY, bit2 validated, bits 4-5 upstream type. Ranking
+`score = validated*100 + (60 - 3*price, floor 0) + signal(0..40)`,
+unavailable last, ties by ID: deterministic and tested.
+
+**Contract** (62 bytes): version, session id (8, random by the buyer), buyer
+id, seller id, price/MB, minimum price, max MB, fee %, start time. Flow over
+the tunnel: `CONTRACT_PROPOSE` (contract + buyer signature) ->
+`CONTRACT_ACCEPT` (hash + seller signature) or `CONTRACT_REJECT`. The seller
+accepts only its exact current terms, the buyer id of the authenticated
+link peer, a fresh session id and a recent start time; if only min/max/fee
+differ it answers with its real terms and the buyer re-proposes once, but
+only at the advertised price. `SESSION_START` then carries the contract
+hash and is refused for anything else. Both phones store contract and both
+signatures (`sessions` table).
+
+**Usage checkpoints** (45 bytes): session id, sequence, bytes up, bytes
+down, cost in centimes, time, final flag. The seller issues one every 30 s
+or 1 MB from its own counters, signed (`USAGE_CHECKPOINT`); the buyer
+verifies the signature and `Market.validateCheckpoint` (sequence strictly
+increasing, usage never decreasing, cost exactly the terms applied to the
+bytes, claimed bytes within 64 KB + 10% of its own count, under max MB,
+nothing after a final one), then countersigns (`USAGE_ACK`). Duplicates and
+out-of-order checkpoints are rejected; a rejection is logged as a dispute.
+Both phones store every checkpoint with both signatures. **Final cost** on
+both phones = terms applied to the last mutually signed checkpoint (or the
+minimum price if none): neither phone's private counter decides alone, and
+a seller can lose at most the last unsigned interval.
+
+**Ledger** (`ledger` table): entries with a content-hash id (idempotent),
+session, payer, recipient, amount in centimes, reason, time, status
+(pending / settled / disputed / cancelled), paid-at, received-at. A finished
+session books `buyer -> seller: gross` and `seller -> prok-network: fee`.
+Settlement is accounting only: MARK AS PAID (payer), MARK AS RECEIVED
+(recipient), both -> settled; either may dispute; untouched entries may be
+cancelled. Balances are computed over pending entries. No money is held.
+
+**Fraud groundwork**: session ids single-use (checked against the store),
+sequence must increase, duplicate receipts ignored, identities bound to the
+Wi-Fi-authenticated link on both sides, price locked by the signed contract,
+malformed / negative / overflow values rejected at decode (contracts,
+checkpoints, offers, prices, fees).
+
+**RELAY**: a flag in the offer plus counts of packets this phone actually
+forwarded for others (existing carry-forward). No live multi-hop Internet.
+
+## Automated tests (80)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

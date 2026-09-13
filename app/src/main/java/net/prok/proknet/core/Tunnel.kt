@@ -24,6 +24,13 @@ object Tunnel {
     const val T_ERROR = 10          // either: [code 1][message utf8]; stream id 0 = session-level
     const val T_KEEPALIVE = 11      // either: [seq u32]; answered with the same
     const val T_UPSTREAM_STATE = 12 // provider -> buyer: [available 1][type 1][validated 1]
+    // v0.7 marketplace
+    const val T_CONTRACT_PROPOSE = 13 // buyer -> seller: [contract 62][sigLen 1][buyer sig]
+    const val T_CONTRACT_ACCEPT = 14  // seller -> buyer: [contract hash 32][sigLen 1][seller sig]
+    const val T_CONTRACT_REJECT = 15  // seller -> buyer: [reason utf8]
+    const val T_USAGE_CHECKPOINT = 16 // seller -> buyer: [checkpoint 45][sigLen 1][seller sig]
+    const val T_USAGE_ACK = 17        // buyer -> seller: [checkpoint 45][sigLen 1][buyer sig]  (or ERROR with reason)
+    const val T_LAST = 17
 
     const val VERSION = 1
     const val MAX_DATA = 16 * 1024
@@ -48,7 +55,7 @@ object Tunnel {
     class Frame(val type: Int, val streamId: Int, val data: ByteArray)
 
     fun encode(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): ByteArray {
-        require(type in 1..T_UPSTREAM_STATE) { "bad tunnel type" }
+        require(type in 1..T_LAST) { "bad tunnel type" }
         require(data.size <= MAX_DATA) { "tunnel data too large" }
         return ByteBuffer.allocate(HEADER + data.size).put(type.toByte()).putInt(streamId).put(data).array()
     }
@@ -57,7 +64,7 @@ object Tunnel {
     fun decode(bytes: ByteArray?): Frame? {
         if (bytes == null || bytes.size < HEADER || bytes.size > HEADER + MAX_DATA) return null
         val type = bytes[0].toInt() and 0xFF
-        if (type !in 1..T_UPSTREAM_STATE) return null
+        if (type !in 1..T_LAST) return null
         val id = ByteBuffer.wrap(bytes, 1, 4).int
         return Frame(type, id, bytes.copyOfRange(HEADER, bytes.size))
     }
@@ -66,15 +73,28 @@ object Tunnel {
         T_SESSION_START -> "SESSION_START"; T_SESSION_OK -> "SESSION_OK"; T_SESSION_END -> "SESSION_END"
         T_OPEN_TCP -> "OPEN_TCP"; T_TCP_OPEN_OK -> "TCP_OPEN_OK"; T_TCP_DATA -> "TCP_DATA"; T_TCP_CLOSE -> "TCP_CLOSE"
         T_DNS_REQUEST -> "DNS_REQUEST"; T_DNS_RESPONSE -> "DNS_RESPONSE"; T_ERROR -> "ERROR"; T_KEEPALIVE -> "KEEPALIVE"
-        T_UPSTREAM_STATE -> "UPSTREAM_STATE"; else -> "type " + t
+        T_UPSTREAM_STATE -> "UPSTREAM_STATE"; T_CONTRACT_PROPOSE -> "CONTRACT_PROPOSE"; T_CONTRACT_ACCEPT -> "CONTRACT_ACCEPT"
+        T_CONTRACT_REJECT -> "CONTRACT_REJECT"; T_USAGE_CHECKPOINT -> "USAGE_CHECKPOINT"; T_USAGE_ACK -> "USAGE_ACK"; else -> "type " + t
     }
 
     // ---- payloads ------------------------------------------------------------------------------
 
-    fun sessionStart(buyerId: ByteArray): ByteArray = ByteBuffer.allocate(1 + 16).put(VERSION.toByte()).put(buyerId, 0, 16).array()
-    class SessionStart(val version: Int, val buyerId: ByteArray)
+    /** v0.7: the start carries the hash of the accepted contract; the seller refuses any other. */
+    fun sessionStart(buyerId: ByteArray, contractHash: ByteArray? = null): ByteArray =
+        ByteBuffer.allocate(1 + 16 + (if (contractHash != null) 32 else 0)).put(VERSION.toByte()).put(buyerId, 0, 16).also { if (contractHash != null) it.put(contractHash, 0, 32) }.array()
+    class SessionStart(val version: Int, val buyerId: ByteArray, val contractHash: ByteArray?)
     fun parseSessionStart(d: ByteArray?): SessionStart? =
-        if (d == null || d.size < 17) null else SessionStart(d[0].toInt() and 0xFF, d.copyOfRange(1, 17))
+        if (d == null || d.size < 17) null else SessionStart(d[0].toInt() and 0xFF, d.copyOfRange(1, 17), if (d.size >= 49) d.copyOfRange(17, 49) else null)
+
+    /** [body][sigLen 1][sig] helpers for signed marketplace frames. */
+    fun signed(body: ByteArray, sig: ByteArray): ByteArray = ByteBuffer.allocate(body.size + 1 + sig.size).put(body).put(sig.size.toByte()).put(sig).array()
+    class SignedBody(val body: ByteArray, val sig: ByteArray)
+    fun parseSigned(d: ByteArray?, bodyLen: Int): SignedBody? {
+        if (d == null || d.size < bodyLen + 2) return null
+        val n = d[bodyLen].toInt() and 0xFF
+        if (n == 0 || d.size != bodyLen + 1 + n) return null
+        return SignedBody(d.copyOfRange(0, bodyLen), d.copyOfRange(bodyLen + 1, d.size))
+    }
 
     fun sessionOk(providerId: ByteArray, upstreamType: Int, validated: Boolean): ByteArray =
         ByteBuffer.allocate(1 + 16 + 2).put(VERSION.toByte()).put(providerId, 0, 16).put(upstreamType.toByte()).put(if (validated) 1 else 0).array()

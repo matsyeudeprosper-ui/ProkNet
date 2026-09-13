@@ -28,7 +28,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.5.0 | Secure Fast Link: key-bound identity, end-to-end encryption, transport abstraction, Wi-Fi link, large transfers | passed on two phones except the Wi-Fi link (2026-09-13) |
 | v0.5.1 | Wi-Fi join fix: security-aware join, host address from DHCP, approval banner, phase line | passed: WIFI UP, signed handshake, 1 MB over Wi-Fi (2026-09-13) |
 | v0.6.0 | Internet through another phone: provider/buyer roles, tunnel over the Wi-Fi link, VpnService client, gateway | phone test: session dropped at the first tunnel frame (main-thread socket write) |
-| v0.6.1 | Fix: link writes on a dedicated writer thread (core/LinkIo), real exception text, loopback link tests, copy buttons at the top | built, 71 JVM tests pass, awaiting phone test |
+| v0.6.1 | Fix: link writes on a dedicated writer thread (core/LinkIo), real exception text, loopback link tests, copy buttons at the top | passed on two phones: A browses HTTPS through B with its own data OFF (2026-09-13) |
+| v0.7.0 | Connectivity Marketplace: BUY / SELL / RELAY, offers with price in the BLE scan, signed contract, signed usage checkpoints, exact CFA pricing + Prok fee, ledger, history | built, 80 JVM tests pass, awaiting phone test |
 
 ### v0.1 - what it does
 
@@ -121,7 +122,28 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 - Usage accounting per session: bytes up/down, streams, DNS queries,
   duration, provider, disconnect reason (local only, no payments).
 
-Still not here: multi-hop / relayed Internet, wallet, payments, pricing.
+### v0.7 - Connectivity Marketplace
+
+- **SELL**: price per MB (CFA), optional minimum session price and max MB.
+  The offer (price, upstream type, validated, relay flag) rides in the BLE
+  scan response, so buyers see it without connecting.
+- **BUY**: pick a nearby offer (ranked: validated, cheaper, stronger), tap
+  BUY, approve the unavoidable Android Wi-Fi and VPN prompts, browse.
+- **Contract**: buyer proposes, seller accepts, both signatures stored on both
+  phones. The tunnel session only starts under that contract's hash. Terms
+  cannot change during a session.
+- **Signed usage checkpoints** every 30 s / 1 MB: seller signs cumulative
+  usage and cost, buyer verifies (sequence, non-decreasing, exact cost under
+  the terms, within tolerance of its own counter) and countersigns. Final cost
+  comes from the last mutually signed checkpoint on both phones.
+- **Money math** is integer only (centimes), rounding half up, MB = 1,000,000
+  bytes; Prok fee is a configurable percentage (default 5%).
+- **Ledger**: buyer owes seller (gross), seller owes Prok (fee); mark paid /
+  mark received / dispute / cancel; balances; session **History**.
+- **RELAY**: advertised capability; forwarded-packet counts shown. Live
+  Internet is still buyer -> seller -> Internet only.
+
+Not here: Mobile Money, custody, automatic cashout, multi-hop Internet.
 
 ## Build (on the VPS)
 

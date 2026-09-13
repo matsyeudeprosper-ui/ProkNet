@@ -434,3 +434,55 @@ Retest = section 13 unchanged. The v0.6.0 failure ("tunnel write failed:
 null", link DOWN right after Use Internet) is fixed at the root: link writes
 no longer happen on the main thread. If anything still fails, the last error
 now names the exception class and where it happened.
+
+## 15. v0.7 Marketplace (two phones)
+
+B = seller (mobile data ON), A = buyer (mobile data OFF). Both on v0.7.0,
+started, keys learned.
+
+**15.1 SELL.** On B press **SELL**, set 5 CFA/MB, min 0, max 0, Start selling.
+B's Internet line: `SELL: PROVIDER READY | 5 CFA/MB | upstream mobile data, validated`.
+A's peer list shows B as `[SELL 5 CFA/MB mobile data]` within ~10 s.
+B's log: `SELL enabled: 5 CFA/MB ...`.
+
+**15.2 BUY.** On A press **BUY** (with B selected, or pick B from the list).
+Approve the Wi-Fi CONNECT dialog and the VPN OK dialog as before.
+A's log, in order: `BUY from prok-B at 5 CFA/MB`, `STATE AGREEING - proposing 5 CFA/MB ...`,
+`CONTRACT AGREED with prok-B: session xxxx, 5 CFA/MB ... (both signatures stored)`,
+`SESSION OK`, `VPN UP`. B's log: `CONTRACT AGREED with prok-A ...`, `SESSION OK for prok-A ... under contract xxxx`.
+
+**15.3 Usage and price rise.** On A press Net test, then browse a few pages.
+Every ~30 s both logs show `CHECKPOINT #n issued` (B) and
+`CHECKPOINT #n verified and countersigned` (A). A's Internet line:
+`BUY: INTERNET OK ... 1.20 MB used, running 6.00 CFA, agreed 5.50 CFA (checkpoint #3)`.
+B's line: `buyer prok-A: 1.20 MB ... running 6.00 CFA, agreed 5.50 CFA (checkpoint #3)`.
+The "agreed" amounts must be identical on both phones at the same checkpoint number.
+
+**15.4 End and settle.** On A press **STOP BUY**. Both logs print
+`SETTLEMENT (... view) session xxxx: signed usage N MB -> X CFA (checkpoint #k), fee ..., seller net ...`.
+X must be the same on both phones. B's line shows `sold N MB, earned <net>`.
+Press **Ledger** on both: A sees `I owe 5.50 CFA prok-A -> prok-B internet session [pending]`;
+B sees the same entry as `owed to me` plus `prok-B -> prok-network network fee 5% [pending]`.
+**History** lists the session with MB, duration, price and final cost.
+
+**15.5 Settlement marks.** On A: Ledger -> the entry -> MARK AS PAID. On B:
+Ledger -> the entry -> MARK AS RECEIVED -> B shows `[settled]`. (Each phone
+keeps its own ledger in v0.7; the marks are local.)
+
+**15.6 Price lock.** While A is connected, on B press STOP SELL then SELL at
+10 CFA/MB. A's session ends (`seller disabled`), A's final cost is still at
+5 CFA/MB. Pressing BUY again on A proposes 10 CFA/MB (the new advertised price).
+
+**15.7 RELAY.** Press RELAY on either phone: the other lists it with `[RELAY]`.
+Diagnostics show `relay activity: N packets forwarded` (from real carry-forward).
+
+What to send back: COPY DIAG from both phones after 15.4.
+
+### Checklist for the v0.7 report
+
+- [ ] 15.1 offer visible on the buyer with price and upstream
+- [ ] 15.2 contract agreed on both, session under contract, VPN up
+- [ ] 15.3 checkpoints countersigned; agreed cost identical on both
+- [ ] 15.4 same final cost on both; ledger entries (gross + fee)
+- [ ] 15.5 paid / received marks
+- [ ] 15.6 price locked for the running session

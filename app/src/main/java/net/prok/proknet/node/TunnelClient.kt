@@ -15,26 +15,34 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import net.prok.proknet.core.Crypto
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
+import net.prok.proknet.core.Market
+import net.prok.proknet.core.MessageStore
+import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.TcpFlow
 import net.prok.proknet.core.Tcpip
 import net.prok.proknet.core.Tunnel
+import net.prok.proknet.core.hexToBytes
 
 /**
- * BUYER side of the Internet tunnel (v0.6). Owns the session with the
- * provider, the user-space TCP flows behind the VPN TUN, DNS relaying and
- * the in-app Internet test. Frames go out through the authenticated Wi-Fi
- * link; packets go in and out through the VPN service.
+ * BUYER side (v0.6 tunnel + v0.7 marketplace). Proposes a signed contract,
+ * starts the session under it, runs the user-space TCP flows behind the VPN,
+ * verifies and countersigns the seller's usage checkpoints, keeps its own
+ * counters, and books the ledger when the session ends.
  *
- * States: DISCONNECTED -> CONNECTING -> TUNNEL UP -> INTERNET OK | INTERNET LOST -> DISCONNECTED
+ * States: DISCONNECTED -> AGREEING -> CONNECTING -> TUNNEL UP -> INTERNET OK | INTERNET LOST -> DISCONNECTED
  */
 class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     interface Hooks {
         fun send(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): Boolean
-        fun linkPeer(): String?          // short id of the peer authenticated on the Wi-Fi link
+        fun linkPeer(): String?
         fun linkPeerFullId(): String?
-        fun onSessionUp()                // start the VPN now
+        fun peerPub(peerShort: String): ByteArray?
+        fun store(): MessageStore
+        fun feePct(): Int
+        fun onSessionUp()
         fun onChanged()
     }
 
@@ -52,12 +60,19 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     @Volatile var vpnUp = false
     val history = ArrayList<Tunnel.Accounting>()
 
-    /** Set by the VPN service: how to write an IPv4 packet to the TUN. */
+    // ---- v0.7 marketplace ----
+    @Volatile var contract: Market.Contract? = null; private set
+    @Volatile var lastAccepted: Market.Checkpoint? = null; private set
+    @Volatile var disputed: String = ""; private set
+    @Volatile var totalSpentCentimes = 0L; private set
+    private var advertisedPrice = 0
+    private var reproposed = false
+
     @Volatile var tunWriter: ((ByteArray) -> Unit)? = null
 
-    private val flows = ConcurrentHashMap<String, TcpFlow>()      // key "srcPort>dst:port"
+    private val flows = ConcurrentHashMap<String, TcpFlow>()
     private val flowsById = ConcurrentHashMap<Int, TcpFlow>()
-    private val dnsPending = ConcurrentHashMap<Int, Triple<Int, Int, Int>>() // id -> (srcIp, srcPort, dstIp)
+    private val dnsPending = ConcurrentHashMap<Int, Triple<Int, Int, Int>>()
     private val testStreams = ConcurrentHashMap<Int, LocalBridge>()
     private var nextStreamId = 1
     private var keepaliveSeq = 0
@@ -74,27 +89,38 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
             for (f in flows.values.toList()) synchronized(f) { execute(f, f.onTick(now)) }
             if (now - lastKeepaliveReply > Tunnel.KEEPALIVE_TIMEOUT_MS) { fail("provider not answering keepalives"); return }
             if (now - lastKeepaliveSent >= Tunnel.KEEPALIVE_MS) { lastKeepaliveSent = now; hooks.send(Tunnel.T_KEEPALIVE, 0, Tunnel.keepalive(++keepaliveSeq)) }
+            contract?.let { c -> val s = session; if (s != null && s.bytesUp + s.bytesDown > c.maxBytes) { DiagLog.w(tag, "agreed maximum reached on my side"); stop("max MB reached") ; return } }
             main.postDelayed(this, 1000)
         }
     }
 
-    // ---- session -------------------------------------------------------------------------------
+    // ---- session: contract first, then the tunnel ------------------------------------------------
 
-    fun start(): Boolean {
-        val peer = hooks.linkPeer()
-        if (peer == null) { setState("DISCONNECTED", "no authenticated Wi-Fi link"); return false }
-        if (session != null) return true
+    /** Start buying from the link peer at the price it advertised. */
+    fun start(advertisedPricePerMb: Int, minPrice: Int = 0, maxMb: Int = 0): Boolean {
+        val peer = hooks.linkPeer(); val peerFull = hooks.linkPeerFullId()
+        if (peer == null || peerFull == null) { setState("DISCONNECTED", "no authenticated Wi-Fi link"); return false }
+        if (session != null || contract != null) return true
+        if (!Market.validPrice(advertisedPricePerMb)) { setState("DISCONNECTED", "invalid price"); return false }
         providerShort = peer
-        setState("CONNECTING", "SESSION_START -> prok-" + peer)
-        sessionStartedAt = System.currentTimeMillis()
-        lastKeepaliveReply = sessionStartedAt
-        if (!hooks.send(Tunnel.T_SESSION_START, 0, Tunnel.sessionStart(identity.idBytes))) { setState("DISCONNECTED", "cannot write to link"); return false }
-        main.postDelayed({ if (session == null && state == "CONNECTING") fail("no SESSION_OK from provider within 15s") }, 15_000)
-        return true
+        advertisedPrice = advertisedPricePerMb
+        reproposed = false
+        return propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), advertisedPricePerMb, minPrice, maxMb, hooks.feePct(), System.currentTimeMillis()))
     }
 
+    private fun propose(c: Market.Contract): Boolean {
+        if (!c.valid()) { setState("DISCONNECTED", "contract invalid"); return false }
+        val sig = identity.sign(Market.contractSignData(c))
+        pendingProposal = c to sig
+        setState("AGREEING", "proposing " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + ", max " + (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB") + ", fee " + c.feePct + "% -> prok-" + c.sellerShort)
+        if (!hooks.send(Tunnel.T_CONTRACT_PROPOSE, 0, Tunnel.signed(c.encode(), sig))) { setState("DISCONNECTED", "cannot write to link"); return false }
+        main.postDelayed({ if (contract == null && state == "AGREEING") fail("no contract answer within 15s") }, 15_000)
+        return true
+    }
+    private var pendingProposal: Pair<Market.Contract, ByteArray>? = null
+
     fun stop(reason: String) {
-        if (session == null && state == "DISCONNECTED") return
+        if (session == null && contract == null && state == "DISCONNECTED") return
         hooks.send(Tunnel.T_SESSION_END, 0, reason.toByteArray(Charsets.UTF_8))
         endSession(reason)
     }
@@ -109,8 +135,24 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         flows.clear(); flowsById.clear(); dnsPending.clear()
         testStreams.values.forEach { it.close() }; testStreams.clear()
         session?.let { it.end(reason); history.add(0, it); if (history.size > 20) history.removeAt(history.size - 1); DiagLog.i(tag, "SESSION END: " + it.summary()) }
-        session = null
+        contract?.let { finalizeContract(it, reason) }
+        session = null; contract = null; lastAccepted = null; pendingProposal = null
         setState("DISCONNECTED", reason)
+    }
+
+    /** Money: the same rule as the seller, from the same signed checkpoint. */
+    private fun finalizeContract(c: Market.Contract, reason: String) {
+        val store = hooks.store()
+        val fin = Market.finalCost(c, lastAccepted)
+        val s = session
+        store.updateSession(c.sessionHex, status = "ended", endTs = System.currentTimeMillis(), bytesUp = s?.bytesUp ?: 0, bytesDown = s?.bytesDown ?: 0,
+            lastSeq = lastAccepted?.seq ?: 0, lastCheckpoint = lastAccepted?.encode(), finalCentimes = fin, reason = reason + (if (disputed.isNotEmpty()) " (disputed: " + disputed + ")" else ""))
+        var booked = 0
+        for (e in Market.sessionEntries(c, fin, System.currentTimeMillis())) if (store.insertLedger(e)) booked++
+        totalSpentCentimes += fin
+        DiagLog.i(tag, "SETTLEMENT (buyer view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastAccepted?.billable ?: 0) + " -> " + Market.cfa(fin) +
+            " (" + (lastAccepted?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), my own count " + Market.mb((s?.bytesUp ?: 0) + (s?.bytesDown ?: 0)) +
+            ", ledger entries booked " + booked + (if (disputed.isNotEmpty()) ", DISPUTED: " + disputed else ""))
     }
 
     private fun setState(s: String, why: String) {
@@ -119,11 +161,13 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         hooks.onChanged()
     }
 
-    // ---- frames from the provider -----------------------------------------------------------------
+    // ---- frames from the seller ---------------------------------------------------------------------
 
     fun onFrame(peerShort: String, f: Tunnel.Frame) {
         if (peerShort != providerShort) return
         when (f.type) {
+            Tunnel.T_CONTRACT_ACCEPT -> onAccept(peerShort, f)
+            Tunnel.T_CONTRACT_REJECT -> onReject(String(f.data, Charsets.UTF_8))
             Tunnel.T_SESSION_OK -> {
                 val ok = Tunnel.parseSessionOk(f.data) ?: return
                 val expected = hooks.linkPeerFullId()
@@ -132,27 +176,29 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 session = Tunnel.Accounting(peerShort, "buyer", sessionStartedAt)
                 upstreamType = ok.upstreamType; upstreamValidated = ok.validated
                 lastKeepaliveReply = System.currentTimeMillis()
-                DiagLog.i(tag, "SESSION OK: provider prok-" + peerShort + " upstream " + Tunnel.upstreamName(ok.upstreamType) + (if (ok.validated) " (validated)" else " (not validated)"))
+                contract?.let { hooks.store().updateSession(it.sessionHex, status = "active") }
+                DiagLog.i(tag, "SESSION OK: seller prok-" + peerShort + " upstream " + Tunnel.upstreamName(ok.upstreamType) + (if (ok.validated) " (validated)" else " (not validated)"))
                 setState("TUNNEL UP", "session accepted, starting VPN")
                 main.post(ticker)
                 hooks.onSessionUp()
             }
-            Tunnel.T_SESSION_END -> fail("provider ended session: " + String(f.data, Charsets.UTF_8))
+            Tunnel.T_SESSION_END -> fail("seller ended session: " + String(f.data, Charsets.UTF_8))
             Tunnel.T_ERROR -> {
                 val e = Tunnel.parseError(f.data)
-                if (f.streamId == 0) { fail("provider error: " + (e?.message ?: "?")) }
+                if (f.streamId == 0) { fail("seller error: " + (e?.message ?: "?")) }
                 else {
                     flowsById[f.streamId]?.let { fl -> synchronized(fl) { execute(fl, fl.onStreamFailed(e?.message ?: "error")) } }
                     testStreams[f.streamId]?.fail(e?.message ?: "error")
-                    if (dnsPending.remove(f.streamId) != null) DiagLog.w(tag, "dns query " + f.streamId + " failed at provider: " + e?.message)
+                    if (dnsPending.remove(f.streamId) != null) DiagLog.w(tag, "dns query " + f.streamId + " failed at seller: " + e?.message)
                 }
             }
             Tunnel.T_KEEPALIVE -> { lastKeepaliveReply = System.currentTimeMillis() }
             Tunnel.T_UPSTREAM_STATE -> {
                 val u = Tunnel.parseUpstream(f.data) ?: return
                 upstreamType = u.type; upstreamValidated = u.validated
-                if (!u.available) setState("INTERNET LOST", "provider lost its upstream") else if (state == "INTERNET LOST") setState("TUNNEL UP", "provider upstream back")
+                if (!u.available) setState("INTERNET LOST", "seller lost its upstream") else if (state == "INTERNET LOST") setState("TUNNEL UP", "seller upstream back")
             }
+            Tunnel.T_USAGE_CHECKPOINT -> onCheckpoint(peerShort, f)
             Tunnel.T_TCP_OPEN_OK -> {
                 lastKeepaliveReply = System.currentTimeMillis()
                 flowsById[f.streamId]?.let { fl -> synchronized(fl) { execute(fl, fl.onStreamOpened()) }; markInternetOk("stream " + f.streamId + " open") }
@@ -179,9 +225,70 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         }
     }
 
+    private fun onAccept(peerShort: String, f: Tunnel.Frame) {
+        val pp = pendingProposal ?: return
+        val sb = Tunnel.parseSigned(f.data, 32) ?: run { fail("malformed CONTRACT_ACCEPT"); return }
+        if (!sb.body.contentEquals(pp.first.hash())) { fail("seller accepted a different contract"); return }
+        val pub = hooks.peerPub(peerShort) ?: run { fail("seller key unknown"); return }
+        if (!Crypto.verify(pub, Market.contractSignData(pp.first), sb.sig)) { fail("seller signature on the contract INVALID"); return }
+        val c = pp.first
+        contract = c; lastAccepted = null; disputed = ""
+        hooks.store().insertSession(StoredSession(c.sessionHex, "buyer", c.encode(), pp.second, sb.sig, "agreed", c.startTs, 0, 0, 0, 0, null, 0, "", peerShort))
+        DiagLog.i(tag, "CONTRACT AGREED with prok-" + peerShort + ": session " + c.sessionHex.substring(0, 8) + ", " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + " CFA, max " +
+            (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB") + ", fee " + c.feePct + "% (both signatures stored)")
+        setState("CONNECTING", "SESSION_START under contract -> prok-" + peerShort)
+        sessionStartedAt = System.currentTimeMillis()
+        lastKeepaliveReply = sessionStartedAt
+        if (!hooks.send(Tunnel.T_SESSION_START, 0, Tunnel.sessionStart(identity.idBytes, c.hash()))) { fail("cannot write to link"); return }
+        main.postDelayed({ if (session == null && state == "CONNECTING") fail("no SESSION_OK from seller within 15s") }, 15_000)
+    }
+
+    /** The seller's real terms may differ in min/max/fee (not visible in the scan); re-propose once if the PRICE is what was advertised. */
+    private fun onReject(msg: String) {
+        if (msg.startsWith("terms:") && !reproposed) {
+            val p = msg.removePrefix("terms:").split(",").mapNotNull { it.trim().toIntOrNull() }
+            if (p.size == 4 && p[0] == advertisedPrice && Market.validMinPrice(p[1]) && Market.validMaxMb(p[2]) && Market.validFee(p[3])) {
+                reproposed = true
+                val peerFull = hooks.linkPeerFullId() ?: run { fail("no link"); return }
+                DiagLog.i(tag, "seller terms: min " + p[1] + " CFA, max " + p[2] + " MB, fee " + p[3] + "% at the advertised " + p[0] + " CFA/MB - re-proposing")
+                propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), p[0], p[1], p[2], p[3], System.currentTimeMillis()))
+                return
+            }
+            fail("seller wants " + (p.getOrNull(0) ?: "?") + " CFA/MB but advertised " + advertisedPrice + " - refused")
+            return
+        }
+        fail("contract rejected: " + msg)
+    }
+
+    private fun onCheckpoint(peerShort: String, f: Tunnel.Frame) {
+        val c = contract ?: return
+        val s = session ?: return
+        val sb = Tunnel.parseSigned(f.data, Market.Checkpoint.LEN) ?: run { hooks.send(Tunnel.T_ERROR, f.streamId, Tunnel.error(Tunnel.ERR_BAD_FRAME, "malformed checkpoint")); return }
+        val cp = Market.Checkpoint.decode(sb.body) ?: run { hooks.send(Tunnel.T_ERROR, f.streamId, Tunnel.error(Tunnel.ERR_BAD_FRAME, "malformed checkpoint")); return }
+        val pub = hooks.peerPub(peerShort) ?: return
+        if (!Crypto.verify(pub, Market.checkpointSignData(cp), sb.sig)) { DiagLog.w(tag, "CHECKPOINT #" + cp.seq + ": seller signature INVALID - ignored"); return }
+        val why = Market.validateCheckpoint(cp, c, lastAccepted, s.bytesUp, s.bytesDown)
+        if (why != null) {
+            if (!why.startsWith("duplicate")) { disputed = "#" + cp.seq + ": " + why; DiagLog.w(tag, "CHECKPOINT #" + cp.seq + " REJECTED: " + why + " (my count up " + s.bytesUp + " down " + s.bytesDown + ")") }
+            hooks.send(Tunnel.T_ERROR, cp.seq, Tunnel.error(Tunnel.ERR_BAD_FRAME, why)); return
+        }
+        val mySig = identity.sign(Market.checkpointSignData(cp))
+        hooks.store().insertCheckpoint(c.sessionHex, cp.seq, cp.encode(), sb.sig, mySig, System.currentTimeMillis())
+        hooks.store().updateSession(c.sessionHex, bytesUp = cp.bytesUp, bytesDown = cp.bytesDown, lastSeq = cp.seq, lastCheckpoint = cp.encode())
+        lastAccepted = cp
+        hooks.send(Tunnel.T_USAGE_ACK, cp.seq, Tunnel.signed(cp.encode(), mySig))
+        DiagLog.i(tag, "CHECKPOINT #" + cp.seq + (if (cp.final) " (final)" else "") + " verified and countersigned: " + Market.mb(cp.billable) + " = " + Market.cfa(cp.costCentimes) +
+            " (my own count " + Market.mb(s.bytesUp + s.bytesDown) + ")")
+        hooks.onChanged()
+    }
+
     private fun markInternetOk(why: String) { if (state == "TUNNEL UP") setState("INTERNET OK", why) }
 
-    // ---- packets from the VPN TUN -------------------------------------------------------------------
+    /** Live figures for the UI. */
+    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return Market.sessionCost(s.bytesUp + s.bytesDown, c.pricePerMb, c.minPriceCfa) }
+    fun agreedCost(): Long { val c = contract ?: return 0; return Market.finalCost(c, lastAccepted) }
+
+    // ---- packets from the VPN TUN (unchanged from v0.6) ------------------------------------------
 
     fun onTunPacket(buf: ByteArray, len: Int) {
         val ip = Tcpip.parseIp4(buf, len) ?: return
@@ -192,7 +299,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 val key = t.srcPort.toString() + ">" + Tcpip.ipToString(ip.dstIp) + ":" + t.dstPort
                 var f = flows[key]
                 if (f == null) {
-                    if (!t.syn || t.isAck) return // stray segment for an unknown flow
+                    if (!t.syn || t.isAck) return
                     val id = synchronized(this) { nextStreamId++ }
                     f = TcpFlow(ip.srcIp, t.srcPort, ip.dstIp, t.dstPort, id, ourIsn = (rnd.nextInt().toLong() and 0xFFFFFFFFL))
                     flows[key] = f; flowsById[id] = f
@@ -210,7 +317,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                     if (!hooks.send(Tunnel.T_DNS_REQUEST, id, u.payload)) dnsPending.remove(id)
                     if (dnsPending.size > 200) dnsPending.keys.take(50).forEach { dnsPending.remove(it) }
                 } else if (droppedUdpLogged.add(u.dstPort) && droppedUdpLogged.size < 12) {
-                    DiagLog.w(tag, "UDP to port " + u.dstPort + " dropped: only DNS is tunnelled in v0.6 (QUIC falls back to TCP)")
+                    DiagLog.w(tag, "UDP to port " + u.dstPort + " dropped: only DNS is tunnelled (QUIC falls back to TCP)")
                 }
             }
             else -> {}
@@ -223,24 +330,17 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
             is TcpFlow.Action.OpenStream -> hooks.send(Tunnel.T_OPEN_TCP, f.streamId, Tunnel.openTcp(a.host, a.port))
             is TcpFlow.Action.StreamData -> { session?.let { it.bytesUp += a.bytes.size }; hooks.send(Tunnel.T_TCP_DATA, f.streamId, a.bytes) }
             is TcpFlow.Action.CloseStream -> hooks.send(Tunnel.T_TCP_CLOSE, f.streamId)
-            is TcpFlow.Action.Closed -> {
-                flowsById.remove(f.streamId)
-                flows.entries.removeIf { it.value === f }
-            }
+            is TcpFlow.Action.Closed -> { flowsById.remove(f.streamId); flows.entries.removeIf { it.value === f } }
         }
     }
 
     fun activeFlows(): Int = flows.size
     fun flowSummary(): String = flows.values.take(6).joinToString(", ") { Tcpip.ipToString(it.dstIp) + ":" + it.dstPort + "/" + it.state.name.lowercase() }
 
-    // ---- in-app Internet test (through the tunnel, independent of the VPN) ---------------------------
+    // ---- in-app Internet test (unchanged) -----------------------------------------------------------
 
     class TestResult(val ok: Boolean, val text: String)
 
-    /**
-     * 1) DNS for [host] through the provider; 2) real TLS handshake + HTTP GET to [host]:443 through a
-     * tunnel stream, bridged over a loopback socket so the platform TLS stack can be used unchanged.
-     */
     fun internetTest(host: String, cb: (TestResult) -> Unit) {
         if (session == null) { cb(TestResult(false, "no session")); return }
         pool.execute {
@@ -253,19 +353,17 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 testStreams[id] = bridge
                 val port = bridge.listen()
                 if (!hooks.send(Tunnel.T_OPEN_TCP, id, Tunnel.openTcp(host, 443))) throw Exception("cannot send OPEN_TCP")
-                if (!bridge.awaitOpen(12_000)) throw Exception("provider could not connect to " + host + ":443 (" + bridge.error + ")")
-                val tOpen = System.currentTimeMillis() - t0
-                sb.append("stream open in ").append(tOpen).append(" ms via provider\n")
+                if (!bridge.awaitOpen(12_000)) throw Exception("seller could not connect to " + host + ":443 (" + bridge.error + ")")
+                sb.append("stream open in ").append(System.currentTimeMillis() - t0).append(" ms via seller\n")
                 val plain = Socket()
                 plain.connect(InetSocketAddress("127.0.0.1", port), 3000)
                 bridge.attach(plain)
                 val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(plain, host, 443, true) as SSLSocket
                 ssl.soTimeout = 15_000
                 ssl.startHandshake()
-                val tTls = System.currentTimeMillis() - t0
-                sb.append("TLS ").append(ssl.session.protocol).append(" ").append(ssl.session.cipherSuite).append(" in ").append(tTls).append(" ms\n")
+                sb.append("TLS ").append(ssl.session.protocol).append(" ").append(ssl.session.cipherSuite).append(" in ").append(System.currentTimeMillis() - t0).append(" ms\n")
                 val out = ssl.outputStream
-                out.write(("GET / HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: ProkNet/0.6\r\nConnection: close\r\n\r\n").toByteArray()); out.flush()
+                out.write(("GET / HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: ProkNet/0.7\r\nConnection: close\r\n\r\n").toByteArray()); out.flush()
                 val input = ssl.inputStream
                 val head = ByteArray(4096); var n = 0
                 while (n < head.size) { val r = input.read(head, n, head.size - n); if (r < 0) break; n += r; if (String(head, 0, n, Charsets.ISO_8859_1).contains("\r\n\r\n")) break }
@@ -273,8 +371,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 var total = n.toLong()
                 val rest = ByteArray(8192)
                 while (total < 200_000) { val r = input.read(rest); if (r < 0) break; total += r }
-                val tAll = System.currentTimeMillis() - t0
-                sb.append("HTTP: ").append(status).append("\n").append(total).append(" bytes in ").append(tAll).append(" ms")
+                sb.append("HTTP: ").append(status).append("\n").append(total).append(" bytes in ").append(System.currentTimeMillis() - t0).append(" ms")
                 ok = status.startsWith("HTTP/")
                 try { ssl.close() } catch (_: Exception) {}
                 if (ok) markInternetOk("https test")
@@ -286,7 +383,6 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         }
     }
 
-    /** Bridges a tunnel stream to a loopback TCP socket so standard Java networking (TLS) can use it. */
     private inner class LocalBridge(val id: Int, val host: String, val port: Int) {
         private val server = ServerSocket()
         private val openLatch = CountDownLatch(1)
@@ -304,7 +400,6 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         fun data(b: ByteArray) { toLocal.offer(b) }
         fun remoteClosed() { toLocal.offer(EOF) }
 
-        /** Accept the loopback client and pump both directions. */
         fun attach(client: Socket) {
             val s = server.accept(); local = s
             pool.execute {
