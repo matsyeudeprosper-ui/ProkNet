@@ -199,9 +199,10 @@ If a phone's vendor killed ProkNet, its log will show a gap and a
 - [ ] 8.6 Stop from the notification works
 - [ ] all 2A behaviour unchanged (queue, receipts, no duplicates, old messages still listed)
 
-## 9. Milestone 2C1 (v0.4): one relay, STORE -> CARRY -> FORWARD
+## 9. Milestone 2C1 (v0.4.1): one relay, STORE -> CARRY -> FORWARD
 
-Three phones on v0.4.0: A (origin), B (relay), C (destination). Before the
+Three phones on v0.4.1 (v0.4.0 was never tested; v0.4.1 changes the wire
+format, so all three must be on the same build): A (origin), B (relay), C (destination). Before the
 test, let all three see each other once with the app running, so every phone
 has learned the others' full IDs (they appear in the peers list). Then:
 
@@ -257,3 +258,24 @@ v0.3 message is delivered normally (it is addressed by short ID now).
 - [ ] 9.4 carried packet survives B restart
 - [ ] 9.5 B forwards only to C
 - [ ] background operation (v0.3) still works: do 9.1 with B's screen off
+
+## 10. Automated tests (v0.4.1) - run on the VPS, no phone needed
+
+```
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1
+```
+
+runs 23 JUnit tests in `app/src/test` before building. They cover: packet
+encode/decode round trip, size limits, origin/destination/message ID
+unchanged through a relay, last hop A -> B -> C, hop count, TTL rejection,
+one-relay limit, malformed and truncated packets (every truncation length
+plus 500 random blobs), v1 and v2 decoding, legacy destination padding,
+direct-wins planning, handoff target choice, forward-only-to-destination,
+carried-before-own ordering, backoff, handed_off-never-delivered,
+result-to-state mapping, give-up after 50 attempts, exactly-once delivery
+through two routes, and the whole A -> B -> C story with three simulated
+phones. Results: `dist\test-results.txt`. A failing test produces no APK.
+
+What they do NOT cover (needs phones): BLE timing, MTU and long writes,
+Android address rotation, the SQLite migration itself, vendor background
+killers.

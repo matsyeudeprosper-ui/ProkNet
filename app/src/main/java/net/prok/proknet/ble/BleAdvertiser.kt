@@ -31,10 +31,24 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
         override fun onStartFailure(errorCode: Int) {
             isAdvertising = false
             DiagLog.e(tag, "advertising FAILED: " + errName(errorCode))
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE && !shortPayload) {
+                // This chipset refuses the 16-byte full-ID scan response: fall back to the v1 4-byte short ID.
+                // Peers can still address us (short-ID addressing) and relay for us.
+                DiagLog.w(tag, "retrying with the short-ID scan response (adv v1)")
+                shortPayload = true
+                startInternal()
+            }
         }
     }
 
+    private var shortPayload = false
+
     fun start(): Boolean {
+        shortPayload = false
+        return startInternal()
+    }
+
+    private fun startInternal(): Boolean {
         val adv = adapter.bluetoothLeAdvertiser
         if (adv == null) {
             DiagLog.e(tag, "this phone does not support BLE advertising (bluetoothLeAdvertiser == null). " +
@@ -55,9 +69,16 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
             .build()
         // v2 (2C1): the scan response carries the FULL 16-byte ID so peers can address
         // packets to us without a GATT read. 2+2+1+16 = 21 bytes, fits in 31.
-        val payload = ByteArray(1 + Identity.ID_LEN)
-        payload[0] = BleConstants.ADV_VERSION.toByte()
-        System.arraycopy(identity.idBytes, 0, payload, 1, Identity.ID_LEN)
+        val payload: ByteArray
+        if (shortPayload) {
+            payload = ByteArray(1 + Identity.SHORT_ID_LEN)
+            payload[0] = BleConstants.ADV_VERSION_SHORT.toByte()
+            System.arraycopy(identity.shortIdBytes, 0, payload, 1, Identity.SHORT_ID_LEN)
+        } else {
+            payload = ByteArray(1 + Identity.ID_LEN)
+            payload[0] = BleConstants.ADV_VERSION.toByte()
+            System.arraycopy(identity.idBytes, 0, payload, 1, Identity.ID_LEN)
+        }
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addManufacturerData(BleConstants.MANUFACTURER_ID, payload)

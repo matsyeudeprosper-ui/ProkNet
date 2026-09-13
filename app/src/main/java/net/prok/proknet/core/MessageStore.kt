@@ -154,8 +154,9 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
     /** Does any row for this message (from this origin) exist, in any direction? Used for duplicate detection. */
     fun knows(msgId: String, originShort: String): String? {
         readableDatabase.rawQuery(
-            "SELECT direction, status FROM messages WHERE msg_id=? AND (peer_id=? OR direction='out') LIMIT 1",
-            arrayOf(msgId, originShort)
+            "SELECT direction, status FROM messages WHERE msg_id=? AND " +
+                "((direction IN ('in','carry') AND peer_id=?) OR (direction='out' AND substr(origin_id,1,8)=?)) LIMIT 1",
+            arrayOf(msgId, originShort, originShort)
         ).use { c -> return if (c.moveToFirst()) c.getString(0) + "/" + c.getString(1) else null }
     }
 

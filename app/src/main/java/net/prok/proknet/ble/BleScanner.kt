@@ -31,8 +31,13 @@ class BleScanner(
         private set
 
     private val callback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) = onResult(result)
-        override fun onBatchScanResults(results: MutableList<ScanResult>) { results.forEach { onResult(it) } }
+        // A malformed scan record must never crash the scan callback thread.
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            try { onResult(result) } catch (e: Exception) { DiagLog.w(tag, "bad scan result ignored: " + e) }
+        }
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach { try { onResult(it) } catch (e: Exception) { DiagLog.w(tag, "bad scan result ignored: " + e) } }
+        }
         override fun onScanFailed(errorCode: Int) {
             isScanning = false
             DiagLog.e(tag, "scan FAILED: " + errName(errorCode))

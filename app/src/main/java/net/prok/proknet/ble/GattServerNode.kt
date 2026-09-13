@@ -132,10 +132,14 @@ class GattServerNode(
             synchronized(receipts) { receipts[address] = receiptBytes(BleConstants.RECEIPT_REJECTED, ByteArray(8)) }
             return
         }
-        val status = onPacket(pkt, address)
+        // Never let a bad packet or a store error kill the Bluetooth binder thread: answer REJECTED instead.
+        val status = try { onPacket(pkt, address) } catch (e: Exception) {
+            DiagLog.e(tag, "packet handler crashed for msg=" + pkt.msgIdHex + " - answering REJECTED", e)
+            BleConstants.RECEIPT_REJECTED
+        }
         synchronized(receipts) { receipts[address] = receiptBytes(status, pkt.msgId) }
-        DiagLog.i(tag, "PACKET origin=" + pkt.originShort + " dest=" + pkt.destShort + " msg=" + pkt.msgIdHex +
-            " hops=" + pkt.hops + "/" + pkt.ttl + " text=\"" + pkt.text + "\" -> receipt " + statusName(status))
+        DiagLog.i(tag, "PACKET v" + pkt.wireVersion + " origin=" + pkt.originShort + " dest=" + pkt.destShort + " lastHop=" + (if (pkt.hasLastHop) pkt.lastHopShort else "?") +
+            " msg=" + pkt.msgIdHex + " hops=" + pkt.hops + "/" + pkt.ttl + " text=\"" + pkt.text + "\" -> receipt " + statusName(status))
     }
 
     private fun receiptBytes(status: Int, msgId: ByteArray): ByteArray {

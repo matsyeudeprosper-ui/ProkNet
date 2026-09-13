@@ -57,28 +57,36 @@ rotates BLE addresses.
 | INBOX | `7a0c0003-...` | write (with response) | one encoded Packet per write |
 | RECEIPT | `7a0c0004-...` | read | v0.2: `[ver=1][status][msgId x8]` for the last packet this central wrote |
 
-**Packet v2** (`core/Packet.kt`, since v0.4), big-endian, max 512 bytes:
+**Packet v3** (`core/Packet.kt`, since v0.4.1), big-endian, max 512 bytes:
 
 ```
 0   2  magic "PK"
-2   1  version = 2
+2   1  version = 3
 3   1  type    = 1 (TEXT)
 4  16  origin ID       (who wrote it; never changes on relay)
 20 16  destination ID  (final recipient; never changes on relay)
-36  8  message ID      (random, chosen by the origin; never changes)
-44  8  timestamp ms    (origin's clock)
-52  1  TTL             (max custody transfers, default 3)
-53  1  hops            (custody transfers so far; a relay adds 1 when forwarding)
-54  2  text length N
-56  N  text UTF-8      (N <= 456)
+36 16  last-hop ID     (the phone transmitting THIS hop; every transmitter stamps itself)
+52  8  message ID      (random, chosen by the origin; never changes)
+60  8  timestamp ms    (origin's clock)
+68  1  TTL             (max custody transfers, default 3)
+69  1  hops            (custody transfers so far; a relay adds 1 when forwarding)
+70  2  text length N
+72  N  text UTF-8      (N <= 440)
 ```
+
+A -> B: last hop = A. B -> C: last hop = B. C displays "from A via B" from
+these two fields alone. **No Bluetooth MAC address is used anywhere in
+routing or accounting** (Android rotates them, and the address a GATT server
+sees is not reliably the one the scanner saw). The transport address appears
+in the log only as a debugging aid.
 
 (origin, message ID) is the global identity of a message. Every phone keeps
 a unique index on it per direction, so a retry, a duplicate handoff or a
 second route can never store a second copy. A destination whose last 12
 bytes are zero is matched on the short ID only (used when a peer's full ID
-is unknown). v1 packets still decode and are treated as addressed to the
-receiver.
+is unknown). Decoding is strict (exact length, known version and type, any
+exception -> null) and never throws. v2 packets (no last hop) and v1 packets
+(no destination, treated as addressed to the receiver) still decode.
 The sender requests MTU 517 so a full packet fits in one write; when the peer
 grants less, Android automatically uses the GATT long-write procedure and the
 server reassembles the prepared-write chunks.
@@ -188,6 +196,13 @@ Rules, all in `DeliveryQueue.pump()` and `ProkNetNode.onPacketReceived()`:
   on start).
 - Log vocabulary: `ACCEPTED FOR RELAY`, `CARRYING`, `DESTINATION SEEN`,
   `FORWARDING`, `FORWARDED`, `HANDING OFF`, `HANDED OFF`, `FINAL RECEIVED`.
+- Robustness (v0.4.1): a packet handler exception answers REJECTED instead of
+  killing the Bluetooth thread; a malformed scan record is ignored; a phone
+  whose chipset refuses the 16-byte scan response falls back to the 4-byte
+  short ID and is then addressed in short-ID form; devices seen without any
+  scan response are listed as "(no ID yet)" and cannot be selected as a
+  destination; a corrupt stored row is marked failed instead of crashing the
+  queue.
 
 Known peers (`peers` table: short ID, label, last seen, last address, full ID) are shown
 in the list as "NOT IN RANGE" so a message can be queued for a phone that is
@@ -230,6 +245,25 @@ MainActivity (a window) ---------observes only------------+
 
 Still no third-party carrying: the service keeps THIS phone's node alive; the
 queue still only holds this phone's own messages.
+
+## Routing decisions are pure functions (v0.4.1)
+
+`core/Routing.kt` contains every decision and nothing else: no Android, no
+BLE, no database.
+
+| Function | Answers |
+|---|---|
+| `decideReceive(packet, myId, alreadyKnown)` | FINAL / RELAY / DUPLICATE / REJECT_TTL / REJECT_ALREADY_RELAYED / REJECT_MALFORMED |
+| `receiptFor(decision)`, `resultFor(receiptCode)` | receipt code <-> DeliveryResult mapping used by both ends |
+| `plan(carrying, pending, inRange, now)` | the next attempt: FORWARD (carried, destination present), DIRECT, or HANDOFF to the strongest other peer; null if nothing can be done |
+| `applyResult(kind, result, attemptNo, peer)` | the message's next state, backoff and log line |
+| `outgoingPacket(...)` | the bytes to transmit: identity untouched, last hop = me, hops+1 when forwarding |
+
+`ble/DeliveryQueue.kt` and `ble/ProkNetNode.kt` only feed facts in and
+execute what comes out. `app/src/test/java/net/prok/proknet/core/` holds 23
+JUnit tests over these functions and the packet format, including a full
+A -> B -> C simulation with three in-memory phones. `build.ps1` runs them
+before assembling; a failure means no APK.
 
 ## Identity
 

@@ -235,7 +235,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (text.isEmpty()) { toast("Type a message"); return }
         if (!node.isRunning) { toast("Press Start first"); return }
         DiagLog.i(tag, "send \"" + text + "\" -> " + peer.label + (if (peer.inRange) "" else " (not in range: queued)"))
-        node.sendText(peer, text)
+        if (!node.sendText(peer, text)) { toast("Cannot address " + peer.label + " yet (no ID received)"); return }
         editMessage.setText("")
         if (!peer.inRange) toast("Queued: will deliver when " + peer.label + " is back in range")
     }

@@ -1,6 +1,7 @@
 package net.prok.proknet.ble
 
 import java.util.UUID
+import net.prok.proknet.core.Routing
 
 /** All BLE identifiers and tuning values used by ProkNet live here. */
 object BleConstants {
@@ -14,28 +15,24 @@ object BleConstants {
     val CHAR_INBOX_UUID: UUID = UUID.fromString("7a0c0003-9b1e-4c5a-8d7f-0b6e2f3a4c5d")
 
     /**
-     * Readable (milestone 2A): delivery receipt for the last packet THIS central wrote.
-     * Value = [RECEIPT_VERSION][status][msgId x8]. The sender reads it right after
-     * its write is acknowledged; only a matching msgId counts.
-     *   ACCEPTED       = the receiver IS the destination and stored it (final delivery)
-     *   DUPLICATE      = the receiver already had it (final or carried)
-     *   ACCEPTED_RELAY = the receiver is NOT the destination and took custody (2C1)
-     *   REJECTED       = malformed, or TTL exhausted
+     * Readable: delivery receipt for the last packet THIS central wrote.
+     * Value = [RECEIPT_VERSION][status][msgId x8]. Status codes live in Routing.
      */
     val CHAR_RECEIPT_UUID: UUID = UUID.fromString("7a0c0004-9b1e-4c5a-8d7f-0b6e2f3a4c5d")
     const val RECEIPT_VERSION = 1
-    const val RECEIPT_REJECTED = 0
-    const val RECEIPT_ACCEPTED = 1
-    const val RECEIPT_DUPLICATE = 2
-    const val RECEIPT_ACCEPTED_RELAY = 3
+    const val RECEIPT_REJECTED = Routing.RECEIPT_REJECTED
+    const val RECEIPT_ACCEPTED = Routing.RECEIPT_ACCEPTED
+    const val RECEIPT_DUPLICATE = Routing.RECEIPT_DUPLICATE
+    const val RECEIPT_ACCEPTED_RELAY = Routing.RECEIPT_ACCEPTED_RELAY
 
     /**
      * Manufacturer-specific data company ID. 0xFFFF is reserved by the Bluetooth
      * SIG for internal use / testing, which is exactly what a lab build is.
-     * Scan-response payload: v1 = [1][shortId x4]; v2 (2C1) = [2][fullId x16].
+     * Scan-response payload: v1 = [1][shortId x4]; v2 = [2][fullId x16].
      */
     const val MANUFACTURER_ID = 0xFFFF
     const val ADV_VERSION = 2
+    const val ADV_VERSION_SHORT = 1
 
     /** Largest MTU Android allows; a 512-byte packet fits in one write when granted. */
     const val REQUEST_MTU = 517
@@ -44,22 +41,11 @@ object BleConstants {
     const val SEND_TIMEOUT_MS = 20_000L
     const val MTU_FALLBACK_MS = 3_000L
 
-    // ---- delivery queue (milestone 2A) ----
-    const val QUEUE_TTL_MS = 48L * 3600_000L       // pending/carrying longer than this -> expired
-    const val QUEUE_TICK_MS = 10_000L              // periodic pump
-    const val BACKOFF_BASE_MS = 5_000L             // wait after a failed attempt, doubles each time
-    const val BACKOFF_MAX_MS = 60_000L
-    const val MAX_ATTEMPTS = 50                    // then -> failed
-}
-
-/** Outcome of one delivery attempt, as seen by the sender. */
-enum class DeliveryResult {
-    DELIVERED,        // receipt ACCEPTED: the destination stored the message (final)
-    DUPLICATE,        // receipt DUPLICATE: peer already had it -> counts as delivered / handed off
-    RELAYED,          // receipt ACCEPTED_RELAY: a relay took custody (NOT final delivery)
-    REJECTED,         // receipt REJECTED: peer refused the packet -> failed, no retry
-    NO_RECEIPT,       // write acked but receipt missing/mismatched -> retry later
-    TRANSPORT_FAILED, // could not connect / write -> retry later
+    // ---- delivery queue ----
+    const val QUEUE_TTL_MS = Routing.QUEUE_TTL_MS
+    const val QUEUE_TICK_MS = 10_000L
+    const val BACKOFF_MAX_MS = Routing.BACKOFF_MAX_MS
+    const val MAX_ATTEMPTS = Routing.MAX_ATTEMPTS
 }
 
 /** A ProkNet device: currently visible to the scanner, or known from before. */
@@ -74,10 +60,14 @@ class Peer(
 ) {
     val label: String get() = "prok-" + shortId
 
+    /** False for devices seen without a scan response: they have no ProkNet ID yet and cannot be addressed. */
+    val hasId: Boolean get() = !shortId.startsWith("?")
+
     fun describe(): String {
         val age = (System.currentTimeMillis() - lastSeen) / 1000
         val ageText = if (age < 60) age.toString() + "s" else if (age < 3600) (age / 60).toString() + "m" else (age / 3600).toString() + "h"
-        return if (inRange) label + "  rssi " + rssi + "  " + address + "  " + ageText + " ago"
+        val idNote = if (!hasId) "  (no ID yet)" else ""
+        return if (inRange) label + idNote + "  rssi " + rssi + "  " + address + "  " + ageText + " ago"
         else label + "  NOT IN RANGE  last seen " + ageText + " ago"
     }
 }

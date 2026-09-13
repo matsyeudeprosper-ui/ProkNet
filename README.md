@@ -23,7 +23,8 @@ This repository contains **ProkNet Lab**, built milestone by milestone.
 | v0.1.0 | Lab: BLE discovery + direct text message, Internet off | passed on two real phones (2026-09-12) |
 | v0.2.0 | 2A: queued delayed delivery with delivery receipts | passed on two real phones (2026-09-13) |
 | v0.3.0 | 2B: background operation via foreground service | passed on two real phones (2026-09-13) |
-| v0.4.0 | 2C1: first one-relay STORE -> CARRY -> FORWARD | built, awaiting three-phone test |
+| v0.4.0 | 2C1: first one-relay STORE -> CARRY -> FORWARD | superseded by v0.4.1 before testing |
+| v0.4.1 | 2C1 hardening: explicit last-hop ID, JVM routing tests gate the build | built, awaiting three-phone test |
 
 ### v0.1 - what it does
 
@@ -64,7 +65,9 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 
 ### v0.4 (milestone 2C1) - one relay: STORE -> CARRY -> FORWARD
 
-- Packet v2 carries origin ID, **destination ID**, message ID, TTL and hop count.
+- Packet v3 carries origin ID, **destination ID**, **last-hop ID** (who
+  transmitted this hop), message ID, TTL and hop count. Relay identity comes
+  from the packet, never from a Bluetooth address.
 - A wants to reach C but only B is nearby: A **hands off** the packet to B.
   B answers with a custody receipt; A shows `[handed_off via prok-B, not final]`.
 - B stores it as `~ carrying prok-A -> prok-C [carrying]` and offers it to
@@ -84,6 +87,10 @@ Everything builds on the Windows VPS. No PC, no Android Studio.
 ```
 powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\build.ps1
 ```
+
+The script runs the JVM unit tests first (`app/src/test`, pure Kotlin, no
+Bluetooth, no emulator). If any test fails, **no APK is produced**. The test
+summary is written to `dist\test-results.txt`.
 
 Output APK (always the same path):
 

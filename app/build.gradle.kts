@@ -11,8 +11,8 @@ android {
         applicationId = "net.prok.proknet.lab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.4.1"
     }
 
     buildTypes {
@@ -33,6 +33,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions {
+        // Pure-JVM tests for core/ (Packet, Routing). No Robolectric, no emulator.
+        unitTests.isReturnDefaultValues = true
+    }
 
     // Predictable APK file name: app/build/outputs/apk/debug/ProkNetLab-debug.apk
     applicationVariants.all {
@@ -46,7 +50,8 @@ android {
 }
 
 dependencies {
-    // Deliberately no AndroidX / Material dependencies for v0.1:
+    // Deliberately no AndroidX / Material dependencies:
     // plain android.app.Activity keeps the dependency tree tiny and builds fast
     // on the shared VPS. Only the Kotlin stdlib is pulled in.
+    testImplementation("junit:junit:4.13.2")
 }

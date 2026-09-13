@@ -11,6 +11,7 @@ import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.MsgStatus
 import net.prok.proknet.core.Packet
+import net.prok.proknet.core.Routing
 import net.prok.proknet.core.StoredMessage
 
 /**
@@ -53,7 +54,7 @@ class ProkNetNode(private val context: Context) {
 
     @Volatile var isRunning = false
         private set
-    private var visible: List<Peer> = emptyList()
+    @Volatile private var visible: List<Peer> = emptyList()
     private var lastVisibleIds: Set<String> = emptySet()
 
     fun isBluetoothOn(): Boolean = adapter?.isEnabled == true
@@ -98,7 +99,7 @@ class ProkNetNode(private val context: Context) {
 
     private fun onScannerPeers(seen: List<Peer>) {
         visible = seen
-        for (p in seen) store.rememberPeer(p.shortId, p.label, p.address, p.lastSeen, p.fullId)
+        for (p in seen) if (p.hasId) store.rememberPeer(p.shortId, p.label, p.address, p.lastSeen, p.fullId)
         val ids = seen.map { it.shortId }.toSet()
         val appeared = seen.filter { it.shortId !in lastVisibleIds }
         lastVisibleIds = ids
@@ -120,70 +121,73 @@ class ProkNetNode(private val context: Context) {
     }
 
     /** Never sends directly; always goes through the queue (direct, or via one relay when the destination is away). */
-    fun sendText(peer: Peer, text: String) {
-        if (!isRunning) { DiagLog.e(tag, "cannot queue: node not running"); return }
+    fun sendText(peer: Peer, text: String): Boolean {
+        if (!isRunning) { DiagLog.e(tag, "cannot queue: node not running"); return false }
+        if (!peer.hasId) { DiagLog.e(tag, "cannot address " + peer.label + ": no ProkNet ID received from it yet (no scan response)"); return false }
         val full = peer.fullId ?: store.knownPeers().firstOrNull { it.shortId == peer.shortId }?.fullId
         if (full == null) DiagLog.w(tag, peer.label + " full ID unknown (v1 peer?) - addressing by short ID; relays can still carry it")
         queue.enqueue(peer.shortId, full, peer.label, text)
+        return true
     }
 
     /**
-     * A packet arrived over GATT. Returns the receipt code:
-     *   ACCEPTED       it is for me and I stored it            (FINAL RECEIVED)
-     *   ACCEPTED_RELAY it is for someone else, I took custody  (ACCEPTED FOR RELAY)
-     *   DUPLICATE      I already have it (as received, carried or forwarded)
-     *   REJECTED       TTL exhausted or addressed to nobody
-     * Called on a binder thread.
+     * A packet arrived over GATT. Decision is Routing.decideReceive (pure, tested).
+     * The relay identity comes from the packet's lastHopId, NEVER from the BLE address.
+     * Returns the receipt code. Called on a binder thread.
      */
     private fun onPacketReceived(pkt: Packet, address: String): Int {
-        val via = visible.firstOrNull { it.address == address }?.shortId ?: address
-        val viaIsOrigin = via == pkt.originShort
-        if (pkt.isFor(identity)) {
-            val fresh = store.insert(
-                StoredMessage(
-                    0, pkt.msgIdHex, Dir.IN, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED,
-                    destId = identity.idHex, originId = pkt.originIdHex, via = if (viaIsOrigin) "" else via, ttl = pkt.ttl, hops = pkt.hops,
-                )
-            )
-            if (!fresh) {
-                DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + pkt.originShort + " ignored (receipt DUPLICATE)")
-                return BleConstants.RECEIPT_DUPLICATE
-            }
-            DiagLog.i(tag, "FINAL RECEIVED msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort +
-                (if (viaIsOrigin) " directly" else " via relay prok-" + via + " after " + pkt.hops + " hop(s)") + ": \"" + pkt.text + "\"")
-            main.post { listener.onMessagesChanged(); pushStatus("received from prok-" + pkt.originShort) }
-            return BleConstants.RECEIPT_ACCEPTED
-        }
-        // Not for me: relay custody (milestone 2C1, one relay, no flooding).
-        if (pkt.hops + 1 > pkt.ttl) {
-            DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + " for prok-" + pkt.destShort + ": TTL exhausted (hops " + pkt.hops + "/" + pkt.ttl + ")")
-            return BleConstants.RECEIPT_REJECTED
-        }
-        if (pkt.hops >= 1) {
-            // 2C1 rule: a packet that already passed through a relay is not re-relayed. Only the origin hands off.
-            DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + ": already relayed once (hops " + pkt.hops + "), 2C1 allows one relay")
-            return BleConstants.RECEIPT_REJECTED
-        }
         val known = store.knows(pkt.msgIdHex, pkt.originShort)
-        if (known != null) {
-            DiagLog.w(tag, "already have msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " (" + known + ") - receipt DUPLICATE")
-            return BleConstants.RECEIPT_DUPLICATE
+        val decision = Routing.decideReceive(pkt, identity.idBytes, known != null)
+        val via = if (pkt.hasLastHop) pkt.lastHopShort else "?"
+        val viaIsOrigin = pkt.hasLastHop && pkt.lastHopShort == pkt.originShort
+        when (decision) {
+            Routing.Receive.FINAL -> {
+                val fresh = store.insert(
+                    StoredMessage(
+                        0, pkt.msgIdHex, Dir.IN, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.RECEIVED,
+                        destId = identity.idHex, originId = pkt.originIdHex, via = if (viaIsOrigin) "" else via, ttl = pkt.ttl, hops = pkt.hops,
+                    )
+                )
+                if (!fresh) {
+                    DiagLog.w(tag, "duplicate message " + pkt.msgIdHex + " from prok-" + pkt.originShort + " ignored (receipt DUPLICATE)")
+                    return Routing.RECEIPT_DUPLICATE
+                }
+                DiagLog.i(tag, "FINAL RECEIVED msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort +
+                    (if (viaIsOrigin) " directly" else " via relay prok-" + via + " after " + pkt.hops + " hop(s)") +
+                    " (wire v" + pkt.wireVersion + ", transport addr " + address + "): \"" + pkt.text + "\"")
+                main.post { listener.onMessagesChanged(); pushStatus("received from prok-" + pkt.originShort) }
+                return Routing.RECEIPT_ACCEPTED
+            }
+            Routing.Receive.RELAY -> {
+                val fresh = store.insert(
+                    StoredMessage(
+                        0, pkt.msgIdHex, Dir.CARRY, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.CARRYING,
+                        destId = pkt.destIdHex, originId = pkt.originIdHex, via = via, ttl = pkt.ttl, hops = pkt.hops,
+                    )
+                )
+                if (!fresh) return Routing.RECEIPT_DUPLICATE
+                DiagLog.i(tag, "ACCEPTED FOR RELAY msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " (handed by prok-" + via + ") for prok-" + pkt.destShort +
+                    " (hops " + pkt.hops + "/" + pkt.ttl + ") - CARRYING until I meet prok-" + pkt.destShort)
+                main.post {
+                    listener.onMessagesChanged(); pushStatus("carrying for prok-" + pkt.destShort)
+                    queue.pump("relay accepted") // the destination might be in range right now
+                }
+                return Routing.RECEIPT_ACCEPTED_RELAY
+            }
+            Routing.Receive.DUPLICATE -> {
+                DiagLog.w(tag, "already have msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " (" + known + ") - receipt DUPLICATE")
+                return Routing.RECEIPT_DUPLICATE
+            }
+            Routing.Receive.REJECT_TTL -> {
+                DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + " for prok-" + pkt.destShort + ": TTL exhausted (hops " + pkt.hops + "/" + pkt.ttl + ")")
+                return Routing.RECEIPT_REJECTED
+            }
+            Routing.Receive.REJECT_ALREADY_RELAYED -> {
+                DiagLog.w(tag, "REFUSING custody of msg=" + pkt.msgIdHex + ": already relayed once (hops " + pkt.hops + "), 2C1 allows one relay")
+                return Routing.RECEIPT_REJECTED
+            }
+            Routing.Receive.REJECT_MALFORMED -> return Routing.RECEIPT_REJECTED
         }
-        val fresh = store.insert(
-            StoredMessage(
-                0, pkt.msgIdHex, Dir.CARRY, pkt.originShort, "prok-" + pkt.originShort, pkt.text, pkt.timestamp, MsgStatus.CARRYING,
-                destId = pkt.destIdHex, originId = pkt.originIdHex, via = via, ttl = pkt.ttl, hops = pkt.hops,
-            )
-        )
-        if (!fresh) return BleConstants.RECEIPT_DUPLICATE
-        DiagLog.i(tag, "ACCEPTED FOR RELAY msg=" + pkt.msgIdHex + " from prok-" + pkt.originShort + " for prok-" + pkt.destShort +
-            " (hops " + pkt.hops + "/" + pkt.ttl + ") - CARRYING until I meet prok-" + pkt.destShort)
-        main.post {
-            listener.onMessagesChanged(); pushStatus("carrying for prok-" + pkt.destShort)
-            // If the destination happens to be in range right now, forward immediately.
-            queue.pump("relay accepted")
-        }
-        return BleConstants.RECEIPT_ACCEPTED_RELAY
     }
 
     fun statusLine(extra: String? = null): String {
