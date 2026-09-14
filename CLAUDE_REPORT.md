@@ -89,7 +89,7 @@ SHA256 `069d4857ad9b5e84ad31c011bbae60c084ccecc0a5ad70f15580db0eca58cccc`.
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.6
-Commit `CODE_COMMIT` on `main`; this report on top.
+Commit `fccb6ed8ea27c3db47e11973ca139d6f5ff9a49c` on `main`; this report on top.
 
 ## 7. Wi-Fi Direct
 
