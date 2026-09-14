@@ -142,7 +142,7 @@ redistributable classes. No passwords, no connection attempts, no upload.
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.0
-Commit `CODE_COMMIT` on `main`; this report on top.
+Commit `b7e653bd4b3910d03afb4ed1f2664076616ac000` on `main`; this report on top.
 
 ## 6. Preserved
 
