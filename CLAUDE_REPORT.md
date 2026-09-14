@@ -87,7 +87,7 @@ SHA256 `3a471c62324ce26ed91ada787855f76515af351157898cdc2367edea7307c084`.
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.9
-Commit `CODE_COMMIT` on `main`; this report on top.
+Commit `757a41d87e6ae9cf3bbdc75b249646606d53bb86` on `main`; this report on top.
 
 ## 7. What must pass before anything is claimed
 
