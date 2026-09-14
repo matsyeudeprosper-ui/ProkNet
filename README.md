@@ -33,7 +33,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.7.0 | Connectivity Marketplace: BUY / SELL / RELAY, offers with price in the BLE scan, signed contract, signed usage checkpoints, exact CFA pricing + Prok fee, ledger, history | phone test: first CONTRACT_PROPOSE misrouted on the seller, buyer timed out |
 | v0.7.1 | Fix: tunnel frames routed by direction and role (pure, tested), regression test for the first-frame sequence | passed on two phones: mutually signed settlement, 11.47 MB -> 57.35 CFA (2026-09-13) |
 | v0.8.0 | Consumer product UI: Home / Internet / Earn / Activity / Profile, plain words, one state-translation layer (ProductState); the whole lab screen kept under Profile > Developer | approved by the architect (2026-09-14) |
-| v0.9.0 | Coverage engine foundation (pure planner, zones, economic ceiling) + 3-phone live relay feasibility (second Wi-Fi link, end-to-end sealed relay frames, Relay Lab probe, Wi-Fi source discovery) | built, 100 JVM tests pass; hardware relay UNPROVEN until the 3-phone test |
+| v0.9.0 | Coverage engine foundation (pure planner, zones, economic ceiling) + 3-phone live relay feasibility (second Wi-Fi link, end-to-end sealed relay frames, Relay Lab probe, Wi-Fi source discovery) | 3-phone test: radio topology WORKS (STA+AP concurrency, both links up), but the buyer was never introduced |
+| v0.9.1 | Relay introduction handshake: the buyer asks (idempotent, repeated), the relay always answers, both sides acknowledge; stale-link recovery; honest failure wording | built, 107 JVM tests pass, awaiting the 3-phone retest |
 
 ### v0.1 - what it does
 

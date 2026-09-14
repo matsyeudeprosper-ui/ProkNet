@@ -39,6 +39,14 @@ class LinkState {
         return Action.SEND_REQUEST
     }
 
+    /**
+     * v0.9.1: we believe we are linked to [peerShort], yet it is asking for a
+     * new link. Its side is gone (app restart, link torn down without us
+     * noticing), so the old link is stale and must be dropped before hosting
+     * again. Otherwise the peer keeps timing out in REQUESTING for ever.
+     */
+    fun staleLinkRequest(peerShort: String): Boolean = state == State.UP && peer == peerShort
+
     /** A WIFI_REQUEST arrived from [peerShort]. Tie-break when both requested: the lower ID hosts. */
     fun requestReceived(peerShort: String, myShort: String, now: Long): Action {
         if (state == State.UP) return Action.NONE

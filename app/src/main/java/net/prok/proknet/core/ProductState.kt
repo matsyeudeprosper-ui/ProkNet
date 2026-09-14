@@ -47,13 +47,27 @@ object ProductState {
     }
 
     /** What the user must do next during setup, if anything. */
-    fun buyerHint(b: Buyer, wifiPhase: String, vpnConsentPending: Boolean): String = when {
+    fun buyerHint(b: Buyer, wifiPhase: String, vpnConsentPending: Boolean, lastError: String = ""): String = when {
         b == Buyer.CONNECTING && wifiPhase.contains("CONNECT", ignoreCase = true) -> "Android will ask to join a network: tap CONNECT"
         b == Buyer.STARTING && vpnConsentPending -> "Android will ask to allow the connection: tap OK"
         b == Buyer.FINDING -> "Keep both phones close together"
-        b == Buyer.LOST -> "Move closer to the provider and try again"
+        b == Buyer.LOST -> lostHint(lastError)
         else -> ""
     }
+
+    /**
+     * v0.9.1: moving closer only helps when the RADIO failed. A negotiation
+     * that failed while the link was perfectly up (no seller behind the relay,
+     * no answer to the introduction, contract refused) must not tell the user
+     * to walk.
+     */
+    fun lostHint(lastError: String): String = when {
+        lastError.isEmpty() -> "Try again"
+        RADIO_WORDS.any { lastError.contains(it, ignoreCase = true) } -> "Move closer to the provider and try again"
+        else -> "Couldn't build the connection. Try again."
+    }
+
+    private val RADIO_WORDS = listOf("link closed", "not in range", "out of range", "network lost", "network unavailable", "hotspot", "wi-fi is off", "could not reach", "signal")
 
     val Buyer.busy: Boolean get() = this == Buyer.FINDING || this == Buyer.CONNECTING || this == Buyer.SECURING || this == Buyer.STARTING
     val Buyer.active: Boolean get() = busy || this == Buyer.ONLINE

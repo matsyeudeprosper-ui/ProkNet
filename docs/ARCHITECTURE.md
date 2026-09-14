@@ -694,6 +694,26 @@ Internet`, with B forwarding but not reading the buyer's traffic.
   self-certifying identity record), to C "the buyer behind me is A", and
   PEER_GONE. B never has the key; A and C verify each other's contract
   signatures as before. No forward secrecy yet (static keys), noted.
+- **Introduction handshake (v0.9.1).** v0.9.0 introduced both sides once,
+  unsolicited, at the instant the relay's second link came up. The 3-phone
+  test showed why that fails: the buyer taps CONNECT minutes later and waits
+  for an introduction that already happened. The handshake is now
+  request/answer and every step is a pure function in `core/Relay`:
+  `ROLE_INTRO_REQUEST` (buyer -> relay, carries the buyer's own record),
+  `Relay.onIntroRequest(relayMode, downPeer, upPeer, sellerSelling, from)` ->
+  INTRODUCE / NO_UPSTREAM / NOT_MY_BUYER / NOT_A_RELAY (a function of the
+  relay's CURRENT state only, so asking late or twice is the same as asking
+  first), `ROLE_NO_UPSTREAM` as an explicit negative answer, and
+  `ROLE_INTRO_ACK` from each introduced side so the relay knows the far
+  APPLICATION processed it (a successful socket write proves nothing). The
+  buyer's ladder is `Relay.buyerStep(introduced, refused, attempts)` ->
+  ASK / START_CONTRACT / NO_SELLER / GIVE_UP, with 5 attempts 2.5 s apart.
+  Session lifecycle is `Relay.onLinks(...)` -> START / RESTART / END / KEEP /
+  IDLE, so a link that drops clears the session and the same buyer coming
+  back simply starts a new one. `LinkState.staleLinkRequest(peer)` closes the
+  other half of that: a peer we still believe we are linked to, asking for a
+  new link, means its side is gone, so the stale link is dropped and hosted
+  again instead of letting the peer time out in REQUESTING.
 - **Roles in `node/RelayNode.kt`.** B: relay mode on, session starts when
   both links are up, introductions sent, FRAME_RELAY forwarded to the other
   link, `Relay.Session` counts bytes and frames per direction, duration
@@ -726,10 +746,10 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
-## Automated tests (100)
+## Automated tests (107)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 5, CoverageTest 9, RelayTest 3. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 6, CoverageTest 10, RelayTest 3, RelayHandshakeTest 5. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

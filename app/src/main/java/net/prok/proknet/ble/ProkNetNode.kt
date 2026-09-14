@@ -131,6 +131,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun peerFullId(peerShort: String): String? = store.peerKey(peerShort)?.fullId
         override fun peerName(peerShort: String): String = this@ProkNetNode.peerName(peerShort)
+        override fun myRecord(): ByteArray = identityRecord()
         override fun saveIdentity(rec: Wire.IdentityRecord) = onIdentity("relay-intro", rec.idHex, rec.pub, rec.name)
         override fun upstreamOffer(): Market.Offer? = wifiUp.linkedPeer?.let { up -> ble.visiblePeers().firstOrNull { it.shortId == up }?.offer() }
         override fun onTunnelFromRelay(originShort: String, frame: Tunnel.Frame) = routeTunnelFrame(originShort, frame, "sealed via relay")
@@ -144,6 +145,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
                     tunnel.start(buyPrice)
                 }
             }
+        }
+        override fun onIntroductionRefused(relayShort: String) {
+            main.post { if (buyerWanted == relayShort) { introRefused = true; introStep(relayShort) } }
         }
         override fun onChanged() { main.post { refreshAdvert(); pushStatus() } }
     })
@@ -260,13 +264,34 @@ class ProkNetNode(private val context: Context) : TransportListener {
         private set
     @Volatile private var buyViaRelay = false
 
-    /** A: the link to the relay is up; the relay must now introduce its seller (or we give up). */
+    @Volatile private var introAttempts = 0
+    @Volatile private var introRefused = false
+
+    /**
+     * A: the link to the relay is up. v0.9.1: ASK to be introduced instead of
+     * waiting for an unsolicited introduction the relay may have sent minutes
+     * ago (that one-shot design is what failed the first 3-phone test). The
+     * request is idempotent and repeated until the relay answers.
+     */
     private fun awaitIntroduction(relayShort: String): Boolean {
-        val p = relay.providerShort
-        if (p != null) { tunnel.start(buyPrice); return true }
-        DiagLog.i(tag, "link up with relay prok-" + relayShort + ": waiting for it to introduce its seller")
-        main.postDelayed({ if (buyerWanted == relayShort && relay.providerShort == null && tunnel.contract == null) { DiagLog.w(tag, "relay prok-" + relayShort + " did not introduce a seller within 20 s"); stopInternet("relay did not introduce its seller") } }, 20_000)
+        introAttempts = 0; introRefused = false
+        introStep(relayShort)
         return true
+    }
+
+    private fun introStep(relayShort: String) {
+        if (buyerWanted != relayShort || tunnel.contract != null || tunnel.session != null) return
+        when (Relay.buyerStep(relay.providerShort != null, introRefused, introAttempts)) {
+            Relay.BuyerStep.START_CONTRACT -> { DiagLog.i(tag, "relay prok-" + relayShort + " introduced its seller prok-" + relay.providerShort + ": proposing the contract"); tunnel.start(buyPrice) }
+            Relay.BuyerStep.NO_SELLER -> { DiagLog.w(tag, "relay prok-" + relayShort + " has no seller available right now"); stopInternet("the relay has no Internet seller right now") }
+            Relay.BuyerStep.GIVE_UP -> { DiagLog.w(tag, "relay prok-" + relayShort + " did not answer " + introAttempts + " introduction requests"); stopInternet("the relay did not answer the introduction request") }
+            Relay.BuyerStep.ASK -> {
+                introAttempts++
+                val ok = relay.requestIntroduction()
+                DiagLog.i(tag, "INTRO REQUEST " + introAttempts + "/" + Relay.INTRO_ATTEMPTS + " -> relay prok-" + relayShort + " (written " + ok + ")")
+                main.postDelayed({ introStep(relayShort) }, Relay.INTRO_RETRY_MS)
+            }
+        }
     }
     @Volatile var lastInternetTest: String = ""
 
@@ -296,7 +321,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
-        buyerWanted = null; buyViaRelay = false
+        buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
         pushStatus()

@@ -124,6 +124,17 @@ class CoverageTest {
     }
 
     @Test
+    fun an_unvalidated_source_is_never_planned_on() {
+        val dead = InternetSource("open-but-dead", SourceType.PUBLIC_WIFI, Trust.OPEN_REUSABLE, 0, 0.9, validated = false)
+        assertFalse(dead.usable)
+        assertTrue(freeWifi.usable)
+        assertTrue(Coverage.plan(demand, listOf(buyer(), provider("D", dead)), listOf(link("A", "D"))).isEmpty())
+        // it does not hide a real one either: the validated provider is still found
+        val ranked = Coverage.plan(demand, listOf(buyer(), provider("D", dead), provider("F", freeWifi, 0.9)), listOf(link("A", "D"), link("A", "F")))
+        assertEquals(1, ranked.size); assertEquals(listOf("A", "F"), ranked[0].route.hops)
+    }
+
+    @Test
     fun ranking_is_deterministic_for_any_input_order() {
         val nodes = listOf(buyer(), provider("F", freeWifi, 0.9), relay("R1"), relay("R2", charging = true), relay("R3", battery = 10), provider("M", mobile), mover("V", 800), provider("Q", mobile, 0.8))
         val links = listOf(link("A", "F", 0.6), link("A", "R1"), link("R1", "R2"), link("R2", "M"), link("A", "R3", 0.8), link("R3", "Q"), link("R1", "Q", 0.7))

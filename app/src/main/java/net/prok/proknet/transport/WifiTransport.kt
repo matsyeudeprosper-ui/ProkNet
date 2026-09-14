@@ -186,6 +186,10 @@ class WifiTransport(
                 is Wire.Control.WifiRequest -> {
                     DiagLog.i(tag, "NEGOTIATE: WIFI_REQUEST from prok-" + peerShort)
                     if (!mayHost) { DiagLog.i(tag, "request ignored: this instance never hosts"); return@post }
+                    if (fsm.staleLinkRequest(peerShort)) {
+                        DiagLog.i(tag, "prok-" + peerShort + " asks again although I still hold a link with it: the old link is stale, dropping it and hosting a fresh one")
+                        teardown("stale link: prok-" + peerShort + " asked for a new one")
+                    }
                     when (fsm.requestReceived(peerShort, identity.shortIdHex, now())) {
                         LinkState.Action.START_HOTSPOT -> { setPhase("HOSTING", "starting hotspot for prok-" + peerShort); startHotspot() }
                         else -> DiagLog.i(tag, "request from prok-" + peerShort + " ignored: " + fsm.describe())

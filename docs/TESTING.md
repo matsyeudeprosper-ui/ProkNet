@@ -599,3 +599,37 @@ and paste it to ChatGPT. Also COPY DIAG from A and C's developer screens.
 Relay Lab -> **SCAN WI-FI** (Location ON). Expected: a list with name,
 BSSID, dBm, security. Tap one, classify it; the line shows the class and
 "shareable" only for public/open and authorized. Nothing connects.
+
+## 19. v0.9.1 three-phone retest
+
+Same setup as section 18 (C sells with mobile data ON, B relays with data
+OFF, A buys with data OFF). What changed: the buyer now ASKS the relay to
+introduce its seller, so the order no longer matters.
+
+Do it in the order that failed last time, on purpose:
+1. B: Relay Lab -> RELAY MODE, select C, LINK UPSTREAM, approve the dialog.
+   Expected: `UP: WIFI UP prok-<C>`, and a relay session that says
+   `intro 1/1 ack -/seller` once C has acknowledged.
+2. Wait a minute or two doing nothing. This is what broke v0.9.0.
+3. A: Get Internet -> the card "through another phone" -> Connect.
+   Expected in A's log: `INTRO REQUEST 1/5 -> relay prok-<B>`, then
+   `INTRODUCED by relay prok-<B>: seller prok-<C>`, then the normal
+   `CONTRACT AGREED` / `SESSION OK` / VPN / browsing.
+   Expected in B's Relay Lab: `INTRO_REQUEST from prok-<A> -> INTRODUCE`,
+   `intro 2/2 ack buyer/seller`, then the byte counters moving.
+4. Then try the other order too (A connects to B first, B links upstream
+   afterwards) and a retry after a failure: press Stop on A, then Connect
+   again. Both must work without restarting anything.
+
+Negative case worth one run: on B turn RELAY MODE on but do NOT link
+upstream, then press Connect on A. Expected: A stops within a few seconds
+saying it could not build the connection, NOT a 20 s silent wait, and the
+message must not say "move closer".
+
+### Checklist for the v0.9.1 report
+
+- Did the late buyer get introduced? Paste the three log lines above.
+- Relay session line at the end: intro counts, both acks, bytes each way.
+- Did browsing work on A? Data used / cost on the card, and does C's
+  Activity name A?
+- The other order, the retry, and the no-upstream case.

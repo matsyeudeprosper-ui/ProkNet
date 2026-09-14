@@ -59,6 +59,20 @@ class ProductStateTest {
     }
 
     @Test
+    fun a_protocol_failure_does_not_tell_the_user_to_walk() {
+        // v0.9.1: the relay never introduced its seller although the link was perfect
+        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("the relay did not answer the introduction request"))
+        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("the relay has no Internet seller right now"))
+        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("no contract answer within 15s"))
+        assertEquals("Couldn't build the connection. Try again.", ProductState.buyerHint(Buyer.LOST, "WIFI UP", false, "no SESSION_OK from seller within 15s"))
+        // a real radio failure still says what helps
+        assertEquals("Move closer to the provider and try again", ProductState.lostHint("Wi-Fi link closed: connection closed"))
+        assertEquals("Move closer to the provider and try again", ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))
+        assertEquals("Try again", ProductState.lostHint(""))
+        assertEquals("Try again", ProductState.buyerHint(Buyer.LOST, "IDLE", false))
+    }
+
+    @Test
     fun coverage_words_hide_zone_colours() {
         assertEquals("Internet available", ProductState.coverageWord(Coverage.ZoneStatus.GREEN))
         assertEquals("Internet can be arranged", ProductState.coverageWord(Coverage.ZoneStatus.YELLOW))

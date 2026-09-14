@@ -55,7 +55,8 @@ object Coverage {
         val reliability: Double,
         val validated: Boolean = true,
     ) {
-        val usable: Boolean get() = redistributable(trust) && reliability > 0.0
+        /** v0.9.1: an unvalidated source (captive portal behind an open SSID, dead uplink) is never planned on. */
+        val usable: Boolean get() = redistributable(trust) && validated && reliability > 0.0
     }
 
     // ---- nodes and radio --------------------------------------------------------------------------
@@ -278,7 +279,8 @@ object Coverage {
         if (feasible) {
             val bad = r.hops.drop(1).dropLast(1).firstOrNull { byId[it]?.canRelay != true }
             if (bad != null) { feasible = false; reason = bad + " cannot relay" }
-            else if (!r.source.usable) { feasible = false; reason = "source " + r.source.id + " is " + trustWord(r.source.trust) + ": not redistributable" }
+            else if (!redistributable(r.source.trust)) { feasible = false; reason = "source " + r.source.id + " is " + trustWord(r.source.trust) + ": not redistributable" }
+            else if (!r.source.usable) { feasible = false; reason = "source " + r.source.id + " is not usable: " + (if (!r.source.validated) "not validated" else "unreliable") }
             else if (r.relayCount > policy.maxRelays) { feasible = false; reason = "too many relays" }
             else if (moveJobs.any { byId[it.nodeId]?.canMove != true }) { feasible = false; reason = "mover cannot move" }
         }

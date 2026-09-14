@@ -174,7 +174,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 money = "Earned this time: " + ProductState.cfaShort(node.gateway.totalEarnedCentimes + Market.split(node.gateway.agreedCost(), node.feePct).sellerNet)
             }
             b.active || b == ProductState.Buyer.LOST -> {
-                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running).ifEmpty { "Internet through a phone nearby" })
+                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, node.tunnel.lastError).ifEmpty { "Internet through a phone nearby" })
                 money = if (node.tunnel.session != null) ProductState.data(sessionBytes()) + " used · " + ProductState.cfaShort(node.tunnel.runningCost()) + " so far" else ""
             }
             else -> {
@@ -208,7 +208,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }
             buyerVisible -> {
                 text(R.id.activeTitle, if (b == ProductState.Buyer.ONLINE) "Connected" else ProductState.buyerTitle(b))
-                text(R.id.activeHint, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running))
+                text(R.id.activeHint, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, node.tunnel.lastError))
                 show(R.id.activeProgress, b.busy); show(R.id.activeStats, node.tunnel.session != null)
                 text(R.id.activeData, ProductState.data(sessionBytes())); text(R.id.activeCost, ProductState.cfaShort(node.tunnel.runningCost()))
                 val c = node.tunnel.contract; val sess = node.tunnel.session
