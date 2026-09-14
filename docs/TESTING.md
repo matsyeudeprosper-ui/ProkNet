@@ -810,3 +810,31 @@ The verdict line at the bottom of the lab is what matters:
 - Any Android error text from either diag.
 
 Nothing about home Wi-Fi resale is claimed until this passes.
+
+## 26. v0.9.8 the P2P role switch must leave nothing behind
+
+Both phones on 0.9.8, in the WI-FI DIRECT LAB. This section is about the
+cleanup that v0.9.7 got wrong; section 25 is still the real experiment.
+
+1. On one phone: P2P SELL TEST, wait for GROUP OWNER and a group line.
+   Tap STOP P2P. Expected in the log: CLEANUP started, then one line per
+   step (CANCEL_CONNECT, STOP_DISCOVERY, CLOSE_SOCKETS, REMOVE_GROUP) with
+   Android answer, then CLEANUP complete. The screen must then show
+   IDLE, role NONE, group none, socket none, and no p2p0 address in the
+   interfaces line.
+2. Same phone: P2P BUY TEST. Expected: another CLEANUP first, then
+   DISCOVERING, and the peer list filling with the other phone. The group
+   line must stay "none": this is exactly what failed before.
+3. Reverse it: P2P BUY TEST, STOP P2P, then P2P SELL TEST. The group must
+   be created fresh, and no old socket may remain.
+4. Tap STOP P2P three times in a row: nothing may break, and the state must
+   stay IDLE and clean.
+5. COPY P2P DIAG and check the line `clean (nothing left from a previous
+   role): true`.
+
+### Checklist for the v0.9.8 report
+
+- The four cleanup lines with Android answers, for one STOP.
+- Does the interfaces line still show p2p0 after STOP?
+- Does BUY after SELL now discover peers?
+- Then run section 25 again for the real Wi-Fi Direct verdict.

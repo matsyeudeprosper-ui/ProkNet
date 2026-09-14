@@ -746,6 +746,38 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The P2P lifecycle is deterministic (v0.9.8)
+
+The first phone run found a cleanup bug, not a physics answer. After STOP
+and a later BUY, a buyer still showed `phase DISCOVERING`, `group
+ssid=DIRECT-...`, `p2p0=192.168.49.1` and `socket listening :47742` while
+finding no peers, because v0.9.7 fired `removeGroup` and forgot it while
+wiping its own state at once.
+
+Every role change (SELL, BUY, STOP) now walks the same cleanup, in this
+order, waiting for Android to answer each step:
+
+```
+cancelConnect -> stopPeerDiscovery -> close sockets -> removeGroup -> start the new role
+```
+
+- `P2pPlan.Life` (pure) owns every visible field. `peers` is cleared when
+  discovery stops, the listening socket when it is really closed, and the
+  group, the role and `groupFormed` only when Android confirms
+  `removeGroup`. Nothing is cleared early, nothing is left behind.
+- A broadcast that arrives DURING a cleanup (a connection or group change
+  from the group being torn down) is ignored, so it cannot resurrect the
+  old group.
+- Each step has a 4 s watchdog: if the framework never answers, the step is
+  logged as a timeout and the walk continues rather than wedging.
+- A newer cleanup cancels an older one (`cleanupSeq`), so double taps are
+  safe.
+- The log prints `CLEANUP started`, one line per step with Android's own
+  answer (`ok`, `nothing to undo / refused: BUSY`, `no answer within 4s`),
+  and `CLEANUP complete` with the resulting state and the live interfaces;
+  the diagnostic also carries a `clean` flag that says whether anything
+  from a previous role survived.
+
 ## Wi-Fi Direct experiment, method B (v0.9.7) - NOT PROVEN
 
 Phone evidence: a seller joined to a home router (Freebox) cannot create a

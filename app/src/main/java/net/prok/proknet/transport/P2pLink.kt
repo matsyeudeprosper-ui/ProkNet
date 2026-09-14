@@ -24,18 +24,24 @@ import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.P2pPlan
 
 /**
- * Method B, experimental (v0.9.7): a local link over **Wi-Fi Direct**, so a
- * seller can serve a customer WHILE it stays connected to its home router.
- * Method A (LocalOnlyHotspot, `WifiTransport`) is untouched and still the
- * only path the consumer app uses.
+ * Method B, experimental: a local link over **Wi-Fi Direct**, so a seller
+ * can serve a customer WHILE it stays connected to its home router. Method A
+ * (LocalOnlyHotspot, `WifiTransport`) is untouched and is still the only
+ * path the consumer app uses.
  *
- * This class only builds the pipe: discover, form the group, and hand a
- * connected TCP socket to [WifiTransport.adoptSocket]. Everything above it
- * (signed handshake, framing, tunnel, VPN, contract, checkpoints) is the
- * existing ProkNet layer, unchanged.
+ * This class only builds the pipe: clean up, discover, form the group, and
+ * hand a connected TCP socket to [WifiTransport.adoptSocket]. Everything
+ * above it (signed handshake, framing, tunnel, VPN, contract, checkpoints)
+ * is the existing ProkNet layer, unchanged.
  *
- * Android decides who owns the group, so both roles are handled: the group
- * owner listens on [P2pPlan.PORT], the client dials the group owner.
+ * v0.9.8: the lifecycle is deterministic. A phone test showed a buyer still
+ * holding `group ssid=DIRECT-...`, `p2p0=192.168.49.1` and a listening
+ * server after STOP, because the old code fired removeGroup and forgot it
+ * while wiping its own state at once. Now every role change walks
+ * cancelConnect -> stopPeerDiscovery -> close sockets -> removeGroup, each
+ * step waiting for Android to answer (or a 4 s watchdog), and only then
+ * starts the new role. The visible state lives in the pure
+ * [P2pPlan.Life], so nothing is cleared early or left behind.
  */
 class P2pLink(private val context: Context, private val hooks: Hooks) {
     interface Hooks {
@@ -50,19 +56,24 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private val tag = "P2P"
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
+    private val life = P2pPlan.Life()
 
     private var manager: WifiP2pManager? = null
     private var channel: WifiP2pManager.Channel? = null
     private var receiver: BroadcastReceiver? = null
     private var server: ServerSocket? = null
+    private var cleanupSeq = 0
 
-    @Volatile var phase: String = "IDLE"
-        private set
-    @Volatile var role: P2pPlan.Role = P2pPlan.Role.NONE
-        private set
+    // ---- what the lab screen reads: one source of truth ------------------------------------------
+
+    val phase: String get() = P2pPlan.stageName(life.stage)
+    val role: P2pPlan.Role get() = life.role
+    val groupFormed: Boolean get() = life.groupFormed
+    val groupInfo: String get() = life.groupInfo
+    val socketInfo: String get() = life.socketInfo
+    fun view(): P2pPlan.View = life.view()
+
     @Volatile var lastError: String = ""
-        private set
-    @Volatile var groupInfo: String = ""
         private set
     @Volatile var ifaceInfo: String = ""
         private set
@@ -71,13 +82,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     @Volatile var staAfter: String = ""
         private set
     @Volatile var linkAuthenticated = false
-    @Volatile var groupFormed = false
-        private set
-    @Volatile var socketInfo: String = ""
-        private set
     @Volatile var p2pEnabled = true
         private set
-    /** Peers seen by the buyer, for the developer list. */
     @Volatile var peers: List<Peer> = emptyList()
         private set
 
@@ -88,16 +94,15 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     val supported: Boolean get() = context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
 
     fun verdict(): P2pPlan.Verdict =
-        if (phase == "IDLE") P2pPlan.Verdict.NOT_RUN
-        else P2pPlan.verdict(groupFormed, staAfter.isNotEmpty() && staAfter == staBefore, linkAuthenticated)
+        if (life.stage == P2pPlan.Stage.IDLE && !life.groupFormed) P2pPlan.Verdict.NOT_RUN
+        else P2pPlan.verdict(life.groupFormed, staAfter.isNotEmpty() && staAfter == staBefore, linkAuthenticated)
 
-    private fun setPhase(p: String, why: String = "") {
-        phase = p
-        DiagLog.i(tag, "PHASE " + p + (if (why.isNotEmpty()) " - " + why else ""))
+    private fun changed(why: String = "") {
+        if (why.isNotEmpty()) DiagLog.i(tag, why + " -> " + life.view().describe())
         hooks.onChanged()
     }
 
-    // ---- lifecycle ---------------------------------------------------------------------------------
+    // ---- channel and broadcasts -------------------------------------------------------------------
 
     private fun ensureChannel(): Boolean {
         if (channel != null) return true
@@ -131,99 +136,175 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         } catch (e: Exception) { DiagLog.w(tag, "registerReceiver: " + e) }
     }
 
-    fun stop() {
-        try { manager?.removeGroup(channel, null) } catch (_: Exception) {}
-        try { server?.close() } catch (_: Exception) {}; server = null
-        receiver?.let { try { context.unregisterReceiver(it) } catch (_: Exception) {} }; receiver = null
-        try { manager?.stopPeerDiscovery(channel, null) } catch (_: Exception) {}
-        groupFormed = false; role = P2pPlan.Role.NONE; peers = emptyList()
-        setPhase("IDLE", "stopped by user")
+    // ---- the deterministic cleanup ------------------------------------------------------------------
+
+    /**
+     * Walk every cleanup step in order, waiting for Android at each one.
+     * [then] runs only once the last step is confirmed.
+     */
+    private fun cleanup(reason: String, then: () -> Unit) {
+        val seq = ++cleanupSeq
+        DiagLog.i(tag, "CLEANUP started (" + reason + ") from " + life.view().describe())
+        changed()
+        runStep(seq, life.step, then)
     }
 
-    // ---- the two developer entry points ----------------------------------------------------------
+    private fun runStep(seq: Int, step: P2pPlan.Step, then: () -> Unit) {
+        if (seq != cleanupSeq) { DiagLog.i(tag, "cleanup " + seq + " abandoned: a newer one started"); return }
+        if (step == P2pPlan.Step.DONE) { finishCleanup(then); return }
+        var advanced = false
+        val advance: (String) -> Unit = { how ->
+            if (!advanced && seq == cleanupSeq) {
+                advanced = true
+                DiagLog.i(tag, "cleanup " + step + ": " + how)
+                val next = life.done(step)
+                changed()
+                runStep(seq, next, then)
+            }
+        }
+        main.postDelayed({ advance("no answer from Android within 4s, moving on") }, 4000)
+        val m = manager; val c = channel
+        if (m == null || c == null) { advance("no p2p channel (nothing to undo)"); return }
+        try {
+            when (step) {
+                P2pPlan.Step.CANCEL_CONNECT -> m.cancelConnect(c, action(advance))
+                P2pPlan.Step.STOP_DISCOVERY -> m.stopPeerDiscovery(c, action(advance))
+                P2pPlan.Step.CLOSE_SOCKETS -> { val n = closeSockets(); advance(n) }
+                P2pPlan.Step.REMOVE_GROUP -> m.removeGroup(c, action(advance))
+                P2pPlan.Step.DONE -> advance("nothing to do")
+            }
+        } catch (e: SecurityException) { advance("permission: " + e.message) } catch (e: Exception) { advance("threw " + e.javaClass.simpleName) }
+    }
 
-    /** Seller: become an autonomous group owner and wait for the buyer. The home Wi-Fi must survive this. */
+    private fun action(advance: (String) -> Unit) = object : WifiP2pManager.ActionListener {
+        override fun onSuccess() { advance("ok") }
+        override fun onFailure(reason: Int) { advance("nothing to undo / refused: " + reasonName(reason)) }
+    }
+
+    private fun closeSockets(): String {
+        val had = server != null
+        try { server?.close() } catch (_: Exception) {}
+        server = null
+        peers = emptyList()
+        return if (had) "server socket closed" else "no server socket was open"
+    }
+
+    private fun finishCleanup(then: () -> Unit) {
+        ifaceInfo = interfaces()
+        val v = life.view()
+        DiagLog.i(tag, "CLEANUP complete: " + v.describe() + " | interfaces now: " + ifaceInfo +
+            (if (v.clean) "" else "  <-- STILL NOT CLEAN"))
+        changed()
+        then()
+    }
+
+    // ---- the three developer entry points ----------------------------------------------------------
+
+    /** Seller: clean first, then become an autonomous group owner. The home Wi-Fi must survive it. */
     fun startSeller(): String? {
         if (!ensureChannel()) return lastError
+        lastError = ""; linkAuthenticated = false
         staBefore = hooks.staDescription(); staAfter = staBefore
-        linkAuthenticated = false
-        DiagLog.i(tag, "SELL TEST: creating a Wi-Fi Direct group while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
-        setPhase("CREATING GROUP")
-        try {
-            manager?.removeGroup(channel, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { createGroup() }
-                override fun onFailure(reason: Int) { createGroup() }   // nothing to remove: normal
-            })
-        } catch (e: SecurityException) { lastError = "permission: " + e.message; setPhase("FAILED", lastError); return lastError }
+        DiagLog.i(tag, "SELL TEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
+        life.start(P2pPlan.Want.SELL)
+        cleanup("before SELL") { createGroup() }
         return null
+    }
+
+    /** Buyer: clean first (a stale group or listener would block discovery), then look for peers. */
+    fun startBuyer(): String? {
+        if (!ensureChannel()) return lastError
+        lastError = ""; linkAuthenticated = false
+        staBefore = hooks.staDescription(); staAfter = staBefore
+        DiagLog.i(tag, "BUY TEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
+        life.start(P2pPlan.Want.BUY)
+        cleanup("before BUY") { discover() }
+        return null
+    }
+
+    /** Stop everything and only say IDLE once Android has confirmed each step. */
+    fun stop() {
+        if (!ensureChannel() && manager == null) { life.stop(); while (life.step != P2pPlan.Step.DONE) life.done(life.step); changed("stop with no p2p"); return }
+        life.stop()
+        cleanup("STOP") {
+            receiver?.let { try { context.unregisterReceiver(it) } catch (_: Exception) {} }; receiver = null
+            changed("IDLE confirmed")
+        }
     }
 
     private fun createGroup() {
+        val m = manager; val c = channel
+        if (m == null || c == null) { fail("no p2p channel"); return }
+        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group")
         try {
-            manager?.createGroup(channel, object : WifiP2pManager.ActionListener {
+            m.createGroup(c, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { DiagLog.i(tag, "createGroup accepted, waiting for the group to form"); refreshAll() }
-                override fun onFailure(reason: Int) {
-                    lastError = "createGroup failed: " + reasonName(reason)
-                    setPhase("FAILED", lastError)
-                }
+                override fun onFailure(reason: Int) { fail("createGroup failed: " + reasonName(reason)) }
             })
-        } catch (e: SecurityException) { lastError = "permission: " + e.message; setPhase("FAILED", lastError) }
+        } catch (e: SecurityException) { fail("permission: " + e.message) }
     }
 
-    /** Buyer: look for the seller's group. */
-    fun startBuyer(): String? {
-        if (!ensureChannel()) return lastError
-        staBefore = hooks.staDescription(); staAfter = staBefore
-        linkAuthenticated = false
-        setPhase("DISCOVERING")
+    private fun discover() {
+        val m = manager; val c = channel
+        if (m == null || c == null) { fail("no p2p channel"); return }
+        DiagLog.i(tag, "starting peer discovery from a clean state")
         try {
-            manager?.discoverPeers(channel, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { DiagLog.i(tag, "discoverPeers accepted") }
-                override fun onFailure(reason: Int) { lastError = "discoverPeers failed: " + reasonName(reason); setPhase("FAILED", lastError) }
+            m.discoverPeers(c, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { DiagLog.i(tag, "discoverPeers accepted"); changed() }
+                override fun onFailure(reason: Int) { fail("discoverPeers failed: " + reasonName(reason)) }
             })
-        } catch (e: SecurityException) { lastError = "permission: " + e.message; setPhase("FAILED", lastError); return lastError }
-        return null
+        } catch (e: SecurityException) { fail("permission: " + e.message) }
     }
 
     /** Buyer: join the group of [address] (its P2P MAC from the peer list). */
     fun connectTo(address: String): String? {
-        if (!ensureChannel()) return lastError
+        val m = manager; val c = channel
+        if (m == null || c == null) { if (!ensureChannel()) return lastError }
         val cfg = WifiP2pConfig().apply {
             deviceAddress = address
             wps.setup = WpsInfo.PBC
             groupOwnerIntent = 0        // we would rather be the client; Android may still decide otherwise
         }
-        setPhase("CONNECTING", "joining " + address)
+        DiagLog.i(tag, "joining " + address)
         try {
             manager?.connect(channel, cfg, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { DiagLog.i(tag, "connect accepted for " + address) }
-                override fun onFailure(reason: Int) { lastError = "connect failed: " + reasonName(reason); setPhase("FAILED", lastError) }
+                override fun onFailure(reason: Int) { fail("connect failed: " + reasonName(reason)) }
             })
-        } catch (e: SecurityException) { lastError = "permission: " + e.message; setPhase("FAILED", lastError); return lastError }
+        } catch (e: SecurityException) { lastError = "permission: " + e.message; fail(lastError); return lastError }
         return null
     }
 
-    // ---- broadcasts --------------------------------------------------------------------------------
+    private fun fail(why: String) {
+        lastError = why
+        life.fail()
+        DiagLog.e(tag, why)
+        changed()
+    }
+
+    // ---- broadcasts ---------------------------------------------------------------------------------
 
     private fun onP2pBroadcast(i: Intent) {
         when (i.action) {
             WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
                 p2pEnabled = i.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
                 DiagLog.i(tag, "Wi-Fi Direct " + (if (p2pEnabled) "enabled" else "DISABLED"))
-                hooks.onChanged()
+                changed()
             }
             WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
             WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> refreshAll()
-            WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> hooks.onChanged()
+            WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> changed()
         }
     }
 
     private fun requestPeers() {
+        if (life.cleaning) { DiagLog.i(tag, "peers broadcast ignored during cleanup"); return }
         try {
             manager?.requestPeers(channel) { list ->
                 peers = list.deviceList.map { Peer(it.deviceName ?: "?", it.deviceAddress ?: "", statusName(it.status), it.isGroupOwner) }
+                life.onPeers(peers.size)
                 DiagLog.i(tag, "peers: " + (if (peers.isEmpty()) "none" else peers.joinToString("; ") { it.describe() }))
-                hooks.onChanged()
+                changed()
             }
         } catch (e: SecurityException) { DiagLog.w(tag, "requestPeers: " + e.message) }
     }
@@ -236,35 +317,39 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private fun onGroupInfo(g: WifiP2pGroup?) {
-        if (g == null) { groupInfo = "" ; return }
+        if (life.cleaning) { DiagLog.i(tag, "group info ignored during cleanup"); return }
+        if (g == null) return
         val iface = try { g.`interface` } catch (e: Exception) { null }
-        groupInfo = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + (g.clientList?.size ?: 0) + " iface=" + (iface ?: "?")
+        val info = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + (g.clientList?.size ?: 0) + " iface=" + (iface ?: "?")
+        life.onGroup(true, g.isGroupOwner, info)
         ifaceInfo = interfaces()
-        DiagLog.i(tag, "group: " + groupInfo + " | interfaces: " + ifaceInfo)
-        hooks.onChanged()
+        DiagLog.i(tag, "group: " + info + " | interfaces: " + ifaceInfo)
+        changed()
     }
 
     private fun onConnectionInfo(info: WifiP2pInfo?) {
         staAfter = hooks.staDescription()
-        groupFormed = info?.groupFormed == true
-        role = P2pPlan.role(groupFormed, info?.isGroupOwner == true)
+        if (life.cleaning) { DiagLog.i(tag, "connection info ignored during cleanup (formed=" + (info?.groupFormed == true) + ")"); return }
+        val formed = info?.groupFormed == true
         val go = info?.groupOwnerAddress?.hostAddress
-        DiagLog.i(tag, "connection: formed=" + groupFormed + " role=" + role + " groupOwner=" + go +
+        life.onGroup(formed, info?.isGroupOwner == true, life.groupInfo.ifEmpty { "groupOwner=" + go })
+        DiagLog.i(tag, "connection: formed=" + formed + " role=" + life.role + " groupOwner=" + go +
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
-        if (!groupFormed) { setPhase(if (phase == "FAILED") "FAILED" else "WAITING", "no group yet"); return }
+        if (!formed) { changed(); return }
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
-        when (role) {
-            P2pPlan.Role.GROUP_OWNER -> { setPhase("GROUP OWNER", "listening on " + P2pPlan.PORT); listen() }
+        when (life.role) {
+            P2pPlan.Role.GROUP_OWNER -> listen()
             P2pPlan.Role.CLIENT -> {
-                val target = P2pPlan.socketTarget(role, go)
-                if (target == null) { setPhase("FAILED", "no group owner address"); return }
-                setPhase("CLIENT", "dialling " + target + ":" + P2pPlan.PORT); dial(target)
+                val target = P2pPlan.socketTarget(life.role, go)
+                if (target == null) { fail("no group owner address"); return }
+                dial(target)
             }
             P2pPlan.Role.NONE -> {}
         }
+        changed()
     }
 
-    // ---- sockets -----------------------------------------------------------------------------------
+    // ---- sockets --------------------------------------------------------------------------------------
 
     private fun listen() {
         if (server != null) return
@@ -273,29 +358,32 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             ss.reuseAddress = true
             ss.bind(InetSocketAddress(P2pPlan.PORT))
             server = ss
-            socketInfo = "listening on :" + P2pPlan.PORT
+            life.onSocket("listening on :" + P2pPlan.PORT)
+            DiagLog.i(tag, "group owner " + life.socketInfo)
             io.execute {
                 while (!ss.isClosed) {
                     val s = try { ss.accept() } catch (e: Exception) { break }
-                    socketInfo = "accepted " + s.inetAddress?.hostAddress + ":" + s.port + " on " + s.localAddress?.hostAddress
-                    DiagLog.i(tag, "TCP " + socketInfo)
-                    main.post { hooks.onSocket(s, true) }
+                    val info = "accepted " + s.inetAddress?.hostAddress + ":" + s.port + " on " + s.localAddress?.hostAddress
+                    DiagLog.i(tag, "TCP " + info)
+                    main.post { life.onSocket(info); hooks.onSocket(s, true); changed() }
                 }
+                DiagLog.i(tag, "group owner accept loop ended")
             }
-            DiagLog.i(tag, "group owner socket " + socketInfo)
-        } catch (e: Exception) { lastError = "server socket: " + LinkIo.describe(e); setPhase("FAILED", lastError) }
+            changed()
+        } catch (e: Exception) { fail("server socket: " + LinkIo.describe(e)) }
     }
 
     private fun dial(host: String) {
         io.execute {
             var last = ""
             for (attempt in 1..6) {
+                if (life.cleaning) return@execute
                 try {
                     val s = Socket()
                     s.connect(InetSocketAddress(host, P2pPlan.PORT), 5000)
-                    socketInfo = "connected " + s.localAddress?.hostAddress + " -> " + host + ":" + P2pPlan.PORT
-                    DiagLog.i(tag, "TCP " + socketInfo)
-                    main.post { hooks.onSocket(s, false) }
+                    val info = "connected " + s.localAddress?.hostAddress + " -> " + host + ":" + P2pPlan.PORT
+                    DiagLog.i(tag, "TCP " + info)
+                    main.post { life.onSocket(info); hooks.onSocket(s, false); changed() }
                     return@execute
                 } catch (e: Exception) {
                     last = LinkIo.describe(e)
@@ -303,12 +391,11 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                     try { Thread.sleep(1500) } catch (_: InterruptedException) { return@execute }
                 }
             }
-            lastError = "could not reach the group owner: " + last
-            main.post { setPhase("FAILED", lastError) }
+            main.post { fail("could not reach the group owner: " + last) }
         }
     }
 
-    // ---- diagnostics -------------------------------------------------------------------------------
+    // ---- diagnostics ------------------------------------------------------------------------------------
 
     private fun interfaces(): String {
         val out = StringBuilder()
@@ -323,14 +410,14 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     fun diag(): String {
+        val v = life.view()
         val sb = StringBuilder()
         sb.append("--- Wi-Fi Direct (method B, experimental) ---\n")
         sb.append("isP2pSupported (feature): ").append(supported).append("\n")
         sb.append("Wi-Fi Direct enabled: ").append(p2pEnabled).append("\n")
-        sb.append("phase: ").append(phase).append("  role: ").append(role).append("\n")
-        sb.append("group: ").append(groupInfo.ifEmpty { "none" }).append("\n")
-        sb.append("socket: ").append(socketInfo.ifEmpty { "none" }).append("\n")
-        sb.append("interfaces now: ").append(ifaceInfo.ifEmpty { interfaces() }).append("\n")
+        sb.append("state: ").append(v.describe()).append("\n")
+        sb.append("clean (nothing left from a previous role): ").append(v.clean).append("\n")
+        sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")
         sb.append("my Wi-Fi network NOW: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")
         sb.append("ProkNet link authenticated over p2p: ").append(linkAuthenticated).append("\n")
@@ -343,7 +430,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private fun reasonName(r: Int) = when (r) {
         WifiP2pManager.P2P_UNSUPPORTED -> "P2P_UNSUPPORTED"
         WifiP2pManager.ERROR -> "ERROR (internal)"
-        WifiP2pManager.BUSY -> "BUSY (framework busy, try again)"
+        WifiP2pManager.BUSY -> "BUSY (framework busy)"
         WifiP2pManager.NO_SERVICE_REQUESTS -> "NO_SERVICE_REQUESTS"
         else -> "reason " + r
     }
