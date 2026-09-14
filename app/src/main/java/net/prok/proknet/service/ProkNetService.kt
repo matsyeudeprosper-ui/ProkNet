@@ -20,6 +20,7 @@ import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.ProductState
 import net.prok.proknet.ui.MainActivity
 
 /**
@@ -69,7 +70,7 @@ class ProkNetService : Service(), ProkNetNode.Listener {
 
     private fun startNode() {
         createChannel()
-        val notif = buildNotification("Starting...")
+        val notif = buildNotification(getString(R.string.notif_starting))
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
@@ -93,7 +94,7 @@ class ProkNetService : Service(), ProkNetNode.Listener {
             (if (!pm.isIgnoringBatteryOptimizations(packageName)) " (press Battery in the app if the phone kills ProkNet in the background)" else ""))
         DiagLog.i(tag, "screen is " + (if (pm.isInteractive) "ON" else "OFF") + " at service start")
         if (!node.isRunning) node.start() else DiagLog.i(tag, "node already running, service re-attached")
-        updateNotification(node.statusLine())
+        updateNotification(consumerStatus())
     }
 
     private fun stopNode() {
@@ -127,8 +128,8 @@ class ProkNetService : Service(), ProkNetNode.Listener {
 
     // ---- node listener: keep the notification text current ------------------------------------
 
-    override fun onPeers(peers: List<Peer>) { updateNotification(node.statusLine()) }
-    override fun onMessagesChanged() { updateNotification(node.statusLine()) }
+    override fun onPeers(peers: List<Peer>) { updateNotification(consumerStatus()) }
+    override fun onMessagesChanged() { updateNotification(consumerStatus()) }
     override fun onStatus(status: String) { updateNotification(status); checkApproval() }
 
     private var approvalNotified = false
@@ -142,10 +143,10 @@ class ProkNetService : Service(), ProkNetNode.Listener {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 if (nm.getNotificationChannel(CHANNEL_ALERT) == null)
-                    nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERT, "ProkNet approvals", NotificationManager.IMPORTANCE_HIGH))
+                    nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERT, getString(R.string.notif_alert_channel), NotificationManager.IMPORTANCE_HIGH))
                 nm.notify(NOTIF_APPROVAL, Notification.Builder(this, CHANNEL_ALERT)
-                    .setSmallIcon(R.drawable.ic_notify).setContentTitle("ProkNet: open the app to join Wi-Fi")
-                    .setContentText("Android needs ProkNet in front to show the connect dialog. Tap here, then tap CONNECT.")
+                    .setSmallIcon(R.drawable.ic_notify).setContentTitle(getString(R.string.notif_wifi_title))
+                    .setContentText(getString(R.string.notif_wifi_text))
                     .setContentIntent(open).setAutoCancel(true).setCategory(Notification.CATEGORY_CALL).build())
                 DiagLog.i(tag, "approval notification posted (app not visible)")
             } catch (e: Exception) { DiagLog.w(tag, "approval notification: " + e) }
@@ -160,7 +161,7 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         notifPending = true
         main.postDelayed({
             notifPending = false
-            val t = node.statusLine()
+            val t = consumerStatus()
             if (t == lastNotifText) return@postDelayed
             lastNotifText = t
             try {
@@ -172,11 +173,27 @@ class ProkNetService : Service(), ProkNetNode.Listener {
     private fun createChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val ch = NotificationChannel(CHANNEL_ID, "ProkNet node", NotificationManager.IMPORTANCE_LOW)
-            ch.description = "Shown while ProkNet is discovering and delivering in the background"
+            val ch = NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
+            ch.description = getString(R.string.notif_channel_desc)
             ch.setShowBadge(false)
             nm.createNotificationChannel(ch)
         }
+    }
+
+    /**
+     * v0.9.2: what the phone owner reads in the shade. The full engineering
+     * status line still goes to the log, never here.
+     */
+    private fun consumerStatus(): String {
+        val seller = ProductState.seller(node.sellOn, node.gateway.state)
+        if (seller != ProductState.Seller.OFF) return ProductState.sellerTitle(seller)
+        val buyer = ProductState.buyer(node.buyerWanted != null, node.wifi.phase, node.wifi.linkedPeer != null,
+            node.tunnel.state, net.prok.proknet.vpn.ProkVpnService.running, node.tunnel.lastError)
+        if (buyer != ProductState.Buyer.IDLE) return ProductState.buyerTitle(buyer)
+        val nearby = node.peers().count { it.inRange }
+        val offers = node.offers().size
+        return if (nearby == 0) getString(R.string.notif_idle_alone)
+        else getString(R.string.notif_idle, if (nearby == 1) getString(R.string.home_people_one) else getString(R.string.home_people_many, nearby), offers)
     }
 
     private fun buildNotification(text: String): Notification {
@@ -190,14 +207,14 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle("ProkNet running (" + node.identity.displayName + ")")
+            .setContentTitle(getString(R.string.notif_title, node.identity.displayName))
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .addAction(Notification.Action.Builder(null, "Stop ProkNet", stop).build())
+            .addAction(Notification.Action.Builder(null, getString(R.string.notif_stop), stop).build())
             .build()
     }
 

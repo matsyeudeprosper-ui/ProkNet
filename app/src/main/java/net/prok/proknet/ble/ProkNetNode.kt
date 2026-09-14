@@ -119,6 +119,18 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun feePct(): Int = this@ProkNetNode.feePct
         override fun onSessionUp() { main.post { vpnRequested?.invoke() } }
+        override fun onAttemptFailed(reason: String) {
+            // v0.9.2: the attempt is over. Clear it, or the next SELL is refused with "stop buying first"
+            // and the VPN keeps capturing this phone's traffic with no tunnel behind it.
+            main.post {
+                if (buyerWanted != null || net.prok.proknet.vpn.ProkVpnService.running) {
+                    DiagLog.i(tag, "buy attempt ended (" + reason + "): clearing the buyer state" + (if (net.prok.proknet.vpn.ProkVpnService.running) " and stopping the VPN" else ""))
+                    buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false
+                    net.prok.proknet.vpn.ProkVpnService.stop(context)
+                }
+                pushStatus()
+            }
+        }
         override fun onChanged() { main.post { pushStatus() } }
     })
     /** Price the buyer saw in the scan when it pressed BUY (locks the proposal). */

@@ -1,4 +1,165 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  v0.9.2: the consumer app speaks FRENCH (first market). Every word a normal
+  user can see is here; the developer / Relay Lab screens and the log stay in
+  English on purpose, because they are engineering tools read by the team.
+-->
 <resources>
     <string name="app_name">Prok</string>
+
+    <!-- home -->
+    <string name="brand_initial">P</string>
+    <string name="brand">Prok</string>
+    <string name="node_on">Marche</string>
+    <string name="node_off">Arrêt</string>
+    <string name="home_ready">Prêt</string>
+    <string name="home_off">Prok est arrêté</string>
+    <string name="home_start_hint">Appuyez sur Obtenir Internet ou Partager Internet pour démarrer</string>
+    <string name="home_nearby">À proximité</string>
+    <string name="home_offers">Offres Internet</string>
+    <string name="home_people_one">1 personne</string>
+    <string name="home_people_many">%1$d personnes</string>
+    <string name="home_from_price">%1$s · à partir de %2$d CFA / Mo</string>
+    <string name="home_earned_now">Gagné cette fois : %1$s</string>
+    <string name="home_used_cost">%1$s utilisés · %2$s pour l\'instant</string>
+    <string name="home_relay_subtitle">Internet par un téléphone à proximité</string>
+    <string name="home_bluetooth_off">Le Bluetooth est éteint. Activez-le pour voir les personnes à proximité.</string>
+    <string name="get_internet">Obtenir Internet</string>
+    <string name="share_internet">Partager Internet</string>
+    <string name="sharing_now">Partage en cours…</string>
+
+    <!-- internet tab -->
+    <string name="tab_internet">Internet</string>
+    <string name="offers_title">Offres Internet près de vous</string>
+    <string name="offers_tap">Appuyez sur une offre pour vous connecter</string>
+    <string name="offers_searching">Recherche d\'offres Internet près de vous…</string>
+    <string name="offers_node_off">Prok est arrêté</string>
+    <string name="offers_none">Aucune offre Internet à proximité pour l\'instant.\nRestez près d\'une personne qui partage.</string>
+    <string name="offer_available">Internet disponible</string>
+    <string name="offer_available_from">Internet disponible · %1$s</string>
+    <string name="offer_via_relay"> · par un autre téléphone</string>
+    <string name="offer_checked"> · Vérifié</string>
+    <string name="confirm_from">Internet de %1$s</string>
+    <string name="confirm_price">5 CFA / Mo</string>
+    <string name="confirm_minimum">Minimum : 0 CFA</string>
+    <string name="confirm_limit_provider">Limite : fixée par le fournisseur</string>
+    <string name="confirm_limit_unlimited">Limite : illimitée</string>
+    <string name="confirm_signal">Bon signal · Données mobiles</string>
+    <string name="confirm_not_checked"> (pas encore vérifié)</string>
+    <string name="confirm_fee">Frais Prok de %1$d %% inclus.</string>
+    <string name="connect">Se connecter</string>
+    <string name="back">Retour</string>
+
+    <!-- active session -->
+    <string name="state_finding">Recherche d\'un fournisseur…</string>
+    <string name="connected">Connecté</string>
+    <string name="data_used">Données utilisées</string>
+    <string name="cost_so_far">Coût actuel</string>
+    <string name="stop">Arrêter</string>
+    <string name="close">Fermer</string>
+    <string name="via_peer">par %1$s</string>
+
+    <!-- sharing -->
+    <string name="share_title">Partagez votre Internet</string>
+    <string name="share_price_label">Prix par Mo (CFA)</string>
+    <string name="share_min_label">Montant minimum par client (CFA, 0 = aucun)</string>
+    <string name="share_max_label">Données max par client (Mo, 0 = illimité)</string>
+    <string name="share_fee">Prok prend %1$d %% de ce que vous gagnez.</string>
+    <string name="share_your_internet">Votre Internet : %1$s</string>
+    <string name="share_no_internet_yet">aucun pour l\'instant (activez les données mobiles)</string>
+    <string name="start_sharing">Commencer le partage</string>
+    <string name="stop_sharing">Arrêter le partage</string>
+    <string name="share_sharing">Vous partagez votre Internet</string>
+    <string name="data_shared">Données partagées</string>
+    <string name="earned">Gagné</string>
+    <string name="share_no_customer">Aucun client pour l\'instant</string>
+    <string name="share_one_customer">1 client : %1$s</string>
+
+    <!-- earn -->
+    <string name="tab_earn">Gagner</string>
+    <string name="total_earned">Total gagné</string>
+    <string name="earn_sessions_one">1 session partagée</string>
+    <string name="earn_sessions_many">%1$d sessions partagées</string>
+    <string name="earn_fees"> · frais Prok %1$s</string>
+    <string name="earn_share_title">Partage d\'Internet</string>
+    <string name="earn_share_pitch">Partagez vos données mobiles avec les personnes à proximité et fixez votre prix.</string>
+    <string name="earn_share_on">%1$s à %2$s</string>
+    <string name="earn_see_sharing">Voir le partage</string>
+    <string name="help_title">Aider ProkNet</string>
+    <string name="help_text">Laissez votre téléphone aider les personnes à proximité quand c\'est possible. Il transporte de petits messages pour les autres pendant votre journée. Les récompenses viendront plus tard.</string>
+    <string name="help_switch">Aider les personnes à proximité</string>
+    <string name="help_none">Rien transporté pour l\'instant</string>
+    <string name="help_carried_one">1 message transporté pour les autres (%1$s)</string>
+    <string name="help_carried_many">%1$d messages transportés pour les autres (%2$s)</string>
+
+    <!-- activity -->
+    <string name="tab_activity">Activité</string>
+    <string name="wallet_to_pay">À payer</string>
+    <string name="wallet_to_receive">À recevoir</string>
+    <string name="wallet_fees">Frais Prok</string>
+    <string name="wallet_note">Ce sont des montants à régler entre personnes. Prok ne détient pas votre argent.</string>
+    <string name="activity_none">Aucune session pour l\'instant.</string>
+    <string name="activity_bought">Internet de %1$s</string>
+    <string name="activity_sold">Partagé avec %1$s</string>
+    <string name="payment_free">Gratuit</string>
+    <string name="payment_not_booked">Non enregistré</string>
+    <string name="session">Session</string>
+    <string name="session_date">Date : %1$s</string>
+    <string name="session_data">Données : %1$s</string>
+    <string name="session_duration">Durée : %1$s</string>
+    <string name="session_price">Prix : %1$s</string>
+    <string name="session_final">Coût final : %1$s</string>
+    <string name="session_fee">Frais Prok : %1$s</string>
+    <string name="session_payment">Paiement : %1$s</string>
+    <string name="session_status">État : %1$s</string>
+    <string name="mark_paid">Marquer comme payé</string>
+    <string name="mark_received">Marquer comme reçu</string>
+    <string name="dispute">Contester</string>
+
+    <!-- profile -->
+    <string name="tab_profile">Profil</string>
+    <string name="tab_home">Accueil</string>
+    <string name="profile_id">Votre identifiant Prok : %1$s</string>
+    <string name="change_name">Changer de nom</string>
+    <string name="your_name">Votre nom</string>
+    <string name="your_name_hint">Les personnes à proximité voient ce nom.</string>
+    <string name="save">Enregistrer</string>
+    <string name="cancel">Annuler</string>
+    <string name="prok_network">Réseau Prok</string>
+    <string name="network_running">Prok fonctionne. Les personnes à proximité peuvent vous voir.</string>
+    <string name="network_stopped">Prok est arrêté. Personne à proximité ne peut vous voir.</string>
+    <string name="keep_running">Garder Prok actif</string>
+    <string name="allow_background">Autoriser en arrière-plan</string>
+    <string name="background_allowed">Arrière-plan déjà autorisé</string>
+    <string name="developer_title">Développeur / Diagnostic</string>
+    <string name="developer_text">Outils du labo, états bruts, journaux et boutons de copie pour le support.</string>
+    <string name="developer_open">Ouvrir l\'écran développeur</string>
+
+    <!-- messages -->
+    <string name="toast_provider_gone">Ce fournisseur n\'est plus là. Choisissez une autre offre.</string>
+    <string name="toast_provider_stopped">Ce fournisseur a arrêté de partager.</string>
+    <string name="toast_need_key">Récupération des informations du fournisseur, réessayez dans quelques secondes</string>
+    <string name="toast_cannot_connect">Connexion impossible pour le moment</string>
+    <string name="toast_price_needed">Entrez un prix par Mo (par exemple 5)</string>
+    <string name="toast_check_terms">Vérifiez le prix, le minimum et la limite</string>
+    <string name="toast_stop_buying">Arrêtez d\'abord votre session Internet</string>
+    <string name="toast_relay_on">Le mode relais est activé. Désactivez-le dans Développeur, puis réessayez.</string>
+    <string name="toast_sharing_no_internet">Le partage est activé, mais votre téléphone n\'a pas encore Internet</string>
+    <string name="toast_sharing_stopped">Partage arrêté</string>
+    <string name="toast_not_available">Non disponible sur ce téléphone</string>
+    <string name="toast_need_bluetooth">Prok a besoin du Bluetooth pour voir les personnes à proximité</string>
+    <string name="toast_need_bluetooth_perm">Prok a besoin de l\'autorisation Bluetooth pour voir les personnes à proximité</string>
+    <string name="toast_need_vpn">Prok a besoin de votre accord pour donner Internet à vos applications</string>
+
+    <!-- notification -->
+    <string name="notif_channel">Nœud Prok</string>
+    <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>
+    <string name="notif_alert_channel">Demandes Prok</string>
+    <string name="notif_title">Prok fonctionne (%1$s)</string>
+    <string name="notif_starting">Démarrage…</string>
+    <string name="notif_stop">Arrêter Prok</string>
+    <string name="notif_wifi_title">Prok : ouvrez l\'application pour rejoindre le Wi-Fi</string>
+    <string name="notif_idle_alone">Personne à proximité pour l\'instant</string>
+    <string name="notif_idle">%1$s à proximité · %2$d offre(s) Internet</string>
+    <string name="notif_wifi_text">Android a besoin que Prok soit à l\'écran pour afficher la demande. Appuyez ici, puis sur CONNECTER.</string>
 </resources>

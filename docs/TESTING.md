@@ -633,3 +633,32 @@ message must not say "move closer".
 - Did browsing work on A? Data used / cost on the card, and does C's
   Activity name A?
 - The other order, the retry, and the no-upstream case.
+
+## 20. v0.9.2 French app and the sharing fix
+
+Any phone, consumer screens only (the developer screens stay English on
+purpose).
+
+1. Open the app. Everything must be French: Accueil / Internet / Gagner /
+   Activite / Profil, the buttons OBTENIR INTERNET and PARTAGER INTERNET,
+   and the notification "Prok fonctionne (votre nom)".
+2. Partager Internet: leave the minimum and the limit EMPTY, put 5 as the
+   price, tap COMMENCER LE PARTAGE. Expected: it starts (empty means zero
+   now). Before v0.9.2 this said "check the price".
+3. Clear the price and tap again. Expected: "Entrez un prix par Mo".
+4. On a phone where the developer Relay Lab has RELAY MODE on, try to
+   share. Expected: "Le mode relais est active. Desactivez-le dans
+   Developpeur, puis reessayez." (not the price message).
+5. Start a purchase that fails (for example connect to a provider that has
+   no Internet), let it show "Connexion perdue", then tap Fermer and try
+   PARTAGER INTERNET. Expected: sharing starts. Before v0.9.2 the failed
+   attempt was still counted as "buying" and sharing was refused.
+6. Numbers: a session must read like "11,5 Mo" and "57 CFA" even on a
+   phone set to English.
+
+### Checklist for the v0.9.2 report
+
+- Any English left on the five consumer tabs, in a dialog, or in the
+  notification? Where?
+- The four sharing cases above, with the exact message each time.
+- Anything that reads badly in French (wording, too long for the button).

@@ -43,6 +43,8 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         fun store(): MessageStore
         fun feePct(): Int
         fun onSessionUp()
+        /** v0.9.2: this buy attempt is over and failed; the node clears what it was trying to do. */
+        fun onAttemptFailed(reason: String)
         fun onChanged()
     }
 
@@ -128,7 +130,12 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
 
     fun onLinkClosed(peerShort: String, reason: String) { if (providerShort == peerShort) fail("Wi-Fi link closed: " + reason) }
 
-    private fun fail(reason: String) { lastError = reason; DiagLog.w(tag, "session failed: " + reason); endSession(reason) }
+    private fun fail(reason: String) {
+        lastError = reason
+        DiagLog.w(tag, "session failed: " + reason)
+        endSession(reason)
+        hooks.onAttemptFailed(reason)
+    }
 
     private fun endSession(reason: String) {
         main.removeCallbacks(ticker)

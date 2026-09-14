@@ -746,10 +746,31 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
-## Automated tests (107)
+## Language (v0.9.2)
+
+The consumer app speaks **French**: the five tabs, every dialog, every
+toast and the notification. Two places hold those words and nothing else
+does:
+
+- `res/values/strings.xml` for the layout and the Activity
+  (`getString(...)`, with `%1$s` arguments for names and amounts);
+- `core/ProductState` for everything derived from engine state, still pure
+  and unit-tested, now asserting French. Numbers are formatted with
+  `Locale.FRANCE` explicitly (comma decimal, `o / Ko / Mo / Go`), never the
+  phone's locale, so a phone set to English still shows the same figures.
+
+The developer screen, the Relay Lab and the whole log stay in **English**
+on purpose: they are engineering tools, read by the team and pasted into
+reviews. Engine strings (`WifiTransport.phase`, `TunnelClient.state`,
+`lastError`) also stay English; they are protocol values, and
+`ProductState` is what turns them into words. Adding another language later
+means `res/values-xx/strings.xml` plus one language switch in
+`ProductState`; no screen would change.
+
+## Automated tests (108)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 6, CoverageTest 10, RelayTest 3, RelayHandshakeTest 5. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 7, CoverageTest 10, RelayTest 3, RelayHandshakeTest 5. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

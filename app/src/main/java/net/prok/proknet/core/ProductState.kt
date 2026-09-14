@@ -1,9 +1,13 @@
 package net.prok.proknet.core
 
+import java.util.Locale
+
 /**
- * The one place where engine states become user words (v0.8). Pure, tested.
- * Screens never look at Wi-Fi phases, tunnel states or protocol names; they
- * ask this object.
+ * The one place where engine states become user words (v0.8), in FRENCH
+ * since v0.9.2 (first market). Pure, tested. Screens never look at Wi-Fi
+ * phases, tunnel states or protocol names; they ask this object. The engine
+ * strings it reads (wifiPhase, tunnel state, lastError) stay English: they
+ * are protocol values, not words for a user.
  */
 object ProductState {
 
@@ -37,20 +41,20 @@ object ProductState {
     }
 
     fun buyerTitle(b: Buyer): String = when (b) {
-        Buyer.IDLE -> "Not connected"
-        Buyer.FINDING -> "Finding provider…"
-        Buyer.CONNECTING -> "Connecting…"
-        Buyer.SECURING -> "Securing connection…"
-        Buyer.STARTING -> "Starting Internet…"
-        Buyer.ONLINE -> "You're online"
-        Buyer.LOST -> "Connection lost"
+        Buyer.IDLE -> "Non connecté"
+        Buyer.FINDING -> "Recherche d'un fournisseur…"
+        Buyer.CONNECTING -> "Connexion…"
+        Buyer.SECURING -> "Sécurisation de la connexion…"
+        Buyer.STARTING -> "Démarrage d'Internet…"
+        Buyer.ONLINE -> "Vous êtes en ligne"
+        Buyer.LOST -> "Connexion perdue"
     }
 
     /** What the user must do next during setup, if anything. */
     fun buyerHint(b: Buyer, wifiPhase: String, vpnConsentPending: Boolean, lastError: String = ""): String = when {
-        b == Buyer.CONNECTING && wifiPhase.contains("CONNECT", ignoreCase = true) -> "Android will ask to join a network: tap CONNECT"
-        b == Buyer.STARTING && vpnConsentPending -> "Android will ask to allow the connection: tap OK"
-        b == Buyer.FINDING -> "Keep both phones close together"
+        b == Buyer.CONNECTING && wifiPhase.contains("CONNECT", ignoreCase = true) -> "Android va demander de rejoindre un réseau : appuyez sur CONNECTER"
+        b == Buyer.STARTING && vpnConsentPending -> "Android va demander d'autoriser la connexion : appuyez sur OK"
+        b == Buyer.FINDING -> "Gardez les deux téléphones proches"
         b == Buyer.LOST -> lostHint(lastError)
         else -> ""
     }
@@ -62,9 +66,9 @@ object ProductState {
      * to walk.
      */
     fun lostHint(lastError: String): String = when {
-        lastError.isEmpty() -> "Try again"
-        RADIO_WORDS.any { lastError.contains(it, ignoreCase = true) } -> "Move closer to the provider and try again"
-        else -> "Couldn't build the connection. Try again."
+        lastError.isEmpty() -> "Réessayez"
+        RADIO_WORDS.any { lastError.contains(it, ignoreCase = true) } -> "Rapprochez-vous du fournisseur et réessayez"
+        else -> "Impossible d'établir la connexion. Réessayez."
     }
 
     private val RADIO_WORDS = listOf("link closed", "not in range", "out of range", "network lost", "network unavailable", "hotspot", "wi-fi is off", "could not reach", "signal")
@@ -86,40 +90,43 @@ object ProductState {
     }
 
     fun sellerTitle(s: Seller): String = when (s) {
-        Seller.OFF -> "Not sharing"
-        Seller.NO_INTERNET -> "Waiting for your Internet"
-        Seller.AVAILABLE -> "You're sharing Internet"
-        Seller.SERVING -> "Someone is using your Internet"
-        Seller.LOST -> "Your Internet is down"
+        Seller.OFF -> "Vous ne partagez pas"
+        Seller.NO_INTERNET -> "En attente de votre Internet"
+        Seller.AVAILABLE -> "Vous partagez votre Internet"
+        Seller.SERVING -> "Quelqu'un utilise votre Internet"
+        Seller.LOST -> "Votre Internet est coupé"
     }
 
     fun sellerHint(s: Seller): String = when (s) {
-        Seller.NO_INTERNET -> "Turn on mobile data or connect to Wi-Fi"
-        Seller.AVAILABLE -> "Available to people nearby"
-        Seller.LOST -> "Customers are paused until it comes back"
+        Seller.NO_INTERNET -> "Activez les données mobiles ou connectez-vous au Wi-Fi"
+        Seller.AVAILABLE -> "Disponible pour les personnes à proximité"
+        Seller.LOST -> "Les clients sont en pause jusqu'au retour"
         else -> ""
     }
 
     // ---- words for numbers ---------------------------------------------------------------------
 
-    fun signalWord(rssi: Int): String = when { rssi >= -60 -> "Good signal"; rssi >= -75 -> "OK signal"; rssi >= -90 -> "Weak signal"; else -> "Poor signal" }
+    fun signalWord(rssi: Int): String = when { rssi >= -60 -> "Bon signal"; rssi >= -75 -> "Signal correct"; rssi >= -90 -> "Signal faible"; else -> "Signal très faible" }
 
-    fun upstreamWord(type: Int): String = when (type) { Tunnel.UP_CELLULAR -> "Mobile data"; Tunnel.UP_WIFI -> "Wi-Fi"; Tunnel.UP_OTHER -> "Internet"; else -> "No Internet" }
+    fun upstreamWord(type: Int): String = when (type) { Tunnel.UP_CELLULAR -> "Données mobiles"; Tunnel.UP_WIFI -> "Wi-Fi"; Tunnel.UP_OTHER -> "Internet"; else -> "Pas d'Internet" }
+
+    /** French formatting everywhere: comma decimal separator, o / Ko / Mo / Go. Locale-independent (never the phone's). */
+    private val FR = Locale.FRANCE
 
     /** Whole CFA for headlines: 5735 centimes -> "57 CFA"; under 1 CFA shows one decimal so small use is visible. */
     fun cfaShort(centimes: Long): String {
         val whole = (centimes + 50) / 100
-        return if (centimes in 1..99) String.format("%.1f CFA", centimes / 100.0) else whole.toString() + " CFA"
+        return if (centimes in 1..99) String.format(FR, "%.1f CFA", centimes / 100.0) else whole.toString() + " CFA"
     }
 
-    fun cfaExact(centimes: Long): String = Market.cfa(centimes)
+    fun cfaExact(centimes: Long): String = String.format(FR, "%.2f CFA", centimes / 100.0)
 
     fun data(bytes: Long): String = when {
-        bytes < 1_000 -> bytes.toString() + " B"
-        bytes < 1_000_000 -> (bytes / 1_000).toString() + " KB"
-        bytes < 100_000_000 -> String.format("%.1f MB", bytes / 1_000_000.0)
-        bytes < 1_000_000_000 -> (bytes / 1_000_000).toString() + " MB"
-        else -> String.format("%.2f GB", bytes / 1_000_000_000.0)
+        bytes < 1_000 -> bytes.toString() + " o"
+        bytes < 1_000_000 -> (bytes / 1_000).toString() + " Ko"
+        bytes < 100_000_000 -> String.format(FR, "%.1f Mo", bytes / 1_000_000.0)
+        bytes < 1_000_000_000 -> (bytes / 1_000_000).toString() + " Mo"
+        else -> String.format(FR, "%.2f Go", bytes / 1_000_000_000.0)
     }
 
     fun duration(ms: Long): String {
@@ -127,15 +134,15 @@ object ProductState {
         return when { s < 60 -> s.toString() + " s"; s < 3600 -> (s / 60).toString() + " min"; else -> (s / 3600).toString() + " h " + ((s % 3600) / 60) + " min" }
     }
 
-    fun priceLine(pricePerMb: Int): String = pricePerMb.toString() + " CFA / MB"
-    fun minimumLine(minCfa: Int): String = if (minCfa == 0) "Minimum: 0 CFA" else "Minimum: " + minCfa + " CFA"
-    fun limitLine(maxMb: Int): String = if (maxMb == 0) "Limit: Unlimited" else "Limit: " + maxMb + " MB"
+    fun priceLine(pricePerMb: Int): String = pricePerMb.toString() + " CFA / Mo"
+    fun minimumLine(minCfa: Int): String = "Minimum : " + minCfa + " CFA"
+    fun limitLine(maxMb: Int): String = if (maxMb == 0) "Limite : illimitée" else "Limite : " + maxMb + " Mo"
 
     /** v0.9: coverage status in user words. GREEN / YELLOW / RED never appear on screen. */
     fun coverageWord(z: Coverage.ZoneStatus): String = when (z) {
-        Coverage.ZoneStatus.GREEN -> "Internet available"
-        Coverage.ZoneStatus.YELLOW -> "Internet can be arranged"
-        Coverage.ZoneStatus.RED -> "No connection available yet"
+        Coverage.ZoneStatus.GREEN -> "Internet disponible"
+        Coverage.ZoneStatus.YELLOW -> "Internet peut être organisé"
+        Coverage.ZoneStatus.RED -> "Aucune connexion disponible pour l'instant"
     }
 
     /** What the phone can say today from its own view: direct offers = available, relayed offers only = can be arranged. */
@@ -147,10 +154,10 @@ object ProductState {
 
     /** Payment status words for the activity list. */
     fun paymentWord(status: String, iAmPayer: Boolean): String = when (status) {
-        Market.ST_SETTLED -> "Paid"
-        Market.ST_DISPUTED -> "Disputed"
-        Market.ST_CANCELLED -> "Cancelled"
-        else -> if (iAmPayer) "To pay" else "To receive"
+        Market.ST_SETTLED -> "Payé"
+        Market.ST_DISPUTED -> "Contesté"
+        Market.ST_CANCELLED -> "Annulé"
+        else -> if (iAmPayer) "À payer" else "À recevoir"
     }
 
     /** Wallet summary over pending entries: what I must pay, what I should receive, fees I owe Prok. */

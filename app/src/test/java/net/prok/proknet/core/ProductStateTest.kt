@@ -7,7 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Engine states -> user states, the only translation layer the screens use. */
+/** Engine states -> user words (French since v0.9.2), the only translation layer the screens use. */
 class ProductStateTest {
 
     @Test
@@ -28,10 +28,11 @@ class ProductStateTest {
         assertEquals(Buyer.LOST, ProductState.buyer(true, "DOWN: timeout", false, "DISCONNECTED", false, ""))
         assertEquals(Buyer.LOST, ProductState.buyer(false, "DOWN: x", false, "DISCONNECTED", false, "Wi-Fi link closed"))
         assertEquals(Buyer.LOST, ProductState.buyer(true, "WIFI UP", true, "DISCONNECTED", false, "seller ended session"))
-        assertEquals("You're online", ProductState.buyerTitle(Buyer.ONLINE))
-        assertEquals("Securing connection…", ProductState.buyerTitle(Buyer.SECURING))
+        assertEquals("Vous êtes en ligne", ProductState.buyerTitle(Buyer.ONLINE))
+        assertEquals("Sécurisation de la connexion…", ProductState.buyerTitle(Buyer.SECURING))
+        for (b in Buyer.values()) { val t = ProductState.buyerTitle(b); assertFalse(t, t.contains("Wi-Fi") || t.contains("VPN") || t.contains("tunnel", true)) }
         assertTrue(with(ProductState) { Buyer.SECURING.busy }); assertFalse(with(ProductState) { Buyer.ONLINE.busy }); assertTrue(with(ProductState) { Buyer.ONLINE.active })
-        assertTrue(ProductState.buyerHint(Buyer.CONNECTING, "JOINING (tap CONNECT in the Android dialog)", false).contains("CONNECT"))
+        assertTrue(ProductState.buyerHint(Buyer.CONNECTING, "JOINING (tap CONNECT in the Android dialog)", false).contains("CONNECTER"))
         assertTrue(ProductState.buyerHint(Buyer.STARTING, "WIFI UP", true).contains("OK"))
         assertEquals("", ProductState.buyerHint(Buyer.ONLINE, "WIFI UP", false))
     }
@@ -48,39 +49,55 @@ class ProductStateTest {
     }
 
     @Test
+    fun the_whole_consumer_wording_is_french() {
+        val all = Buyer.values().map { ProductState.buyerTitle(it) } + Seller.values().map { ProductState.sellerTitle(it) } +
+            Seller.values().map { ProductState.sellerHint(it) } + Coverage.ZoneStatus.values().map { ProductState.coverageWord(it) } +
+            listOf(ProductState.lostHint(""), ProductState.lostHint("no contract answer"), ProductState.lostHint("Wi-Fi link closed"),
+                ProductState.paymentWord(Market.ST_PENDING, true), ProductState.paymentWord(Market.ST_SETTLED, false), ProductState.signalWord(-55), ProductState.upstreamWord(1))
+        val english = listOf("Not ", "Finding", "Connecting", "online", "lost", "sharing", "Waiting", "Someone", "Turn on", "Available to",
+            "Try again", "Move closer", "Paid", "To pay", "To receive", "Good signal", "Mobile data", "available", "arranged")
+        for (w in all) for (e in english) assertFalse(w + " still contains \"" + e + "\"", w.contains(e))
+        assertTrue(all.none { it.isEmpty() && false })
+    }
+
+    @Test
     fun words_for_numbers() {
-        assertEquals("57 CFA", ProductState.cfaShort(5735)); assertEquals("0.5 CFA", ProductState.cfaShort(50)); assertEquals("0 CFA", ProductState.cfaShort(0)); assertEquals("1 CFA", ProductState.cfaShort(100))
-        assertEquals("57.35 CFA", ProductState.cfaExact(5735))
-        assertEquals("11.5 MB", ProductState.data(11_470_000)); assertEquals("512 KB", ProductState.data(512_000)); assertEquals("1.20 GB", ProductState.data(1_200_000_000)); assertEquals("300 B", ProductState.data(300))
+        // French units and decimal comma, whatever the phone's locale is
+        assertEquals("57 CFA", ProductState.cfaShort(5735)); assertEquals("0,5 CFA", ProductState.cfaShort(50)); assertEquals("0 CFA", ProductState.cfaShort(0)); assertEquals("1 CFA", ProductState.cfaShort(100))
+        assertEquals("57,35 CFA", ProductState.cfaExact(5735))
+        assertEquals("11,5 Mo", ProductState.data(11_470_000)); assertEquals("512 Ko", ProductState.data(512_000)); assertEquals("1,20 Go", ProductState.data(1_200_000_000)); assertEquals("300 o", ProductState.data(300))
         assertEquals("45 s", ProductState.duration(45_000)); assertEquals("3 min", ProductState.duration(185_000)); assertEquals("1 h 5 min", ProductState.duration(3_900_000))
-        assertEquals("Good signal", ProductState.signalWord(-55)); assertEquals("Weak signal", ProductState.signalWord(-85))
-        assertEquals("Mobile data", ProductState.upstreamWord(Tunnel.UP_CELLULAR))
-        assertEquals("5 CFA / MB", ProductState.priceLine(5)); assertEquals("Minimum: 0 CFA", ProductState.minimumLine(0)); assertEquals("Limit: Unlimited", ProductState.limitLine(0)); assertEquals("Limit: 200 MB", ProductState.limitLine(200))
+        assertEquals("Bon signal", ProductState.signalWord(-55)); assertEquals("Signal faible", ProductState.signalWord(-85))
+        assertEquals("Donn\u00e9es mobiles", ProductState.upstreamWord(Tunnel.UP_CELLULAR))
+        assertEquals("5 CFA / Mo", ProductState.priceLine(5)); assertEquals("Minimum : 0 CFA", ProductState.minimumLine(0))
+        assertEquals("Limite : illimit\u00e9e", ProductState.limitLine(0)); assertEquals("Limite : 200 Mo", ProductState.limitLine(200))
     }
 
     @Test
     fun a_protocol_failure_does_not_tell_the_user_to_walk() {
+        val build = "Impossible d'\u00e9tablir la connexion. R\u00e9essayez."
+        val closer = "Rapprochez-vous du fournisseur et r\u00e9essayez"
         // v0.9.1: the relay never introduced its seller although the link was perfect
-        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("the relay did not answer the introduction request"))
-        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("the relay has no Internet seller right now"))
-        assertEquals("Couldn't build the connection. Try again.", ProductState.lostHint("no contract answer within 15s"))
-        assertEquals("Couldn't build the connection. Try again.", ProductState.buyerHint(Buyer.LOST, "WIFI UP", false, "no SESSION_OK from seller within 15s"))
+        assertEquals(build, ProductState.lostHint("the relay did not answer the introduction request"))
+        assertEquals(build, ProductState.lostHint("the relay has no Internet seller right now"))
+        assertEquals(build, ProductState.lostHint("no contract answer within 15s"))
+        assertEquals(build, ProductState.buyerHint(Buyer.LOST, "WIFI UP", false, "no SESSION_OK from seller within 15s"))
         // a real radio failure still says what helps
-        assertEquals("Move closer to the provider and try again", ProductState.lostHint("Wi-Fi link closed: connection closed"))
-        assertEquals("Move closer to the provider and try again", ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))
-        assertEquals("Try again", ProductState.lostHint(""))
-        assertEquals("Try again", ProductState.buyerHint(Buyer.LOST, "IDLE", false))
+        assertEquals(closer, ProductState.lostHint("Wi-Fi link closed: connection closed"))
+        assertEquals(closer, ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))
+        assertEquals("R\u00e9essayez", ProductState.lostHint(""))
+        assertEquals("R\u00e9essayez", ProductState.buyerHint(Buyer.LOST, "IDLE", false))
     }
 
     @Test
     fun coverage_words_hide_zone_colours() {
-        assertEquals("Internet available", ProductState.coverageWord(Coverage.ZoneStatus.GREEN))
-        assertEquals("Internet can be arranged", ProductState.coverageWord(Coverage.ZoneStatus.YELLOW))
-        assertEquals("No connection available yet", ProductState.coverageWord(Coverage.ZoneStatus.RED))
+        assertEquals("Internet disponible", ProductState.coverageWord(Coverage.ZoneStatus.GREEN))
+        assertEquals("Internet peut \u00eatre organis\u00e9", ProductState.coverageWord(Coverage.ZoneStatus.YELLOW))
+        assertEquals("Aucune connexion disponible pour l'instant", ProductState.coverageWord(Coverage.ZoneStatus.RED))
         assertEquals(Coverage.ZoneStatus.GREEN, ProductState.coverageNow(1, 0))
         assertEquals(Coverage.ZoneStatus.YELLOW, ProductState.coverageNow(0, 2))
         assertEquals(Coverage.ZoneStatus.RED, ProductState.coverageNow(0, 0))
-        for (z in Coverage.ZoneStatus.values()) { val w = ProductState.coverageWord(z); assertFalse(w, w.contains("GREEN") || w.contains("YELLOW") || w.contains("RED") || w.contains("relay")) }
+        for (z in Coverage.ZoneStatus.values()) { val w = ProductState.coverageWord(z); assertFalse(w, w.contains("GREEN") || w.contains("YELLOW") || w.contains("RED") || w.contains("relais")) }
     }
 
     @Test
@@ -94,7 +111,7 @@ class ProductStateTest {
         )
         val w = ProductState.wallet(entries, me)
         assertEquals(5735L, w.toPay); assertEquals(3000L, w.toReceive); assertEquals(150L, w.prokFees)
-        assertEquals("To pay", ProductState.paymentWord(Market.ST_PENDING, true)); assertEquals("To receive", ProductState.paymentWord(Market.ST_PENDING, false))
-        assertEquals("Paid", ProductState.paymentWord(Market.ST_SETTLED, true)); assertEquals("Disputed", ProductState.paymentWord(Market.ST_DISPUTED, false))
+        assertEquals("\u00c0 payer", ProductState.paymentWord(Market.ST_PENDING, true)); assertEquals("\u00c0 recevoir", ProductState.paymentWord(Market.ST_PENDING, false))
+        assertEquals("Pay\u00e9", ProductState.paymentWord(Market.ST_SETTLED, true)); assertEquals("Contest\u00e9", ProductState.paymentWord(Market.ST_DISPUTED, false))
     }
 }
