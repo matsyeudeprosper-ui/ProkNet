@@ -67,9 +67,18 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.9.3: the three ways the setup really fails, each with what to check
+        any(lastError, "did not answer", "did not introduce", "no contract answer", "no SESSION_OK", "did not join") ->
+            "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."
+        any(lastError, "hotspot", "cannot host", "could not start") ->
+            "Le fournisseur n'a pas pu créer le point d'accès. Qu'il active le Wi-Fi et la localisation, puis réessayez."
+        any(lastError, "not joined", "dialog", "unavailable") ->
+            "Le réseau n'a pas été rejoint. Réessayez et appuyez sur CONNECTER dans la fenêtre Android."
         RADIO_WORDS.any { lastError.contains(it, ignoreCase = true) } -> "Rapprochez-vous du fournisseur et réessayez"
         else -> "Impossible d'établir la connexion. Réessayez."
     }
+
+    private fun any(text: String, vararg words: String) = words.any { text.contains(it, ignoreCase = true) }
 
     private val RADIO_WORDS = listOf("link closed", "not in range", "out of range", "network lost", "network unavailable", "hotspot", "wi-fi is off", "could not reach", "signal")
 

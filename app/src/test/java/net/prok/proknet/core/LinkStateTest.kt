@@ -72,6 +72,18 @@ class LinkStateTest {
         // an UP link never times out
         val u = LinkState(); u.request("b", 0); u.offerReceived("b", 1); u.networkAvailable(2); u.handshakeOk("b", 3)
         assertEquals(LinkState.Action.NONE, u.tick(999_999, 45_000))
+
+        // v0.9.3: each step has its own patience; only the two that wait for a human keep the long one
+        val s = LinkState()
+        assertEquals(60_000L, s.stepTimeoutMs(LinkState.State.REQUESTING))
+        assertEquals(45_000L, s.stepTimeoutMs(LinkState.State.HOSTING))
+        assertEquals(120_000L, s.stepTimeoutMs(LinkState.State.OFFERING))
+        assertEquals(120_000L, s.stepTimeoutMs(LinkState.State.JOINING))
+        assertEquals(30_000L, s.stepTimeoutMs(LinkState.State.HANDSHAKE))
+        s.request("aaaa0000", 0)
+        assertEquals(LinkState.Action.NONE, s.tick(59_000))
+        assertEquals(LinkState.Action.TEARDOWN, s.tick(61_000))
+        assertTrue(s.lastError, s.lastError.contains("REQUESTING"))
         assertTrue(u.isUp)
     }
 }

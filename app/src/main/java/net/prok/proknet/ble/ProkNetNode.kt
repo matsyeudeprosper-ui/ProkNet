@@ -125,6 +125,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.post {
                 if (buyerWanted != null || net.prok.proknet.vpn.ProkVpnService.running) {
                     DiagLog.i(tag, "buy attempt ended (" + reason + "): clearing the buyer state" + (if (net.prok.proknet.vpn.ProkVpnService.running) " and stopping the VPN" else ""))
+                    lastBuyError = reason
                     buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false
                     net.prok.proknet.vpn.ProkVpnService.stop(context)
                 }
@@ -255,6 +256,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         buyPrice = offer.pricePerMb
         buyerWanted = peer.shortId
         buyViaRelay = offer.viaRelay
+        lastBuyError = ""
         DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
         if (wifi.canReach(peer.shortId)) return if (offer.viaRelay) awaitIntroduction(peer.shortId) else tunnel.start(buyPrice)
         return requestWifi(peer)
@@ -306,6 +308,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         }
     }
     @Volatile var lastInternetTest: String = ""
+    /** v0.9.3: why the last purchase attempt ended, kept after the attempt is cleared so the screen can explain it. */
+    @Volatile var lastBuyError: String = ""
 
     private val tunnelSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {
         // v0.7.1: routed by frame direction and role only (a CONTRACT_PROPOSE arrives before any buyer is known).
@@ -333,7 +337,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
-        buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false
+        buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
         pushStatus()
@@ -471,6 +475,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (transport == Routing.TRANSPORT_WIFI && want != null && wifi.canReach(want) && tunnel.session == null && tunnel.contract == null && tunnel.state != "CONNECTING" && tunnel.state != "AGREEING") {
                 if (buyViaRelay) awaitIntroduction(want)
                 else { DiagLog.i(tag, "Wi-Fi link up with prok-" + want + ": proposing the contract"); tunnel.start(buyPrice) }
+            }
+            // v0.9.3: the link attempt died before any session existed. The purchase is over: say why and
+            // clear it, so the screen explains the real reason and the next SELL is not refused.
+            if (transport == Routing.TRANSPORT_WIFI && want != null && wifi.phase.startsWith("DOWN") && tunnel.session == null && tunnel.contract == null) {
+                val why = wifi.state.lastError.ifEmpty { "the Wi-Fi link could not be set up" }
+                DiagLog.w(tag, "buy attempt ended before any session: " + why)
+                lastBuyError = why
+                buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false
             }
             relay.onLinksChanged()
         }

@@ -103,6 +103,23 @@ class LinkState {
         return if (now - lastChange > stepTimeoutMs) fail("timeout in " + state, now) else Action.NONE
     }
 
+    /**
+     * v0.9.3: each step gets its own patience instead of one 120 s wait for
+     * everything. Only the two steps that wait for a HUMAN (the Android
+     * "connect to this device?" dialog, on either side) keep the long one; a
+     * provider that never answers is reported in a minute, not two.
+     */
+    fun stepTimeoutMs(s: State = state): Long = when (s) {
+        State.REQUESTING -> 60_000L    // our BLE request went out; the host must start a hotspot and answer
+        State.HOSTING -> 45_000L       // our own hotspot must come up
+        State.OFFERING -> 120_000L     // the client is looking at the Android dialog
+        State.JOINING -> 120_000L      // we are looking at the Android dialog
+        State.HANDSHAKE -> 30_000L     // sockets only, no human
+        else -> 120_000L
+    }
+
+    fun tick(now: Long): Action = tick(now, stepTimeoutMs())
+
     /** Can a new attempt start now? Exponential wait after failures, capped. */
     fun retryDelayMs(): Long = if (failures == 0) 0 else minOf(60_000L, 5_000L shl minOf(failures - 1, 4))
 

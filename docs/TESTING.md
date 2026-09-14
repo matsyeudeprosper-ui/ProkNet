@@ -662,3 +662,34 @@ purpose).
   notification? Where?
 - The four sharing cases above, with the exact message each time.
 - Anything that reads badly in French (wording, too long for the button).
+
+## 21. v0.9.3 why a connection fails
+
+Reproduce the report: the buyer stays on "Recherche d un fournisseur..."
+then shows "Connexion perdue / Reessayez" with nothing to act on.
+
+1. Seller phone: turn Wi-Fi OFF (keep mobile data on), share Internet.
+   Expected on the SELLER: the sharing card warns "Activez le Wi-Fi sur ce
+   telephone...". Expected on the BUYER after tapping Connect: it stops
+   within seconds (not two minutes) with "Le fournisseur n a pas pu creer
+   le point d acces...".
+2. Seller phone: Wi-Fi ON, Location OFF, share. Expected: the seller card
+   warns about Location; the buyer gets the same fast, explicit failure.
+3. Seller phone: leave Prok running but close the app screen, then buy from
+   another phone. Expected: the buyer fails after about 60 s with "Le
+   fournisseur n a pas repondu. Sur son telephone : Wi-Fi et localisation
+   actives, application ouverte."
+4. Everything on, both phones ready: the normal flow must still work
+   (Connexion..., the Android dialog, Securisation..., Connecte).
+5. After any failure, press PARTAGER INTERNET on the buyer phone: sharing
+   must start (the dead attempt no longer counts as buying).
+
+If it still fails with everything on: developer screen -> COPY DIAG on BOTH
+phones and paste them. The seller log now prints "starting the local-only
+hotspot for prok-... (wifi on/off)" and the exact hotspot error.
+
+### Checklist for the v0.9.3 report
+
+- The exact message and how long it took, for each of the three cases.
+- Did the seller card show the Wi-Fi / Location warning?
+- Does the normal flow still work end to end?

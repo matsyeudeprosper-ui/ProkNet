@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -145,7 +146,22 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     // ---- refresh (everything derives from the node through ProductState) -------------------------
 
     private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.wifi.phase, node.wifi.linkedPeer != null && node.wifi.canReach(node.wifi.linkedPeer ?: ""),
-        node.tunnel.state, ProkVpnService.running, if (lostDismissed) "" else node.tunnel.lastError)
+        node.tunnel.state, ProkVpnService.running, buyError())
+
+    /** Why the last attempt failed, until the user closes the card. The link layer's reason counts too. */
+    private fun buyError(): String = if (lostDismissed) "" else node.tunnel.lastError.ifEmpty { node.lastBuyError }
+
+    private fun locationOn(): Boolean = try {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    } catch (e: Exception) { true }
+
+    /** A seller cannot serve anybody without Wi-Fi and Location: Android needs both for the hotspot. */
+    private fun sellerWarning(): String = when {
+        !node.wifi.wifiEnabled -> getString(R.string.seller_needs_wifi)
+        !locationOn() -> getString(R.string.seller_needs_location)
+        else -> ""
+    }
     private fun sellerState(): ProductState.Seller = ProductState.seller(node.sellOn, node.gateway.state)
     private fun buyerOn(): Boolean = node.buyerWanted != null || node.tunnel.session != null || node.tunnel.contract != null
 
@@ -174,7 +190,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 money = getString(R.string.home_earned_now, ProductState.cfaShort(node.gateway.totalEarnedCentimes + Market.split(node.gateway.agreedCost(), node.feePct).sellerNet))
             }
             b.active || b == ProductState.Buyer.LOST -> {
-                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, node.tunnel.lastError).ifEmpty { getString(R.string.home_relay_subtitle) })
+                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()).ifEmpty { getString(R.string.home_relay_subtitle) })
                 money = if (node.tunnel.session != null) getString(R.string.home_used_cost, ProductState.data(sessionBytes()), ProductState.cfaShort(node.tunnel.runningCost())) else ""
             }
             else -> {
@@ -199,7 +215,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         show(R.id.netOffers, !sellerOn && !buyerVisible && !confirm && !setup)
         when {
             sellerOn -> {
-                text(R.id.shareTitle, ProductState.sellerTitle(s)); text(R.id.shareHint, ProductState.sellerHint(s))
+                text(R.id.shareTitle, ProductState.sellerTitle(s)); text(R.id.shareHint, sellerWarning().ifEmpty { ProductState.sellerHint(s) })
                 text(R.id.shareTerms, ProductState.priceLine(node.sellPrice) + " · " + ProductState.minimumLine(node.sellMinPrice) + " · " + ProductState.limitLine(node.sellMaxMb))
                 val g = node.gateway; val cur = g.session
                 text(R.id.shareData, ProductState.data(g.totalSoldBytes + (cur?.let { it.bytesUp + it.bytesDown } ?: 0L)))
@@ -209,7 +225,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }
             buyerVisible -> {
                 text(R.id.activeTitle, if (b == ProductState.Buyer.ONLINE) getString(R.string.connected) else ProductState.buyerTitle(b))
-                text(R.id.activeHint, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, node.tunnel.lastError))
+                text(R.id.activeHint, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()))
                 show(R.id.activeProgress, b.busy); show(R.id.activeStats, node.tunnel.session != null)
                 text(R.id.activeData, ProductState.data(sessionBytes())); text(R.id.activeCost, ProductState.cfaShort(node.tunnel.runningCost()))
                 val c = node.tunnel.contract; val sess = node.tunnel.session
@@ -222,8 +238,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 text(R.id.confirmPrice, ProductState.priceLine(o.pricePerMb)); text(R.id.confirmMin, ProductState.minimumLine(0)); text(R.id.confirmLimit, getString(R.string.confirm_limit_provider))
                 text(R.id.confirmSignal, ProductState.signalWord(o.rssi) + " · " + ProductState.upstreamWord(o.upstreamType) + (if (o.validated) "" else getString(R.string.confirm_not_checked)))
             }
-            setup -> text(R.id.shareUpstream, getString(R.string.share_your_internet,
-                if (node.gateway.upstreamReady) ProductState.upstreamWord(Tunnel.upstreamType(node.gateway.upstream)) else getString(R.string.share_no_internet_yet)))
+            setup -> {
+                val warn = sellerWarning()
+                text(R.id.shareUpstream, getString(R.string.share_your_internet,
+                    if (node.gateway.upstreamReady) ProductState.upstreamWord(Tunnel.upstreamType(node.gateway.upstream)) else getString(R.string.share_no_internet_yet)) +
+                    (if (warn.isNotEmpty()) "\n" + warn else ""))
+            }
             else -> refreshOffers()
         }
     }
@@ -304,6 +324,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val peer: Peer = node.peers().firstOrNull { it.shortId == o.sellerShort } ?: run { toast(getString(R.string.toast_provider_gone)); pendingOffer = null; refresh(); return }
         if (!peer.offer().selling) { toast(getString(R.string.toast_provider_stopped)); pendingOffer = null; refresh(); return }
         if (!node.hasKey(peer.shortId)) { toast(getString(R.string.toast_need_key)); return }
+        if (!node.wifi.wifiEnabled) { toast(getString(R.string.toast_need_wifi)); return }
         DiagLog.i(tag, "CONNECT pressed: prok-" + peer.shortId + " " + o.pricePerMb + " CFA/MB")
         lostDismissed = false
         if (!node.buy(peer)) { toast(getString(R.string.toast_cannot_connect)); return }

@@ -746,6 +746,29 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Why a link setup fails (v0.9.3)
+
+One 120 s timeout for every step told the user nothing and took two
+minutes. Now:
+
+- `LinkState.stepTimeoutMs(state)` (pure, tested): REQUESTING 60 s,
+  HOSTING 45 s, HANDSHAKE 30 s, and 120 s only for the two steps that wait
+  for a human to tap Android's "connect to this device?" dialog (OFFERING,
+  JOINING). `WifiTransport.timeoutReason(step)` turns the step that ran out
+  into a sentence.
+- The host says so immediately. When `startLocalOnlyHotspot` fails (Wi-Fi
+  off, Location off, tethering active, no channel) the host sends a
+  WIFI_CANCEL over BLE, so the initiator stops in seconds instead of
+  waiting for its own timeout.
+- `ProkNetNode.lastBuyError` keeps the reason after the attempt is cleared,
+  so the screen can still explain it while the purchase state is already
+  free for the next action.
+- `ProductState.lostHint` classifies it into three actionable French
+  sentences (nobody answered / could not create the hotspot / the network
+  was not joined) plus the radio case and a generic one.
+- The seller's own screen warns when Wi-Fi or Location is off, because the
+  hotspot is created on the SELLER side: that is where the fix is.
+
 ## Language (v0.9.2)
 
 The consumer app speaks **French**: the five tabs, every dialog, every

@@ -122,13 +122,27 @@ class WifiTransport(
     private val ticker = object : Runnable {
         override fun run() {
             if (!isRunning) return
-            if (fsm.tick(now(), STEP_TIMEOUT_MS) == LinkState.Action.TEARDOWN) teardown("step timeout in " + phase)
+            val step = fsm.state
+            if (fsm.tick(now()) == LinkState.Action.TEARDOWN) teardown(timeoutReason(step))
             if (joinWaitingForForeground && control.appVisible()) { joinWaitingForForeground = false; pendingOffer?.let { startJoinAttempt(it) } }
             main.postDelayed(this, 2000)
         }
     }
 
     private fun now() = System.currentTimeMillis()
+
+    /** Why a step ran out of time, in words the UI layer can classify. */
+    private fun timeoutReason(s: LinkState.State) = when (s) {
+        LinkState.State.REQUESTING -> "the provider did not answer within " + (fsm.stepTimeoutMs(s) / 1000) + "s (its Wi-Fi or Location may be off, or the app is not open)"
+        LinkState.State.HOSTING -> "this phone could not start its Wi-Fi hotspot in time"
+        LinkState.State.OFFERING -> "the other phone did not join the hotspot"
+        LinkState.State.JOINING -> "the Wi-Fi network was not joined (the Android dialog was not approved?)"
+        LinkState.State.HANDSHAKE -> "the secure handshake did not finish"
+        else -> "step timeout in " + s
+    }
+
+    /** Is Wi-Fi on? A hotspot cannot be started without it on most phones. */
+    val wifiEnabled: Boolean get() = try { wifi.isWifiEnabled } catch (e: Exception) { false }
     val state: LinkState get() = fsm
     val linkedPeer: String? get() = if (fsm.isUp) fsm.peer else null
 
@@ -202,7 +216,7 @@ class WifiTransport(
                         else -> DiagLog.i(tag, "offer ignored: " + fsm.describe())
                     }
                 }
-                Wire.Control.WifiCancel -> { if (fsm.peer == peerShort && !fsm.isIdle) { DiagLog.i(tag, "peer cancelled the Wi-Fi link"); teardown("cancelled by peer") } }
+                Wire.Control.WifiCancel -> { if (fsm.peer == peerShort && !fsm.isIdle) { DiagLog.i(tag, "peer cancelled the Wi-Fi link"); teardown("the provider could not start its Wi-Fi hotspot") } }
             }
         }
     }
@@ -213,6 +227,7 @@ class WifiTransport(
 
     private fun startHotspot() {
         if (!wifi.isWifiEnabled) DiagLog.w(tag, "Wi-Fi is OFF on the host: the hotspot may still start on some phones, else turn Wi-Fi on")
+        DiagLog.i(tag, "starting the local-only hotspot for prok-" + (fsm.peer ?: "?") + " (wifi " + (if (wifi.isWifiEnabled) "on" else "OFF") + ")")
         try {
             wifi.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
@@ -241,16 +256,30 @@ class WifiTransport(
                         })
                     }
                 }
-                override fun onFailed(reason: Int) { main.post { lastHotspotError = "reason " + reason + hotspotHint(reason); fail("hotspot failed, reason " + reason + hotspotHint(reason)) } }
+                override fun onFailed(reason: Int) { main.post { lastHotspotError = "reason " + reason + hotspotHint(reason); cancelToPeer(); fail("hotspot failed, reason " + reason + hotspotHint(reason)) } }
                 override fun onStopped() { main.post { DiagLog.w(tag, "hotspot stopped by the system"); reservation = null; if (fsm.isUp || fsm.isBusy) fail("hotspot stopped by the system") } }
             }, main)
         } catch (e: SecurityException) {
             lastHotspotError = "permission: " + e.message
+            cancelToPeer()
             fail("hotspot needs the Nearby devices / Location permission: " + e.message)
         } catch (e: Exception) {
             lastHotspotError = "threw " + e
+            cancelToPeer()
             fail("startLocalOnlyHotspot threw " + e)
         }
+    }
+
+    /**
+     * v0.9.3: we were asked to host and cannot. Say so over BLE right away;
+     * otherwise the other phone sits in "looking for a provider" until its
+     * step timeout, which is exactly what a user reports as "it searches then
+     * says connection lost".
+     */
+    private fun cancelToPeer() {
+        val peer = fsm.peer ?: return
+        DiagLog.i(tag, "telling prok-" + peer + " that this phone cannot host the link")
+        try { control.sendControl(peer, Wire.wifiCancel()) { ok -> DiagLog.i(tag, "cancel delivered to prok-" + peer + ": " + ok) } } catch (e: Exception) { DiagLog.w(tag, "cancel: " + e) }
     }
 
     private fun hotspotHint(reason: Int) = when (reason) {

@@ -1,89 +1,79 @@
-# CLAUDE_REPORT - ProkNet v0.9.2 "French app + sharing fix"
+# CLAUDE_REPORT - ProkNet v0.9.3 "fail fast, say why"
 
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 108/108 automated tests pass, released, not yet tested on phones**
+Status: **built, 108/108 automated tests pass, released, not yet retested on phones**
 
-Two things Mike asked for: SHARE INTERNET refused to start with a message
-about the price although a price was set, and the app must speak French for
-the first customers.
+## 1. What Mike reported
 
-## 1. The sharing bug: two causes, one wrong message
+Buying from a phone that was sharing: the screen stayed on "Recherche d un
+fournisseur..." for two minutes, then "Connexion perdue / Reessayez".
 
-`startSharing` mapped every refusal except one to "Check the price, minimum
-and limit", so three different problems looked like a price problem.
+Reading the two screenshots against the code: the buyer never reached
+CONNECTING, so the Android join dialog never appeared and no WIFI_OFFER
+ever arrived. 15:48 -> 15:50 is exactly `STEP_TIMEOUT_MS` (120 s), so the
+link state machine timed out in REQUESTING. The hint was "Reessayez",
+which is what `lostHint("")` returns: the tunnel had no error because the
+failure happened one layer below, in the Wi-Fi link, and the screen never
+saw that reason.
 
-- **Empty fields.** An empty minimum or limit was read as `-1` (invalid),
-  not as "none". Now blank means 0, and only a missing or out-of-range
-  PRICE gets the price message.
-- **Relay mode.** `setSelling` returns "relay mode is on" when the phone is
-  the relay of the 3-phone test. That is almost certainly what Mike hit:
-  after the v0.9.x relay runs, RELAY MODE stays on in the Relay Lab. It now
-  says so: "Le mode relais est active. Desactivez-le dans Developpeur, puis
-  reessayez."
-- **A failed purchase that was never cleared.** `buyerWanted` was only
-  cleared by an explicit Stop. A purchase that failed on its own (no
-  contract answer, seller gone, relay never introduced) left it set, so
-  `setSelling` returned "stop buying first" - again shown as a price error.
-  `TunnelClient.fail` now calls a new hook `onAttemptFailed`; the node
-  clears the buyer state AND stops the VPN, which also fixes a real user
-  problem: after a failed attempt the VPN stayed up capturing the phone's
-  traffic with no tunnel behind it.
+I cannot say from here WHICH side failed (the seller log has it). The most
+likely cause by far is the seller side: the hotspot is created by the phone
+that SHARES, and `startLocalOnlyHotspot` needs Wi-Fi on and Location on. A
+seller sharing its mobile data very often has Wi-Fi switched off.
 
-Every refusal now has its own French message and is logged with the raw
-reason.
+## 2. What v0.9.3 changes
 
-## 2. French
+- **Per-step patience** (`LinkState.stepTimeoutMs`, pure + tested):
+  REQUESTING 60 s, HOSTING 45 s, HANDSHAKE 30 s; 120 s only for the two
+  steps where a human must tap Android dialog. `timeoutReason(step)` turns
+  the expired step into a sentence instead of "step timeout in DOWN".
+- **The host says it cannot host.** On any `startLocalOnlyHotspot` failure
+  (callback, SecurityException, exception) the host now sends WIFI_CANCEL
+  over BLE. The buyer stops in seconds with "the provider could not start
+  its Wi-Fi hotspot" instead of waiting for its own timeout. The host also
+  logs "starting the local-only hotspot for prok-... (wifi on/off)".
+- **The reason survives.** `ProkNetNode.lastBuyError` holds why the attempt
+  ended; the node clears the purchase state (so the next SELL is not
+  refused) while the screen can still explain what happened.
+- **Actionable French.** `ProductState.lostHint` now has three specific
+  cases: nobody answered ("Sur son telephone : Wi-Fi et localisation
+  actives, application ouverte"), could not create the hotspot, network not
+  joined ("appuyez sur CONNECTER dans la fenetre Android"), plus the radio
+  case and the generic one.
+- **The warning where the fix is.** The seller sharing card and its setup
+  screen warn when Wi-Fi or Location is off on THAT phone. The buyer is
+  told to turn Wi-Fi on before it even tries.
 
-The consumer app is French: five tabs, dialogs, toasts, notification.
+## 3. Tests (108)
 
-- `res/values/strings.xml` holds the layout and Activity words (with
-  `%1$s` arguments so names and amounts are inserted, never concatenated
-  English fragments).
-- `core/ProductState` holds everything derived from engine state and stays
-  pure and tested, now in French. Number formatting is pinned to
-  `Locale.FRANCE`: "11,5 Mo", "512 Ko", "1,20 Go", "57,35 CFA" - the same
-  on a phone set to English, because it never uses the default locale.
-- The notification no longer shows the engineering status line. It shows
-  "Vous etes en ligne", "Vous partagez votre Internet", or "3 personnes a
-  proximite . 1 offre(s) Internet". The full status line still goes to the
-  log.
-- The developer screen, the Relay Lab and the log stay English on purpose
-  (engineering tools, and ChatGPT reads them). Engine strings stay English
-  too; ProductState is what turns them into words.
-
-Adding another language later is `res/values-xx/strings.xml` plus one
-switch inside ProductState. No screen would change.
-
-## 3. Tests (108, +1)
-
-- `ProductStateTest.the_whole_consumer_wording_is_french` walks every buyer
-  title, seller title and hint, coverage word, lost hint, payment word,
-  signal and upstream word and fails if any of 19 English fragments is
-  still there.
-- The existing ProductState tests now assert the French strings and the
-  French number formats.
-- Everything else unchanged: 108 green, APK gated.
+`LinkStateTest`: the five per-step timeouts, and a REQUESTING attempt that
+survives 59 s and tears down at 61 s naming the step.
+`ProductStateTest`: the three new hints are specific, none of them says
+"move closer", and a plain protocol error still gets the generic sentence.
 
 ## 4. Build
 
-Build 15, versionName 0.9.2, 1.18 MB,
-SHA256 `690fc4089a2c66b1fce494aadb941c4959136450b323c5c003aa97a4fd076d09`.
+Build 16, versionName 0.9.3, 1.18 MB,
+SHA256 `7fc61ff1c6fd4a5dbfd755553f41284f0ae80158248fda2cda3f76888f5dadab`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.2
-Commit `ef06c851360a6fe2bf271bab8c0f1cd07979fcd9` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.3
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 5. Preserved
+## 5. What this does NOT do
 
-No engine change. The v0.9.1 relay handshake, the coverage planner, the
-marketplace and the database are untouched; the only Kotlin outside the UI
-is the new `onAttemptFailed` hook.
+It does not make a failing hotspot work. If the seller phone refuses to
+create a local-only hotspot, the pair still cannot link; the difference is
+that both users now know within seconds what to switch on. TESTING.md
+section 21 reproduces the three cases deliberately, and asks for COPY DIAG
+from both phones if it still fails with everything on.
 
-## 6. Still open
+## 6. Preserved
 
-The 3-phone relay retest (TESTING.md section 19) has not been run yet; this
-build contains it unchanged. Section 20 adds the French and sharing checks.
+No protocol change except one extra WIFI_CANCEL, which v0.5 already defines
+and handles. The relay handshake, coverage planner, marketplace and
+database are untouched.

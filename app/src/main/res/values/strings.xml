@@ -149,6 +149,9 @@
     <string name="toast_not_available">Non disponible sur ce téléphone</string>
     <string name="toast_need_bluetooth">Prok a besoin du Bluetooth pour voir les personnes à proximité</string>
     <string name="toast_need_bluetooth_perm">Prok a besoin de l\'autorisation Bluetooth pour voir les personnes à proximité</string>
+    <string name="seller_needs_wifi">Activez le Wi-Fi sur ce téléphone : il sert à créer le point d\'accès de vos clients.</string>
+    <string name="seller_needs_location">Activez la localisation : Android en a besoin pour créer le point d\'accès.</string>
+    <string name="toast_need_wifi">Activez le Wi-Fi sur votre téléphone pour vous connecter.</string>
     <string name="toast_need_vpn">Prok a besoin de votre accord pour donner Internet à vos applications</string>
 
     <!-- notification -->

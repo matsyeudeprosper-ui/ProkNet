@@ -78,10 +78,22 @@ class ProductStateTest {
         val build = "Impossible d'\u00e9tablir la connexion. R\u00e9essayez."
         val closer = "Rapprochez-vous du fournisseur et r\u00e9essayez"
         // v0.9.1: the relay never introduced its seller although the link was perfect
-        assertEquals(build, ProductState.lostHint("the relay did not answer the introduction request"))
         assertEquals(build, ProductState.lostHint("the relay has no Internet seller right now"))
-        assertEquals(build, ProductState.lostHint("no contract answer within 15s"))
-        assertEquals(build, ProductState.buyerHint(Buyer.LOST, "WIFI UP", false, "no SESSION_OK from seller within 15s"))
+        assertEquals(build, ProductState.lostHint("session refused by the seller"))
+        // v0.9.3: "nobody answered" is a different problem from "it broke", and it says what to check
+        for (e in listOf("the relay did not answer the introduction request", "no contract answer within 15s", "no SESSION_OK from seller within 15s")) {
+            val h = ProductState.lostHint(e)
+            assertTrue(e + " -> " + h, h.contains("n'a pas répondu"))
+            assertFalse(e + " -> " + h, h.contains("Rapprochez"))
+        }
+        // v0.9.3: the three real setup failures each say what to check, and none of them says "walk"
+        val noAnswer = ProductState.lostHint("the provider did not answer within 60s (its Wi-Fi or Location may be off, or the app is not open)")
+        assertTrue(noAnswer, noAnswer.contains("Wi-Fi") && noAnswer.contains("localisation"))
+        val noHotspot = ProductState.lostHint("the provider could not start its Wi-Fi hotspot")
+        assertTrue(noHotspot, noHotspot.contains("point d'acc\u00e8s"))
+        val notJoined = ProductState.lostHint("the Wi-Fi network was not joined (the Android dialog was not approved?)")
+        assertTrue(notJoined, notJoined.contains("CONNECTER"))
+        for (w in listOf(noAnswer, noHotspot, notJoined)) assertFalse(w, w.contains("Rapprochez"))
         // a real radio failure still says what helps
         assertEquals(closer, ProductState.lostHint("Wi-Fi link closed: connection closed"))
         assertEquals(closer, ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))
