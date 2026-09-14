@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v0.9 Relay Lab: capability probe, the 3-phone relay experiment, Wi-Fi source discovery. Developer screen. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView android:id="@+id/txtRelayHead" android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:text="Relay Lab" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:layout_marginTop="4dp"
+            android:text="3-phone experiment: A (buyer, data OFF) -> B (this relay, data OFF) -> C (seller, data ON). On B: 1. RELAY MODE ON, 2. select C in the list and LINK UPSTREAM, 3. on A buy the offer marked via relay. Then COPY RELAY DIAG." />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnRelayMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="RELAY MODE" />
+            <Button android:id="@+id/btnLinkUp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="LINK UPSTREAM" />
+            <Button android:id="@+id/btnDropUp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="DROP UP" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <Button android:id="@+id/btnProbe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="REFRESH" />
+            <Button android:id="@+id/btnCopyRelayDiag" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="COPY RELAY DIAG" />
+        </LinearLayout>
+
+        <TextView android:id="@+id/txtRelayState" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:fontFamily="monospace" android:layout_marginTop="6dp" android:text="" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Peers (tap to select the upstream seller)" />
+        <ListView android:id="@+id/listRelayPeers" android:layout_width="match_parent" android:layout_height="140dp" />
+        <TextView android:id="@+id/txtRelaySelected" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="Selected: none" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Capabilities and networks" />
+        <TextView android:id="@+id/txtProbe" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="11sp" android:fontFamily="monospace" android:text="" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Internet sources nearby (Wi-Fi scan)" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp"
+            android:text="Only what Android exposes: name, BSSID, signal, security. No passwords, no automatic connection. Tap a network to classify it locally." />
+        <Button android:id="@+id/btnScanWifi" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="SCAN WI-FI" />
+        <ListView android:id="@+id/listSources" android:layout_width="match_parent" android:layout_height="220dp" />
+        <TextView android:id="@+id/txtSourcesNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="" />
+    </LinearLayout>
+</ScrollView>

@@ -36,6 +36,8 @@ class Identity private constructor(
     override fun sign(data: ByteArray): ByteArray = Crypto.sign(priv, data)
     fun open(aad: ByteArray, envelope: ByteArray?): ByteArray? = Crypto.open(priv, pubBytes, aad, envelope)
     fun buildSigned(aad: ByteArray, kind: Int, body: ByteArray): ByteArray = Signed.build(priv, aad, kind, body)
+    /** v0.9: shared key with the holder of [peerPub] (relay end-to-end envelope). */
+    fun agree(peerPub: ByteArray, info: ByteArray): ByteArray = Crypto.agree(priv, peerPub, info)
 
     companion object {
         const val ID_LEN = 16

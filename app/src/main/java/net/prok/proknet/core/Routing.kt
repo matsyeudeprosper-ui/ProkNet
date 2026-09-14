@@ -32,6 +32,8 @@ object Routing {
 
     const val TRANSPORT_BLE = "ble"
     const val TRANSPORT_WIFI = "wifi"
+    /** v0.9: the relay phone's second, client-only Wi-Fi link towards its seller. */
+    const val TRANSPORT_WIFI_UP = "wifi-up"
 
     // ---- receive side ------------------------------------------------------------------------
 

@@ -27,6 +27,7 @@ class ProductStateTest {
         assertEquals(Buyer.LOST, ProductState.buyer(true, "WIFI UP", true, "INTERNET LOST", true, ""))
         assertEquals(Buyer.LOST, ProductState.buyer(true, "DOWN: timeout", false, "DISCONNECTED", false, ""))
         assertEquals(Buyer.LOST, ProductState.buyer(false, "DOWN: x", false, "DISCONNECTED", false, "Wi-Fi link closed"))
+        assertEquals(Buyer.LOST, ProductState.buyer(true, "WIFI UP", true, "DISCONNECTED", false, "seller ended session"))
         assertEquals("You're online", ProductState.buyerTitle(Buyer.ONLINE))
         assertEquals("Securing connection…", ProductState.buyerTitle(Buyer.SECURING))
         assertTrue(with(ProductState) { Buyer.SECURING.busy }); assertFalse(with(ProductState) { Buyer.ONLINE.busy }); assertTrue(with(ProductState) { Buyer.ONLINE.active })
@@ -55,6 +56,17 @@ class ProductStateTest {
         assertEquals("Good signal", ProductState.signalWord(-55)); assertEquals("Weak signal", ProductState.signalWord(-85))
         assertEquals("Mobile data", ProductState.upstreamWord(Tunnel.UP_CELLULAR))
         assertEquals("5 CFA / MB", ProductState.priceLine(5)); assertEquals("Minimum: 0 CFA", ProductState.minimumLine(0)); assertEquals("Limit: Unlimited", ProductState.limitLine(0)); assertEquals("Limit: 200 MB", ProductState.limitLine(200))
+    }
+
+    @Test
+    fun coverage_words_hide_zone_colours() {
+        assertEquals("Internet available", ProductState.coverageWord(Coverage.ZoneStatus.GREEN))
+        assertEquals("Internet can be arranged", ProductState.coverageWord(Coverage.ZoneStatus.YELLOW))
+        assertEquals("No connection available yet", ProductState.coverageWord(Coverage.ZoneStatus.RED))
+        assertEquals(Coverage.ZoneStatus.GREEN, ProductState.coverageNow(1, 0))
+        assertEquals(Coverage.ZoneStatus.YELLOW, ProductState.coverageNow(0, 2))
+        assertEquals(Coverage.ZoneStatus.RED, ProductState.coverageNow(0, 0))
+        for (z in Coverage.ZoneStatus.values()) { val w = ProductState.coverageWord(z); assertFalse(w, w.contains("GREEN") || w.contains("YELLOW") || w.contains("RED") || w.contains("relay")) }
     }
 
     @Test

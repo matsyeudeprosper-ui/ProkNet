@@ -32,7 +32,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.6.1 | Fix: link writes on a dedicated writer thread (core/LinkIo), real exception text, loopback link tests, copy buttons at the top | passed on two phones: A browses HTTPS through B with its own data OFF (2026-09-13) |
 | v0.7.0 | Connectivity Marketplace: BUY / SELL / RELAY, offers with price in the BLE scan, signed contract, signed usage checkpoints, exact CFA pricing + Prok fee, ledger, history | phone test: first CONTRACT_PROPOSE misrouted on the seller, buyer timed out |
 | v0.7.1 | Fix: tunnel frames routed by direction and role (pure, tested), regression test for the first-frame sequence | passed on two phones: mutually signed settlement, 11.47 MB -> 57.35 CFA (2026-09-13) |
-| v0.8.0 | Consumer product UI: Home / Internet / Earn / Activity / Profile, plain words, one state-translation layer (ProductState); the whole lab screen kept under Profile > Developer | built, 87 JVM tests pass, awaiting phone test |
+| v0.8.0 | Consumer product UI: Home / Internet / Earn / Activity / Profile, plain words, one state-translation layer (ProductState); the whole lab screen kept under Profile > Developer | approved by the architect (2026-09-14) |
+| v0.9.0 | Coverage engine foundation (pure planner, zones, economic ceiling) + 3-phone live relay feasibility (second Wi-Fi link, end-to-end sealed relay frames, Relay Lab probe, Wi-Fi source discovery) | built, 100 JVM tests pass; hardware relay UNPROVEN until the 3-phone test |
 
 ### v0.1 - what it does
 
@@ -186,9 +187,11 @@ install (allow "install unknown apps" for the browser when asked).
 app/                      Android app (Kotlin, no AndroidX, plain Activity)
   src/main/java/net/prok/proknet/
     core/                 Identity, Packet, MessageStore, Crypto, Routing, Tunnel, Market, ProductState (engine -> user words), DiagLog
+                          Coverage (v0.9 pure planner), Relay (v0.9 sealed relay frames)
+    node/                 TunnelClient (buyer), Gateway (seller), RelayNode + RelayProbe (v0.9), TransferEngine
     ble/                  Advertiser, GATT server, Scanner, Sender, DeliveryQueue, ProkNetNode
     service/              ProkNetService (foreground service owning the node)
-    ui/                   MainActivity (v0.8 consumer screen), LabActivity (developer / diagnostics)
+    ui/                   MainActivity (v0.8 consumer screen), LabActivity (developer / diagnostics), RelayLabActivity (v0.9 relay experiment)
     ProkNetApp.kt         Application: creates the node once per process
 build.ps1                 The build command
 dist/                     Predictable APK output location (APK itself not committed)

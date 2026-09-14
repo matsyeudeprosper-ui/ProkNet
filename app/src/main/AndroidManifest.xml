@@ -63,6 +63,11 @@
 
         <!-- v0.8: the engineering screen, reached from Profile > Developer / Diagnostics -->
         <activity
+            android:name=".ui.RelayLabActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Prok Relay Lab" />
+        <activity
             android:name=".ui.LabActivity"
             android:exported="false"
             android:launchMode="singleTop"

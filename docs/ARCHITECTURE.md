@@ -605,10 +605,131 @@ ProkNetNode (unchanged)  <--observes--  ui/MainActivity   consumer: Home / Inter
   logs, node start/stop buttons, routing controls. All of it is one tap away
   under Profile > Developer / Diagnostics, with COPY LOG and COPY DIAG.
 
-## Automated tests (87)
+## Long-term coverage model (LOCKED, v0.9)
+
+ProkNet is not only a nearby data-selling marketplace. Its job: find free
+Internet whenever possible, otherwise the cheapest usable Internet, and
+organize phones and people to extend it to where demand is.
+
+```
+INTERNET SOURCES      mobile data / home Wi-Fi / shop Wi-Fi / public Wi-Fi / Prok-funded / sponsored
+        |
+COVERAGE ENGINE       sources + nodes + radio links + demand  ->  ranked routes, zone status
+        |
+direct provider  /  passive relay  /  funded provider  /  mover (or courier already travelling)
+        |
+      BUYER           priority: FREE -> CHEAPEST -> RELIABLE BACKUP
+```
+
+Resources: PROVIDER (supplies Internet), ANCHOR (stable phone/location),
+RELAY (forwards), MOVER (moves to close a gap), COURIER (already travelling
+a useful route). The engine prefers the cheapest reliable delivered route,
+never the most complicated mesh. A detected Wi-Fi network is NOT a source
+until it has a permission class: OPEN_REUSABLE, AUTHORIZED_PRIVATE,
+CAPTIVE_PORTAL, UNKNOWN, NOT_ALLOWED; only the first two may be shared.
+
+Status legend used below: **Implemented** (code + JVM tests), **Simulated**
+(synthetic data only), **Hardware proven** (passed on Mike's phones),
+**Future** (design only).
+
+## Coverage engine (v0.9) - Implemented, Simulated
+
+`core/Coverage.kt`, pure. Concepts: `InternetSource` (type, trust class,
+cost per MB, reliability), `RadioObservation` -> `CandidateLink` (quality =
+success rate x signal x freshness), `CoverageNode` (zone, hasInternet,
+source, canProvide/canRelay/canMove, stationary, charging, battery,
+reliability, expected availability, minimum reward, move cost, heading
+zone, fundable + activation cost), `DemandRequest` (buyer, zone, expected
+MB, max price, kind COMMERCIAL / SPONSORED / GROWTH_SUBSIDY, budget),
+`CoverageJob` (PROVIDE / RELAY / MOVE / ACTIVATE), `CandidateRoute`,
+`RouteScore`, `CoverageZone` (GREEN / YELLOW / RED).
+
+`Coverage.plan(demand, nodes, links, policy)` enumerates simple paths from
+the buyer through relays to usable providers (and to fundable providers,
+with an ACTIVATE job), plus buyer -> mover -> provider routes where a link
+is missing (MOVE job), then scores each:
+
+```
+total = deliveredCost (source cost + relay/provider rewards + activation)
+      + failurePenalty (pFail x (revenue + failureBase))
+      + delayPenalty   (per relay hop, per move, per activation)
+      + movementCost   (mover; a courier heading to the zone pays a share)
+      + resourcePenalty (low battery +, charging -, stationary -, relay already in position -)
+```
+
+Every weight is a field of `Coverage.Policy`; nothing else hard-codes a
+formula. Economic ceiling: COMMERCIAL routes must keep jobs <= revenue (a
+50 CFA session cannot silently create 60 CFA of jobs); SPONSORED needs
+jobs <= sponsor budget; GROWTH_SUBSIDY may lose money but the loss is an
+explicit `subsidyNeeded` <= budget. Ranking: feasible first, lowest total,
+fewer relays, then route id, so it is deterministic for any input order.
+Zones: GREEN = feasible route now without movement/activation and low
+failure risk; YELLOW = feasible with a mover or an activation, or blocked
+only by money; RED otherwise. `ProductState.coverageWord` turns that into
+"Internet available / Internet can be arranged / No connection available
+yet" for the consumer screen; colours and jargon never reach it.
+
+Not built (Future): a real city/GPS backend, dispatching jobs to phones,
+paying movers, a shared Wi-Fi source database.
+
+## Live relay (v0.9) - Implemented; hardware UNPROVEN
+
+Goal: `A (buyer, data OFF) -> B (relay, data OFF) -> C (seller, data ON) ->
+Internet`, with B forwarding but not reading the buyer's traffic.
+
+- **Two Wi-Fi links on B.** `WifiTransport` now takes a name and a
+  `mayHost` flag; the node runs two instances: `wifi` (the normal one, hosts
+  A on its local-only hotspot) and `wifiUp` (client-only, joins C's hotspot
+  through a `WifiNetworkSpecifier`). Both share the BLE control channel;
+  `ProkNetNode.dispatchControl` hands a WIFI_OFFER to the instance that
+  asked for it. Sockets stay explicitly separated: the upstream client
+  socket is created from the granted `Network`'s socket factory; the
+  downstream server socket accepts on the hotspot. Whether Android lets one
+  phone hold a specifier STA connection and a local-only hotspot at the
+  same time is exactly what the Relay Lab measures.
+- **Sealed frames.** `core/Relay.kt`: `FRAME_RELAY = [ver][origin short
+  4][nonce 12][AES-GCM(tunnel frame)]`, key = HKDF(ECDH(A static key, C
+  static key), ids), aad = ver + origin. `FRAME_RELAY_INFO` carries B's
+  introductions: to A "the seller behind me is C at this price" (C's
+  self-certifying identity record), to C "the buyer behind me is A", and
+  PEER_GONE. B never has the key; A and C verify each other's contract
+  signatures as before. No forward secrecy yet (static keys), noted.
+- **Roles in `node/RelayNode.kt`.** B: relay mode on, session starts when
+  both links are up, introductions sent, FRAME_RELAY forwarded to the other
+  link, `Relay.Session` counts bytes and frames per direction, duration
+  and disconnect reason (in memory + log + diag). A: the introduction
+  sets `providerShort`; the tunnel client then proposes the contract to C,
+  every frame sealed. C: the introduction sets `relayedBuyer`; sealed
+  frames from A are opened and routed to the Gateway exactly as if A were
+  on the link (`Gateway.Hooks.peerFullId(peerShort)` replaces the old
+  link-peer lookup), and the Gateway's replies are sealed back. So C's
+  session, checkpoints, ledger and history name A, not B.
+- **Advertising.** B with a selling seller upstream advertises `SELL |
+  VIA_RELAY` at C's price (new flag bit `Market.FLAG_VIA_RELAY`); the
+  ranking puts a relayed offer just below a direct one at equal price. The
+  consumer offer card says "through another phone".
+- **What is not done on purpose:** no citywide routing protocol, no relay
+  reward yet, no multi-buyer relay, no automatic relay selection.
+
+## Relay Lab and Wi-Fi source discovery (v0.9) - Implemented
+
+Developer screen -> Relay Lab (`ui/RelayLabActivity`, `node/RelayProbe`):
+device model, Android/API, `isStaApConcurrencySupported`,
+`isStaConcurrencyForLocalOnlyConnectionsSupported`, multi-Internet and
+bridged-AP concurrency, Wi-Fi Direct / Aware features, bands, WPA3; every
+`Network` with transports, INTERNET/validated, interface, addresses, DNS,
+default flag; IPv4 interfaces; both ProkNet links with their socket
+binding and hotspot state; relay session counters and history; COPY RELAY
+DIAG (all of it + last 80 log lines). Wi-Fi scan through the normal
+`WifiManager` scan API (Android-throttled; Location must be on): SSID,
+BSSID, level, security from the capabilities string, timestamp. A tap
+classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
+class. No passwords, no automatic connection, nothing uploaded.
+
+## Automated tests (100)
 
 `app/src/test`: PacketTest 11, RoutingTest 16, CryptoTest 7, TransferTest 6,
-WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 4. `build.ps1` runs them first and refuses the APK
+WireTest 4, LinkStateTest 4, TcpipTest 5, TunnelTest 5, TcpFlowTest 6, LinkIoTest 7, MarketTest 9, TunnelRoutingTest 3, ProductStateTest 5, CoverageTest 9, RelayTest 3. `build.ps1` runs them first and refuses the APK
 on any failure.
 
 ## Storage

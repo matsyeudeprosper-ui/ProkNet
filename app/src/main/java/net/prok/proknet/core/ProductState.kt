@@ -27,6 +27,7 @@ object ProductState {
         if (tunnel == "AGREEING") return Buyer.SECURING
         if (!wanted) return if (lastError.isNotEmpty()) Buyer.LOST else Buyer.IDLE
         // wanted, tunnel not started yet: the Wi-Fi link is being built
+        if (lastError.isNotEmpty()) return Buyer.LOST          // v0.9: the session failed while the link stayed up (e.g. the relay lost its seller)
         if (wifiUp) return Buyer.SECURING
         return when {
             wifiPhase.startsWith("DOWN") -> Buyer.LOST
@@ -115,6 +116,20 @@ object ProductState {
     fun priceLine(pricePerMb: Int): String = pricePerMb.toString() + " CFA / MB"
     fun minimumLine(minCfa: Int): String = if (minCfa == 0) "Minimum: 0 CFA" else "Minimum: " + minCfa + " CFA"
     fun limitLine(maxMb: Int): String = if (maxMb == 0) "Limit: Unlimited" else "Limit: " + maxMb + " MB"
+
+    /** v0.9: coverage status in user words. GREEN / YELLOW / RED never appear on screen. */
+    fun coverageWord(z: Coverage.ZoneStatus): String = when (z) {
+        Coverage.ZoneStatus.GREEN -> "Internet available"
+        Coverage.ZoneStatus.YELLOW -> "Internet can be arranged"
+        Coverage.ZoneStatus.RED -> "No connection available yet"
+    }
+
+    /** What the phone can say today from its own view: direct offers = available, relayed offers only = can be arranged. */
+    fun coverageNow(directOffers: Int, relayedOffers: Int): Coverage.ZoneStatus = when {
+        directOffers > 0 -> Coverage.ZoneStatus.GREEN
+        relayedOffers > 0 -> Coverage.ZoneStatus.YELLOW
+        else -> Coverage.ZoneStatus.RED
+    }
 
     /** Payment status words for the activity list. */
     fun paymentWord(status: String, iAmPayer: Boolean): String = when (status) {

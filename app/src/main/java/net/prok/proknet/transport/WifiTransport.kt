@@ -58,6 +58,9 @@ class WifiTransport(
     private val context: Context,
     private val identity: Identity,
     private val control: ControlChannel,
+    /** v0.9: a phone may run two instances: the normal one (may host) and a client-only UPSTREAM one. */
+    override val name: String = Routing.TRANSPORT_WIFI,
+    private val mayHost: Boolean = true,
 ) : Transport {
     interface ControlChannel {
         fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit)
@@ -70,11 +73,12 @@ class WifiTransport(
     interface TunnelSink {
         fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame)
         fun onLinkClosed(peerShort: String, reason: String)
+        /** v0.9: FRAME_RELAY / FRAME_RELAY_INFO payloads, untouched. Called on the link's read thread. */
+        fun onRawFrame(peerShort: String, type: Int, payload: ByteArray) {}
     }
     @Volatile var tunnelSink: TunnelSink? = null
 
-    private val tag = "WIFI"
-    override val name = Routing.TRANSPORT_WIFI
+    private val tag = name.uppercase()
     override val bulkCapable = true
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
@@ -105,6 +109,16 @@ class WifiTransport(
     /** True while Android's "connect to network" approval is expected on this phone. */
     @Volatile var approvalNeeded: Boolean = false
         private set
+    /** v0.9 probe facts: the network Android granted us as a client, the hotspot we run as a host. */
+    @Volatile var grantedNetwork: Network? = null
+        private set
+    @Volatile var hotspotSsid: String = ""
+        private set
+    @Volatile var lastHotspotError: String = ""
+        private set
+    private val relaySent = AtomicLong(); private val relayReceived = AtomicLong()
+    val relayBytesSent: Long get() = relaySent.get()
+    val relayBytesReceived: Long get() = relayReceived.get()
     private val ticker = object : Runnable {
         override fun run() {
             if (!isRunning) return
@@ -171,6 +185,7 @@ class WifiTransport(
             when (c) {
                 is Wire.Control.WifiRequest -> {
                     DiagLog.i(tag, "NEGOTIATE: WIFI_REQUEST from prok-" + peerShort)
+                    if (!mayHost) { DiagLog.i(tag, "request ignored: this instance never hosts"); return@post }
                     when (fsm.requestReceived(peerShort, identity.shortIdHex, now())) {
                         LinkState.Action.START_HOTSPOT -> { setPhase("HOSTING", "starting hotspot for prok-" + peerShort); startHotspot() }
                         else -> DiagLog.i(tag, "request from prok-" + peerShort + " ignored: " + fsm.describe())
@@ -183,7 +198,7 @@ class WifiTransport(
                         else -> DiagLog.i(tag, "offer ignored: " + fsm.describe())
                     }
                 }
-                Wire.Control.WifiCancel -> { DiagLog.i(tag, "peer cancelled the Wi-Fi link"); teardown("cancelled by peer") }
+                Wire.Control.WifiCancel -> { if (fsm.peer == peerShort && !fsm.isIdle) { DiagLog.i(tag, "peer cancelled the Wi-Fi link"); teardown("cancelled by peer") } }
             }
         }
     }
@@ -201,6 +216,7 @@ class WifiTransport(
                         reservation = res
                         val cred = credentials(res)
                         if (cred.ssid == null) { fail("hotspot started but no SSID readable"); return@post }
+                        hotspotSsid = cred.ssid; lastHotspotError = ""
                         DiagLog.i(tag, "hotspot started: ssid=" + cred.ssid + " security=" + secName(cred.security) + " hidden=" + cred.hidden + " band=" + cred.band)
                         var tries = 0
                         main.post(object : Runnable {
@@ -221,12 +237,14 @@ class WifiTransport(
                         })
                     }
                 }
-                override fun onFailed(reason: Int) { main.post { fail("hotspot failed, reason " + reason + hotspotHint(reason)) } }
+                override fun onFailed(reason: Int) { main.post { lastHotspotError = "reason " + reason + hotspotHint(reason); fail("hotspot failed, reason " + reason + hotspotHint(reason)) } }
                 override fun onStopped() { main.post { DiagLog.w(tag, "hotspot stopped by the system"); reservation = null; if (fsm.isUp || fsm.isBusy) fail("hotspot stopped by the system") } }
             }, main)
         } catch (e: SecurityException) {
+            lastHotspotError = "permission: " + e.message
             fail("hotspot needs the Nearby devices / Location permission: " + e.message)
         } catch (e: Exception) {
+            lastHotspotError = "threw " + e
             fail("startLocalOnlyHotspot threw " + e)
         }
     }
@@ -379,6 +397,7 @@ class WifiTransport(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 DiagLog.i(tag, "requestNetwork.onAvailable network=" + network + " (attempt " + attemptNo + ", " + secName(sec) + ")")
+                grantedNetwork = network
                 main.post {
                     if (fsm.networkAvailable(now()) == LinkState.Action.OPEN_SOCKET) {
                         setPhase("TCP", "joined " + offer.ssid + ", connecting")
@@ -508,12 +527,16 @@ class WifiTransport(
         if (fsm.fail(reason, now()) == LinkState.Action.TEARDOWN) teardown(reason) else { setPhase("DOWN", reason) }
     }
 
+    /** v0.9: drop the current link / attempt on purpose. */
+    fun disconnect(reason: String) { if (isRunning) main.post { if (!fsm.isIdle) teardown(reason) else { fsm.reset(now()); setPhase("IDLE", reason) } } }
+
     private fun teardown(reason: String) {
         val peer = link?.peerRecord?.shortId ?: fsm.peer
         link?.close(); link = null
         if (peer != null) try { tunnelSink?.onLinkClosed(peer, reason) } catch (e: Exception) { DiagLog.w(tag, "tunnel sink: " + e) }
         pendingOffer = null
         joinWaitingForForeground = false
+        grantedNetwork = null; hotspotSsid = ""
         netCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }; netCallback = null
         try { serverSocket?.close() } catch (_: Exception) {}; serverSocket = null
         try { reservation?.close() } catch (_: Exception) {}; reservation = null
@@ -529,8 +552,25 @@ class WifiTransport(
         return l.writeTunnel(bytes)
     }
 
+    /** v0.9: write one relay frame (FRAME_RELAY / FRAME_RELAY_INFO) on the current link. */
+    fun sendRaw(type: Int, payload: ByteArray): Boolean {
+        val l = link ?: return false
+        if (!fsm.isUp || !l.isOpen) return false
+        val ok = l.writeRaw(type, payload)
+        if (ok) relaySent.addAndGet(payload.size.toLong())
+        return ok
+    }
+
     /** The link's TCP socket, so the VPN can exclude it from the tunnel it creates. */
     fun linkSocket(): Socket? = link?.socketForProtect()
+
+    /** v0.9 probe: where this link's socket is bound, as Android sees it. */
+    fun linkDescription(): String {
+        val l = link ?: return "no link"
+        val s = l.socketForProtect()
+        return (if (l.isHost) "host" else "client") + " socket " + s.localAddress?.hostAddress + ":" + s.localPort + " -> " + s.inetAddress?.hostAddress + ":" + s.port +
+            (if (l.isHost) " (accepted on hotspot " + hotspotSsid + ")" else " (bound to network " + grantedNetwork + ")") + ", open=" + l.isOpen
+    }
 
     val tunnelBytesSent: Long get() = link?.tunnelSent ?: 0L
     val tunnelBytesReceived: Long get() = link?.tunnelReceived ?: 0L
@@ -584,6 +624,13 @@ class WifiTransport(
             return true
         }
 
+        fun writeRaw(type: Int, bytes: ByteArray): Boolean {
+            val onMain = Looper.myLooper() == Looper.getMainLooper()
+            val ok = io.enqueue(type, bytes, block = !onMain)
+            if (!ok) DiagLog.w(tag, "relay frame dropped (" + (if (onMain) "main thread, queue full " + io.queuedFrames else "link closed") + ")")
+            return ok
+        }
+
         /** Tunnel frames: block on data threads (backpressure), never on the main thread. */
         fun writeTunnel(bytes: ByteArray): Boolean {
             val onMain = Looper.myLooper() == Looper.getMainLooper()
@@ -607,6 +654,11 @@ class WifiTransport(
                         val peer = peerRecord?.shortId
                         if (f == null || peer == null) DiagLog.w(tag, "malformed tunnel frame ignored (" + p.size + " bytes)")
                         else try { tunnelSink?.onTunnelFrame(peer, f) } catch (e: Exception) { DiagLog.e(tag, "tunnel sink: " + LinkIo.describe(e)) }
+                    }
+                    Wire.FRAME_RELAY, Wire.FRAME_RELAY_INFO -> {
+                        relayReceived.addAndGet(p.size.toLong())
+                        val peer = peerRecord?.shortId
+                        if (peer != null) try { tunnelSink?.onRawFrame(peer, type, p) } catch (e: Exception) { DiagLog.e(tag, "relay sink: " + LinkIo.describe(e)) }
                     }
                     Wire.FRAME_RECEIPT -> {
                         val r = Wire.parseReceipt(p)

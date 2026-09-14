@@ -30,10 +30,11 @@ object Market {
     const val FLAG_SELL = 1        // Internet for sale (seller mode on, upstream present)
     const val FLAG_RELAY = 2       // willing to carry/forward for others
     const val FLAG_VALIDATED = 4   // upstream validated by Android
+    const val FLAG_VIA_RELAY = 8   // v0.9: this phone relays a seller behind it (price = that seller's price)
     const val UPSTREAM_SHIFT = 4   // bits 4-5: Tunnel.UP_* (0 none, 1 cellular, 2 wifi, 3 other)
 
-    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int): Int =
-        (if (sell) FLAG_SELL else 0) or (if (relay) FLAG_RELAY else 0) or (if (validated) FLAG_VALIDATED else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
+    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int, viaRelay: Boolean = false): Int =
+        (if (sell) FLAG_SELL else 0) or (if (relay) FLAG_RELAY else 0) or (if (validated) FLAG_VALIDATED else 0) or (if (viaRelay) FLAG_VIA_RELAY else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
 
     fun upstreamOf(flags: Int): Int = (flags shr UPSTREAM_SHIFT) and 3
 
@@ -42,8 +43,9 @@ object Market {
         val selling get() = flags and FLAG_SELL != 0
         val relaying get() = flags and FLAG_RELAY != 0
         val validated get() = flags and FLAG_VALIDATED != 0
+        val viaRelay get() = flags and FLAG_VIA_RELAY != 0
         val upstreamType get() = upstreamOf(flags)
-        fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + "  " + pricePerMb + " CFA/MB  signal " + signalWord(rssi) + "  " +
+        fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + (if (viaRelay) " via relay" else "") + "  " + pricePerMb + " CFA/MB  signal " + signalWord(rssi) + "  " +
             (if (selling) (if (validated) "available" else "available (unverified)") else "not selling")
     }
 
@@ -60,7 +62,8 @@ object Market {
         val validated = if (o.validated) 100 else 0
         val price = 60 - o.pricePerMb.coerceIn(0, 20) * 3 // 0 CFA -> 60, 20+ CFA -> 0
         val signal = ((o.rssi.coerceIn(-100, -40) + 100) * 40) / 60 // -100 -> 0, -40 -> 40
-        return validated + price + signal
+        val relayed = if (o.viaRelay) 10 else 0                        // v0.9: one more hop, same price -> direct first
+        return validated + price + signal - relayed
     }
 
     fun rank(offers: List<Offer>): List<Offer> = offers.sortedWith(compareByDescending<Offer> { score(it) }.thenBy { it.pricePerMb }.thenBy { it.sellerShort })

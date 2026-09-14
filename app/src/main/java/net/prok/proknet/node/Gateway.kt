@@ -36,7 +36,8 @@ import net.prok.proknet.core.toHex
 class Gateway(private val context: Context, private val identity: Identity, private val hooks: Hooks) {
     interface Hooks {
         fun send(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): Boolean
-        fun linkPeerFullId(): String?
+        /** Full id of an authenticated peer (the link peer, or v0.9 a buyer sealed end to end through a relay). */
+        fun peerFullId(peerShort: String): String?
         fun peerPub(peerShort: String): ByteArray?
         fun store(): MessageStore
         /** Current seller terms: [pricePerMb, minPriceCfa, maxMb, feePct]. */
@@ -237,7 +238,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         if (!providing) { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "seller not enabled".toByteArray()); return }
         val sb = Tunnel.parseSigned(f.data, Market.Contract.LEN) ?: run { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "malformed proposal".toByteArray()); return }
         val c = Market.Contract.decode(sb.body) ?: run { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "malformed contract".toByteArray()); return }
-        val linkPeer = hooks.linkPeerFullId()
+        val linkPeer = hooks.peerFullId(peerShort)
         val buyerPub = hooks.peerPub(peerShort)
         if (linkPeer == null || buyerPub == null) { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "no authenticated link".toByteArray()); return }
         if (!Crypto.verify(buyerPub, Market.contractSignData(c), sb.sig)) { DiagLog.w(tag, "CONTRACT from prok-" + peerShort + ": buyer signature INVALID"); hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "bad signature".toByteArray()); return }
@@ -262,7 +263,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
 
     private fun onSessionStart(peerShort: String, f: Tunnel.Frame) {
         val req = Tunnel.parseSessionStart(f.data)
-        val linkPeer = hooks.linkPeerFullId()
+        val linkPeer = hooks.peerFullId(peerShort)
         if (req == null || linkPeer == null || req.buyerId.toHex() != linkPeer) {
             DiagLog.w(tag, "SESSION_START refused: buyer id does not match the authenticated link peer")
             hooks.send(Tunnel.T_ERROR, 0, Tunnel.error(Tunnel.ERR_SESSION_REFUSED, "identity mismatch")); return

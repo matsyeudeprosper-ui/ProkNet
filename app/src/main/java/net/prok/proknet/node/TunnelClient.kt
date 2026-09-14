@@ -103,6 +103,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         if (session != null || contract != null) return true
         if (!Market.validPrice(advertisedPricePerMb)) { setState("DISCONNECTED", "invalid price"); return false }
         providerShort = peer
+        lastError = ""
         advertisedPrice = advertisedPricePerMb
         reproposed = false
         return propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), advertisedPricePerMb, minPrice, maxMb, hooks.feePct(), System.currentTimeMillis()))

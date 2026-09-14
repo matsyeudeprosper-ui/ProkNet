@@ -539,3 +539,63 @@ theme and reopen.
 - Anything you could not do from the consumer screens and had to do in the
   developer screen.
 - COPY DIAG from the developer screen if something failed.
+
+## 18. v0.9 three-phone live relay (A, B, C)
+
+This is a physics experiment. Both outcomes are useful results. Do not
+help it along: A must not be able to reach C directly.
+
+Setup:
+- C = seller: mobile data ON. Prok running, **Share Internet** on (5 CFA/MB).
+- B = relay: mobile data OFF, Wi-Fi ON, Location ON. Prok running (developer
+  screen: Start). Do NOT share or buy on B.
+- A = buyer: mobile data OFF, Wi-Fi ON. Prok running.
+- Place A and C far enough apart that A does not see C's offer; B in the
+  middle sees both. (If the room is small, first prove the flow with all
+  three close together, then separate.)
+
+On B, developer screen -> **Relay Lab**:
+1. Tap **RELAY MODE**. Expected: "RELAY MODE on", state line "waiting for
+   both links".
+2. Tap C in the peer list (it must show `[key]` and `[SELL 5]`), then
+   **LINK UPSTREAM**. Approve the Android "connect to device" dialog on B.
+   Expected within a minute: `UP: WIFI UP prok-<C>` and, in the log, `LINK
+   UP with prok-<C> (client...)`. On C: WIFI UP with B.
+3. Tap **REFRESH** and read the capabilities block: note `STA+AP
+   concurrency` and `STA concurrency for local-only connections`.
+
+On A: **Get Internet**. Expected: one card "Internet available · <B> ·
+through another phone / 5 CFA / MB". Tap it, **Connect**, approve the
+Wi-Fi dialog. This is the moment of truth: B must start its hotspot while
+it is joined to C.
+- If it works: A shows Finding -> Connecting -> Securing -> Starting ->
+  Connected; VPN dialog on A; browsing in Chrome works. B's Relay Lab
+  shows a session with bytes "to seller" and "to buyer" growing. C's
+  developer screen shows `CONTRACT AGREED with prok-<A>` (A, not B) and
+  the session with A. A's Activity card shows the session with C.
+- If B's hotspot fails: B's log shows `hotspot failed, reason ...
+  (incompatible mode ...)` or the upstream link drops when the hotspot
+  starts (`requestNetwork.onLost`). That is the result: this phone cannot
+  do the concurrent topology. Try the other order once: on B drop the
+  upstream (DROP UP), let A connect to B first (A: Get Internet, Connect;
+  B hosts), then LINK UPSTREAM to C.
+
+Then on B: **COPY RELAY DIAG** (after the attempt, whichever way it went)
+and paste it to ChatGPT. Also COPY DIAG from A and C's developer screens.
+
+### Checklist for the v0.9 report
+
+- B: phone model, Android version, the four concurrency lines.
+- B: did the upstream link come up? Did the hotspot start while it was up?
+  Exact hotspot error if not. Did the upstream link survive the hotspot?
+- A: state titles seen; did Chrome browse? Data used / cost on the card.
+- B: session bytes to seller / to buyer at the end.
+- C: does its session and Activity name A? Final cost on A and C.
+- Which order was tried (upstream first / downstream first) and the result
+  of each.
+
+### Wi-Fi source discovery (any phone)
+
+Relay Lab -> **SCAN WI-FI** (Location ON). Expected: a list with name,
+BSSID, dBm, security. Tap one, classify it; the line shows the class and
+"shareable" only for public/open and authorized. Nothing connects.

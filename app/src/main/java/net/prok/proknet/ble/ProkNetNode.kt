@@ -19,8 +19,10 @@ import net.prok.proknet.core.Wire
 import net.prok.proknet.core.hexToBytes
 import net.prok.proknet.core.toHex
 import net.prok.proknet.node.Gateway
+import net.prok.proknet.node.RelayNode
 import net.prok.proknet.node.TransferEngine
 import net.prok.proknet.node.TunnelClient
+import net.prok.proknet.core.Relay
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.Market
 import net.prok.proknet.transport.BleTransport
@@ -67,6 +69,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
     })
+    /** v0.9: the relay phone's second Wi-Fi link, client-only, towards its seller. Never carries packets or transfers. */
+    val wifiUp = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
+        override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
+        override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
+        override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
+    }, Routing.TRANSPORT_WIFI_UP, mayHost = false)
     private val transports: List<Transport> get() = listOf(wifi, ble)
 
     val queue = DeliveryQueue(store, identity, object : DeliveryQueue.Hooks {
@@ -95,18 +103,18 @@ class ProkNetNode(private val context: Context) : TransportListener {
     val sellOn: Boolean get() = gateway.providing
 
     // ---- v0.6/0.7: Internet through another phone, as a market ----
-    val gateway = Gateway(context, identity, object : Gateway.Hooks {
-        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = wifi.sendTunnel(type, streamId, data)
-        override fun linkPeerFullId(): String? = wifi.linkedPeer?.let { store.peerKey(it)?.fullId }
+    val gateway: Gateway = Gateway(context, identity, object : Gateway.Hooks {
+        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = sendFromGateway(type, streamId, data)
+        override fun peerFullId(peerShort: String): String? = store.peerKey(peerShort)?.fullId
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
         override fun onChanged() { main.post { refreshAdvert(); pushStatus() } }
     })
-    val tunnel = TunnelClient(identity, object : TunnelClient.Hooks {
-        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = wifi.sendTunnel(type, streamId, data)
-        override fun linkPeer(): String? = wifi.linkedPeer
-        override fun linkPeerFullId(): String? = wifi.linkedPeer?.let { store.peerKey(it)?.fullId }
+    val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
+        override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = sendFromTunnel(type, streamId, data)
+        override fun linkPeer(): String? = buyerFarEnd()
+        override fun linkPeerFullId(): String? = buyerFarEnd()?.let { store.peerKey(it)?.fullId }
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun feePct(): Int = this@ProkNetNode.feePct
@@ -114,6 +122,81 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onChanged() { main.post { pushStatus() } }
     })
     /** Price the buyer saw in the scan when it pressed BUY (locks the proposal). */
+    // ---- v0.9 live relay ----
+    val relay: RelayNode = RelayNode(identity, object : RelayNode.Hooks {
+        override fun sendDown(type: Int, payload: ByteArray): Boolean = wifi.sendRaw(type, payload)
+        override fun sendUp(type: Int, payload: ByteArray): Boolean = wifiUp.sendRaw(type, payload)
+        override fun downPeer(): String? = wifi.linkedPeer
+        override fun upPeer(): String? = wifiUp.linkedPeer
+        override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
+        override fun peerFullId(peerShort: String): String? = store.peerKey(peerShort)?.fullId
+        override fun peerName(peerShort: String): String = this@ProkNetNode.peerName(peerShort)
+        override fun saveIdentity(rec: Wire.IdentityRecord) = onIdentity("relay-intro", rec.idHex, rec.pub, rec.name)
+        override fun upstreamOffer(): Market.Offer? = wifiUp.linkedPeer?.let { up -> ble.visiblePeers().firstOrNull { it.shortId == up }?.offer() }
+        override fun onTunnelFromRelay(originShort: String, frame: Tunnel.Frame) = routeTunnelFrame(originShort, frame, "sealed via relay")
+        override fun onRelayPeerGone(farShort: String, reason: String) { gateway.onLinkClosed(farShort, reason); tunnel.onLinkClosed(farShort, reason) }
+        override fun onProviderIntroduced(sellerShort: String, pricePerMb: Int, flags: Int) {
+            main.post {
+                val want = buyerWanted
+                if (want != null && want == wifi.linkedPeer && tunnel.session == null && tunnel.contract == null) {
+                    if (pricePerMb != buyPrice) DiagLog.w(tag, "relay's seller price " + pricePerMb + " differs from the advertised " + buyPrice + " CFA/MB: proposing the advertised price")
+                    DiagLog.i(tag, "relay prok-" + want + " introduced seller prok-" + sellerShort + ": proposing the contract end to end")
+                    tunnel.start(buyPrice)
+                }
+            }
+        }
+        override fun onChanged() { main.post { refreshAdvert(); pushStatus() } }
+    })
+
+    /** Seller side: to the buyer on my link, or sealed for the buyer behind my relay. */
+    private fun sendFromGateway(type: Int, streamId: Int, data: ByteArray): Boolean {
+        val rb = relay.relayedBuyer
+        val target = gateway.buyerShort ?: gateway.contract?.buyerShort ?: rb
+        return if (rb != null && target == rb) sendSealed(rb, type, streamId, data) else wifi.sendTunnel(type, streamId, data)
+    }
+
+    /** Buyer side: to the seller on my link, or sealed for the seller behind my relay. */
+    private fun sendFromTunnel(type: Int, streamId: Int, data: ByteArray): Boolean {
+        val p = relay.providerShort
+        return if (p != null) sendSealed(p, type, streamId, data) else wifi.sendTunnel(type, streamId, data)
+    }
+
+    /** The seller the buyer talks to: the one behind a relay if introduced, else the link peer. */
+    private fun buyerFarEnd(): String? = relay.providerShort ?: wifi.linkedPeer
+
+    /** Seal a tunnel frame for [farShort] and send it on MY link (to the relay). */
+    private fun sendSealed(farShort: String, type: Int, streamId: Int, data: ByteArray): Boolean {
+        val bytes = relay.seal(farShort, type, streamId, data) ?: return false
+        return wifi.sendRaw(Wire.FRAME_RELAY, bytes)
+    }
+
+    /** Where an incoming tunnel frame goes (plain from the link, or opened from a relay envelope). */
+    private fun routeTunnelFrame(peerShort: String, frame: Tunnel.Frame, how: String) {
+        when (Tunnel.route(frame.type, gateway.providing)) {
+            Tunnel.Side.GATEWAY -> gateway.onFrame(peerShort, frame)
+            Tunnel.Side.CLIENT -> tunnel.onFrame(peerShort, frame)
+            Tunnel.Side.MISDIRECTED -> DiagLog.w(tag, "tunnel frame " + Tunnel.typeName(frame.type) + " from prok-" + peerShort + " (" + how + ") ignored: wrong direction for my role (" + (if (gateway.providing) "seller" else "buyer") + ")")
+        }
+    }
+
+    /** B: relay mode on/off. A relay neither sells nor buys on its own. */
+    fun setRelayMode(on: Boolean): String? {
+        if (on && (gateway.providing || tunnel.session != null || buyerWanted != null)) return "stop selling / buying first"
+        relay.setRelayMode(on)
+        return null
+    }
+
+    /** B: bring the upstream link to the seller [peer] up (we join its hotspot; our normal link stays free to host a buyer). */
+    fun linkUpstream(peer: Peer): Boolean {
+        if (!isRunning) return false
+        if (!hasKey(peer.shortId)) { DiagLog.e(tag, "upstream link needs prok-" + peer.shortId + "'s key first"); if (peer.inRange) fetchKey(peer.shortId); return false }
+        if (wifi.linkedPeer == peer.shortId) { DiagLog.w(tag, "prok-" + peer.shortId + " is already on my normal link; the upstream link must be a different phone"); return false }
+        DiagLog.i(tag, "UPSTREAM LINK requested to prok-" + peer.shortId + " (client-only second Wi-Fi link)")
+        return wifiUp.requestLink(peer.shortId)
+    }
+
+    fun dropUpstream() { wifiUp.disconnect("dropped by user") }
+
     @Volatile private var buyPrice = 0
 
     /** Offers visible right now, best first. */
@@ -121,6 +204,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     /** Advertise SELL/RELAY/upstream/price in the BLE scan response. */
     fun refreshAdvert() {
+        val ro = relay.lastUpstreamOffer
+        if (relay.upstreamReady && ro != null) {
+            ble.setCapabilities(Market.flags(sell = true, relay = relayOn, validated = ro.validated, upstreamType = ro.upstreamType, viaRelay = true), ro.pricePerMb)
+            return
+        }
         val up = gateway.upstream
         val flags = Market.flags(sell = gateway.providing && up != null, relay = relayOn, validated = up?.validated == true, upstreamType = Tunnel.upstreamType(up))
         ble.setCapabilities(flags, if (gateway.providing) sellPrice else 0)
@@ -131,6 +219,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (on) {
             if (!Market.validPrice(price) || !Market.validMinPrice(minPrice) || !Market.validMaxMb(maxMb)) return "invalid terms"
             if (tunnel.session != null || buyerWanted != null) return "stop buying first"
+            if (relay.relayMode) return "relay mode is on"
             sellPrice = price; sellMinPrice = minPrice; sellMaxMb = maxMb
             gateway.start()
         } else gateway.stop()
@@ -144,12 +233,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
     fun buy(peer: Peer): Boolean {
         if (!isRunning) return false
         if (gateway.providing) { DiagLog.w(tag, "cannot BUY while SELL is on: stop selling first"); return false }
+        if (relay.relayMode) { DiagLog.w(tag, "cannot BUY in relay mode"); return false }
         val offer = peer.offer()
         if (!offer.selling) { DiagLog.w(tag, "prok-" + peer.shortId + " is not selling Internet right now"); return false }
         buyPrice = offer.pricePerMb
         buyerWanted = peer.shortId
-        DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + ", signal " + Market.signalWord(offer.rssi) + ")")
-        if (wifi.canReach(peer.shortId)) return tunnel.start(buyPrice)
+        buyViaRelay = offer.viaRelay
+        DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
+        if (wifi.canReach(peer.shortId)) return if (offer.viaRelay) awaitIntroduction(peer.shortId) else tunnel.start(buyPrice)
         return requestWifi(peer)
     }
 
@@ -167,18 +258,33 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile var vpnRequested: (() -> Unit)? = null
     @Volatile var buyerWanted: String? = null
         private set
+    @Volatile private var buyViaRelay = false
+
+    /** A: the link to the relay is up; the relay must now introduce its seller (or we give up). */
+    private fun awaitIntroduction(relayShort: String): Boolean {
+        val p = relay.providerShort
+        if (p != null) { tunnel.start(buyPrice); return true }
+        DiagLog.i(tag, "link up with relay prok-" + relayShort + ": waiting for it to introduce its seller")
+        main.postDelayed({ if (buyerWanted == relayShort && relay.providerShort == null && tunnel.contract == null) { DiagLog.w(tag, "relay prok-" + relayShort + " did not introduce a seller within 20 s"); stopInternet("relay did not introduce its seller") } }, 20_000)
+        return true
+    }
     @Volatile var lastInternetTest: String = ""
 
     private val tunnelSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {
-        override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) {
-            // v0.7.1: routed by frame direction and role only (a CONTRACT_PROPOSE arrives before any buyer is known).
-            when (Tunnel.route(frame.type, gateway.providing)) {
-                Tunnel.Side.GATEWAY -> gateway.onFrame(peerShort, frame)
-                Tunnel.Side.CLIENT -> tunnel.onFrame(peerShort, frame)
-                Tunnel.Side.MISDIRECTED -> DiagLog.w(tag, "tunnel frame " + Tunnel.typeName(frame.type) + " from prok-" + peerShort + " ignored: wrong direction for my role (" + (if (gateway.providing) "seller" else "buyer") + ")")
-            }
+        // v0.7.1: routed by frame direction and role only (a CONTRACT_PROPOSE arrives before any buyer is known).
+        override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) = routeTunnelFrame(peerShort, frame, "plain on link")
+        override fun onLinkClosed(peerShort: String, reason: String) {
+            gateway.onLinkClosed(peerShort, reason); tunnel.onLinkClosed(peerShort, reason)
+            // v0.9: the far end behind this relay is unreachable too
+            relay.onLinkToRelayClosed()?.let { far -> gateway.onLinkClosed(far, "link to relay closed: " + reason); tunnel.onLinkClosed(far, "link to relay closed: " + reason) }
+            relay.onLinksChanged()
         }
-        override fun onLinkClosed(peerShort: String, reason: String) { gateway.onLinkClosed(peerShort, reason); tunnel.onLinkClosed(peerShort, reason) }
+        override fun onRawFrame(peerShort: String, type: Int, payload: ByteArray) = relay.onRawFrame(Relay.Side.DOWN, peerShort, type, payload)
+    }
+    private val upSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {
+        override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) { DiagLog.w(tag, "plain tunnel frame " + Tunnel.typeName(frame.type) + " on the UPSTREAM link from prok-" + peerShort + " ignored") }
+        override fun onLinkClosed(peerShort: String, reason: String) { relay.onLinksChanged() }
+        override fun onRawFrame(peerShort: String, type: Int, payload: ByteArray) = relay.onRawFrame(Relay.Side.UP, peerShort, type, payload)
     }
 
     /** v0.6 compatibility: provider on/off = SELL with the stored terms. */
@@ -190,7 +296,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
-        buyerWanted = null
+        buyerWanted = null; buyViaRelay = false
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
         pushStatus()
@@ -216,6 +322,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val bleOk = ble.start(this)
         wifi.tunnelSink = tunnelSink
         wifi.start(this)
+        wifiUp.tunnelSink = upSink
+        wifiUp.start(this)
         main.postDelayed({ refreshAdvert() }, 1500)
         isRunning = true
         queue.start()
@@ -234,6 +342,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         gateway.stop()
         engine.stop()
         queue.stop()
+        relay.reset()
+        wifiUp.stop()
         wifi.stop()
         ble.stop()
         isRunning = false
@@ -280,6 +390,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         lastVisibleIds = ids
         main.post {
             listener.onPeers(this.peers())
+            if (relay.relayMode) relay.onLinksChanged()
             for (p in appeared) {
                 queue.onPeerAppeared(p)
                 engine.onPeerSeen(p.shortId)
@@ -321,9 +432,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // Buyer waiting for the link: start the session as soon as the authenticated link is up.
             val want = buyerWanted
             if (transport == Routing.TRANSPORT_WIFI && want != null && wifi.canReach(want) && tunnel.session == null && tunnel.contract == null && tunnel.state != "CONNECTING" && tunnel.state != "AGREEING") {
-                DiagLog.i(tag, "Wi-Fi link up with prok-" + want + ": proposing the contract")
-                tunnel.start(buyPrice)
+                if (buyViaRelay) awaitIntroduction(want)
+                else { DiagLog.i(tag, "Wi-Fi link up with prok-" + want + ": proposing the contract"); tunnel.start(buyPrice) }
             }
+            relay.onLinksChanged()
         }
     }
 
@@ -432,7 +544,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (signed.kind == Signed.KIND_CONTROL) {
                 if (verified != 1) { DiagLog.w(tag, "control message from prok-" + pkt.originShort + " ignored: sender key unknown"); return Routing.RECEIPT_REJECTED }
                 DiagLog.i(tag, "CONTROL from prok-" + pkt.originShort + " over " + transport + " (" + signed.body.size + " bytes, signature verified)")
-                wifi.onControl(pkt.originShort, signed.body)
+                dispatchControl(pkt.originShort, signed.body)
                 return Routing.RECEIPT_ACCEPTED
             }
             if (signed.kind != Signed.KIND_TEXT) { DiagLog.w(tag, "msg=" + pkt.msgIdHex + ": unknown kind " + signed.kind); return Routing.RECEIPT_REJECTED }
@@ -455,6 +567,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
         return Routing.RECEIPT_ACCEPTED
     }
 
+    /** v0.9: two Wi-Fi instances share one control channel; an offer goes to the instance that asked for it. */
+    private fun dispatchControl(peerShort: String, body: ByteArray) {
+        val c = Wire.parseControl(body)
+        val upWants = wifiUp.state.peer == peerShort && !wifiUp.state.isIdle
+        when {
+            c is Wire.Control.WifiRequest -> wifi.onControl(peerShort, body)
+            upWants -> wifiUp.onControl(peerShort, body)
+            else -> wifi.onControl(peerShort, body)
+        }
+    }
+
     // ---- status ----------------------------------------------------------------------------------------
 
     fun statusLine(extra: String? = null): String {
@@ -465,6 +588,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val sb = StringBuilder(bt)
         sb.append(" | ble: ").append(ble.linkState())
         sb.append(" | wifi: ").append(wifi.phase).append(wifi.linkedPeer?.let { " prok-" + it } ?: "")
+        if (wifiUp.phase != "IDLE") sb.append(" | up: ").append(wifiUp.phase).append(wifiUp.linkedPeer?.let { " prok-" + it } ?: "")
+        if (relay.relayMode || relay.providerShort != null || relay.relayedBuyer != null) sb.append(" | ").append(relay.stateLine())
         sb.append(" | keys ").append(store.peerKeyCount())
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
         if (relayOn) sb.append(" | RELAY on")

@@ -106,6 +106,7 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnRelay).setOnClickListener { node.setRelay(!node.relayOn); toast("RELAY " + (if (node.relayOn) "on" else "off")); refreshInternetLine() }
         findViewById<Button>(R.id.btnLedger).setOnClickListener { ledgerDialog() }
         findViewById<Button>(R.id.btnHistory).setOnClickListener { historyDialog() }
+        findViewById<Button>(R.id.btnRelayLab).setOnClickListener { startActivity(Intent(this, RelayLabActivity::class.java)) }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         node.vpnRequested = { startVpnWithConsent() }
@@ -535,6 +536,7 @@ class LabActivity : Activity(), ProkNetNode.Listener {
             " | seller " + (node.gateway.session?.let { Market.mb(it.bytesUp + it.bytesDown) } ?: "-") + " running " + Market.cfa(node.gateway.runningCost()) + " agreed " + Market.cfa(node.gateway.agreedCost()) + " cp#" + (node.gateway.lastSigned?.seq ?: 0) + "\n" +
             "ledger: balance " + Market.cfa(node.balance()) + ", entries " + node.store.ledger(5).joinToString("; ") { it.describe() } + "\n" +
             "relay activity: " + node.store.relayStats().let { it.first.toString() + " packets forwarded, " + it.second + " B" } + "\n" +
+            "live relay: " + node.relay.stateLine() + " | up link " + node.wifiUp.linkState() + "\n" +
             "provider: " + node.gateway.state + ", upstream " + node.gateway.upstreamDescription() + ", streams " + node.gateway.activeStreams() + " [" + node.gateway.streamSummary() + "]\n" +
             "buyer: " + node.tunnel.state + ", vpn " + ProkVpnService.running + ", flows " + node.tunnel.activeFlows() + " [" + node.tunnel.flowSummary() + "], dns " + node.tunnel.dnsCount + ", last error: " + node.tunnel.lastError + "\n" +
             (node.tunnel.session ?: node.gateway.session)?.let { "session: " + it.summary() + "\n" }.orEmpty() +

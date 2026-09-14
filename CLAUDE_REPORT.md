@@ -1,110 +1,170 @@
-# CLAUDE_REPORT - ProkNet v0.8.0 "Consumer product UI"
+# CLAUDE_REPORT - ProkNet v0.9.0 "Coverage engine foundation + 3-phone relay feasibility"
 
-Date: 2026-09-13
+Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 87/87 automated tests pass, released, NOT yet tested on phones**
+Status: **built, 100/100 automated tests pass, released. Live relay on real
+phones: NOT PROVEN (needs Mike's 3-phone test).**
 
-v0.7.1 phone result (before this milestone): PASSED. Mutually signed
-settlement on both phones, session b33fedf4, checkpoint #5, 11.47 MB ->
-57.35 CFA, fee 2.87, seller net 54.48, the unsigned #6 ignored on both.
+## 1. Honest summary
 
-## 1. What v0.8 is
+- Part A (pure coverage engine): implemented and tested on synthetic zones.
+- Part B (3-phone live relay): the full path is implemented (second Wi-Fi
+  link on the relay, end-to-end sealed frames, introductions, forwarding,
+  counters, probe, COPY RELAY DIAG). Whether a phone can hold the upstream
+  Wi-Fi client connection and its own local-only hotspot at the same time
+  is unknown until the test. Nothing in this build fakes it: if the
+  hotspot cannot start while joined, the log says so and the diag shows it.
+- Part C (source discovery): Wi-Fi scan + local trust classification in
+  the Relay Lab. No passwords, no auto-connect, no upload.
+- v0.8 consumer UI unchanged apart from two lines: a relayed offer card
+  says "through another phone", and Home uses the coverage words.
 
-A consumer screen on top of the unchanged v0.7.1 engine. Not one line of
-the BLE, Wi-Fi, crypto, tunnel, VPN, gateway or marketplace code changed;
-the diff is `ui/`, `res/`, one new pure file `core/ProductState.kt`, its
-test, the manifest (theme + LabActivity) and the version.
+## 2. Part A - core/Coverage.kt (pure, 9 tests)
 
-## 2. Screens (bottom navigation: Home / Internet / Earn / Activity / Profile)
+Concepts as specified: InternetSource (type, Trust class, cost/MB,
+reliability), RadioObservation -> CandidateLink, CoverageNode (all the
+fields listed in the spec), DemandRequest (COMMERCIAL / SPONSORED /
+GROWTH_SUBSIDY with budget), CoverageJob (PROVIDE / RELAY / MOVE /
+ACTIVATE), CandidateRoute, RouteScore, CoverageZone GREEN / YELLOW / RED.
 
-- **Home**: Prok mark and name, On/Off chip, connection card (buyer or
-  seller state in plain words), Nearby (people in range) and Internet
-  offers counters, session cost while buying or earnings while sharing, two
-  big actions GET INTERNET / SHARE INTERNET.
-- **Internet, Get Internet**: offer cards "Internet available · <name> /
-  5 CFA / MB / Good signal · Mobile data · Checked" from `node.offers()`
-  (engine ranking). Tap -> confirmation (price, minimum, limit, signal,
-  upstream, fee) -> CONNECT. Then the engine runs Wi-Fi link -> contract ->
-  tunnel -> VPN by itself and the screen shows "Finding provider…" ->
-  "Connecting…" -> "Securing connection…" -> "Starting Internet…" ->
-  "Connected", with a hint line for the two Android dialogs. Active view:
-  Data used, Cost so far, price · duration · via <name>, STOP.
-- **Internet, Share Internet**: price per MB, minimum charge, max data per
-  customer, START SHARING. Active view: "You're sharing Internet / Available
-  to people nearby" or "Someone is using your Internet", terms line, Data
-  shared, Earned, customer line, STOP SHARING.
-- **Earn**: total earned (received minus Prok fees, from the ledger),
-  sessions shared, "Help ProkNet - Let your phone help nearby users when
-  possible" switch (= RELAY) with what it has carried so far.
-- **Activity**: To pay / To receive / Prok fees as an accounting view ("Prok
-  does not hold your money"), then session cards (who, date, data, cost,
-  payment word). Tap: date/time, data, duration, price, final cost, Prok fee
-  (seller), payment status; MARK AS PAID / RECEIVED / DISPUTE when pending.
-  No hashes, signatures or IDs.
-- **Profile**: name (change), own short Prok ID, "Keep Prok running" switch,
-  background-battery permission, **Developer / Diagnostics -> Open developer
-  screen** = the complete v0.7.1 lab screen (`LabActivity`, same layout and
-  code, class renamed): Start/Stop, Wi-Fi link, Big test, Send file,
-  BUY/SELL/RELAY, Ledger, History, dev provide/use/Net test, peers with
-  IDs, raw state, log, COPY LOG, COPY DIAG.
+Planner: enumerate paths buyer -> relays -> usable provider (max 3
+relays), fundable providers with an ACTIVATE job, and mover routes where a
+link is missing. Score = delivered cost + failure penalty + delay penalty +
+movement cost + resource penalty, every weight in one `Coverage.Policy`
+object. Preferences from the spec are all in the score: stable and
+charging phones (bonus), reliable links (pFail), phones already in
+position (in-position bonus vs movement cost), couriers heading to the
+zone (movement discount), free/cheap sources (delivered cost).
 
-Light and dark themes (`values-night`). Cards, chips, 56 dp primary
-buttons, five vector icons, no AndroidX.
+Economic ceiling: COMMERCIAL rejects jobs > revenue with the reason
+"exceeds commercial ceiling: jobs 60.00 CFA > 50.00 CFA"; SPONSORED
+against the sponsor budget; GROWTH_SUBSIDY computes the explicit
+`subsidyNeeded` and rejects above budget.
 
-## 3. The one translation layer
+Tests (CoverageTest) prove exactly the eight decisions you listed plus
+zone colouring and observation -> link quality:
+free nearby Wi-Fi beats a paid 2-relay path; one reliable direct mobile
+provider beats a cheap 3-relay chain with 0.5-quality links (chain pFail
+> 90 %); a passive relay in position beats a mover; a mover is chosen when
+it is the only way and jobs (11 CFA) fit revenue (50 CFA), rejected at 61
+CFA, a courier pays half; COMMERCIAL rejects the 60 CFA-of-jobs route that
+GROWTH_SUBSIDY with 15 CFA budget approves (subsidy 10 CFA) and rejects
+with 5 CFA; UNKNOWN / CAPTIVE / NOT_ALLOWED are never redistributable and
+such a provider is not even a candidate; ranking identical for six
+shuffled input orders with reversed link directions.
 
-`core/ProductState` (pure, 4 tests): engine inputs -> `Buyer` /
-`Seller` states -> titles and hints; `cfaShort` ("57 CFA"), `data`
-("11.5 MB"), `duration`, `signalWord`, `upstreamWord`, price / minimum /
-limit lines, payment words, `wallet()` (to pay / to receive / Prok fees over
-pending ledger entries). The test walks the whole buyer setup from IDLE to
-ONLINE and LOST through the real phase / state strings, and asserts that no
-seller title or hint contains "upstream", "gateway" or "provider ready".
-`MainActivity` never formats an engine state itself.
+Simulated only: no real city, no GPS, no dispatch. Consumer abstraction
+added: `ProductState.coverageWord` = "Internet available / Internet can be
+arranged / No connection available yet" (tested to contain no colour or
+"relay" word).
 
-## 4. Start-up without a Start button
+## 3. Part B - live relay
 
-If every permission is already granted and Bluetooth is on, opening the app
-starts the foreground service. Otherwise the first GET INTERNET / SHARE
-INTERNET / "Keep Prok running" walks the same permission -> notification ->
-Bluetooth flow as the lab screen, then performs the tapped action. VPN
-consent is requested by whichever screen is in front (both set
-`node.vpnRequested` in onStart).
+### 3.1 Design (what the phones will run)
+
+```
+A (buyer)                 B (relay)                          C (seller)
+data OFF                  data OFF                           data ON
+tunnel client  --sealed-->  wifi (host, DOWN link)
+               link A-B     |  RelayNode: forward, count
+                            wifiUp (client, UP link) --sealed--> gateway -> Internet
+```
+
+- `WifiTransport` gained a name and a `mayHost` flag. The node runs two
+  instances: `wifi` (unchanged behaviour, hosts A) and `wifiUp`
+  (client-only, joins C's hotspot via WifiNetworkSpecifier). Both use the
+  same BLE control channel; `dispatchControl` gives a WIFI_OFFER to the
+  instance that requested it. Upstream socket = granted Network's socket
+  factory; downstream = server socket on the hotspot. Nothing relies on
+  the default network.
+- `core/Relay.kt` (pure, 3 tests): FRAME_RELAY = [ver][origin 4][nonce
+  12][AES-GCM(tunnel frame)], key = HKDF(static ECDH(A, C), both ids),
+  aad = ver + origin. FRAME_RELAY_INFO = introductions with self-certifying
+  identity records (a relay cannot invent a seller: a forged record is
+  refused, tested). B never holds the key (tested: B's key does not open
+  the frame; tampering with ciphertext or the clear origin fails).
+- `node/RelayNode.kt`: B forwards between links and counts (Relay.Session:
+  id, up peer, down peer, bytes and frames each direction, duration,
+  reason; in memory, log and diag). A: after the introduction the existing
+  TunnelClient proposes the contract to C with every frame sealed. C: the
+  existing Gateway handles A's frames as if A were on the link
+  (`Gateway.Hooks.peerFullId(short)` instead of the link peer), so C's
+  contract, checkpoints, ledger and history name A. Keepalives, checkpoints,
+  settlement: unchanged protocol, just sealed.
+- B advertises `SELL | VIA_RELAY` at C's price when its upstream is up and
+  C is selling; A's consumer card shows "through another phone". A buying
+  a relayed offer waits (20 s max) for B's introduction before proposing.
+- Direction/role routing from v0.7.1 still gates every frame
+  (TunnelRoutingTest unchanged, still 17 types).
+
+### 3.2 Capability probe (Developer -> Relay Lab)
+
+Reports device, Android/API, isStaApConcurrencySupported,
+isStaConcurrencyForLocalOnlyConnectionsSupported, multi-Internet and
+bridged-AP concurrency, Wi-Fi Direct / Aware features, bands, WPA3; every
+Network (transports, INTERNET/validated, iface, addresses, DNS, default);
+IPv4 interfaces; both links with socket binding ("client socket a:b ->
+c:d (bound to network N)", "host socket ... (accepted on hotspot SSID)");
+last hotspot error; relay counters and history. COPY RELAY DIAG = all of
+it + last 80 log lines.
+
+### 3.3 What can go wrong, and how it will show
+
+- B's hotspot refuses while joined: `hotspot failed, reason 2
+  (incompatible mode ...)` in the log, `last hotspot error` in the diag.
+- Android drops the upstream when the hotspot starts:
+  `requestNetwork.onLost` on B, `UP: DOWN ...`.
+- Either way the Relay Lab keeps working and the diag records it. Section
+  18 of TESTING.md asks Mike to try both orders (upstream first, hotspot
+  first).
+
+If the topology fails, the Android-native alternative to investigate next
+is Wi-Fi Direct group owner + STA (widely supported concurrently); the
+probe already reports the P2P feature. Not built, as instructed.
+
+## 4. Part C - source discovery
+
+Relay Lab -> SCAN WI-FI: SSID, BSSID, dBm, security (from capabilities:
+open / WEP / WPA / WPA2 / WPA3), time; tap to classify locally
+(authorized / public-open / captive / unknown / do not use; stored per
+BSSID in app-private prefs). "shareable" appears only for the two
+redistributable classes. No passwords, no connection attempts, no upload.
 
 ## 5. Tests and build
 
-87 tests (`ProductStateTest` 4 new), all green, APK gated. Build 12,
-versionName 0.8.0, label "Prok", 1.1 MB,
-SHA256 `55cef51f392b46044e5027a9c91d2e266dc9b9a1776bdcfae80062f9cec31721`.
+100 tests: 87 from v0.8 + CoverageTest 9 + RelayTest 3 + ProductStateTest
++1 (coverage words). All green, APK gated. Build 13, versionName 0.9.0,
+1.16 MB, SHA256
+`299e2620358548bdf1c5565ed4f150c910305269b4393947a2385b540e274923`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.8.0
-Commit `a6b8fd609d9e6ec953e0e80e2738dee0ebe08d2d` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.0
+Commit `CODE_COMMIT` on `main`; this report on top.
 
 ## 6. Preserved
 
-Everything: same package, same database, same identity and keys, same
-notification, same protocol. A v0.7.1 phone and a v0.8.0 phone
-interoperate. The lab screen is byte-for-byte the v0.7.1 screen apart from
-the class name and layout name.
+Direct buy/sell (v0.7.1 path) is untouched: when no relay is involved,
+`relay.providerShort` / `relayedBuyer` are null and every send goes through
+`wifi.sendTunnel` exactly as before. Same database, identity, packages.
+v0.8 consumer screens unchanged except the two lines above.
 
-## 7. Decisions ChatGPT may want to change
+## 7. Status table
 
-- The confirmation screen shows "Minimum: 0 CFA" and "Limit: set by the
-  provider": the BLE advert carries only the price, the minimum and limit
-  arrive in the signed contract. Showing them before CONNECT would need one
-  more byte pair in the scan response (cheap, but a protocol change, so not
-  done in a UI milestone).
-- Home's "Nearby" counts every Prok phone in range, not only sellers.
-- After a lost connection the card stays with "Connection lost / Move
-  closer..." until the user taps Close; nothing reconnects by itself.
-- Earn's relay line shows carried messages; there is no relay reward yet,
-  the text says so.
+| Piece | Status |
+|---|---|
+| Coverage planner, zones, economic ceiling | Implemented, Simulated (JVM) |
+| Sealed relay frames, introductions | Implemented, tested on JVM |
+| Two Wi-Fi links on one phone | Implemented, hardware UNPROVEN |
+| A -> B -> C live browsing | Implemented, hardware UNPROVEN |
+| Relay counters, probe, COPY RELAY DIAG | Implemented |
+| Wi-Fi scan + trust classification | Implemented (local only) |
+| Citywide dispatch, relay rewards, source database | Future |
 
 ## 8. Retest
 
-`docs/TESTING.md` section 17 (consumer flow) with its checklist; section 15
-still describes the engine underneath.
+`docs/TESTING.md` section 18 with its checklist. The result Mike sends
+back decides whether v1.0 relay work continues on this topology or moves
+to Wi-Fi Direct.

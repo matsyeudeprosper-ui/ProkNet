@@ -117,6 +117,8 @@ object Wire {
     const val FRAME_HELLO = 3
     const val FRAME_AUTH = 4
     const val FRAME_TUNNEL = 5     // v0.6: [tunnel type][stream id][data], see core/Tunnel.kt
+    const val FRAME_RELAY = 6      // v0.9: end-to-end sealed tunnel frame forwarded by a relay, see core/Relay.kt
+    const val FRAME_RELAY_INFO = 7 // v0.9: relay introductions (who is behind me), see core/Relay.kt
     const val MAX_FRAME = 1 + 5 + 16 * 1024 + 64
     const val NONCE_LEN = 16
 

@@ -184,6 +184,26 @@ object Crypto {
     }
 
     fun randomBytes(n: Int): ByteArray = ByteArray(n).also { random.nextBytes(it) }
+
+    // ---- v0.9 relay: static-static agreement + raw AES-GCM ---------------------------------------
+
+    /** 32-byte key from ECDH(my private, peer public) and [info]; the peer derives the same with the roles swapped. */
+    fun agree(myPriv: PrivateKey, peerPubBytes: ByteArray, info: ByteArray): ByteArray = hkdf(ecdh(myPriv, publicKeyFrom(peerPubBytes)), info, 32)
+
+    fun gcmSeal(key: ByteArray, nonce: ByteArray, aad: ByteArray, plaintext: ByteArray): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
+        c.updateAAD(aad)
+        return c.doFinal(plaintext)
+    }
+
+    /** Null on any failure (wrong key, tampering, wrong aad). Never throws. */
+    fun gcmOpen(key: ByteArray, nonce: ByteArray, aad: ByteArray, ciphertext: ByteArray): ByteArray? = try {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
+        c.updateAAD(aad)
+        c.doFinal(ciphertext)
+    } catch (e: Exception) { null }
 }
 
 /**

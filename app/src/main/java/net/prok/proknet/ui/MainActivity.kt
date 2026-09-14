@@ -179,7 +179,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }
             else -> {
                 text(R.id.homeTitle, if (running) "Ready" else "Prok is off")
-                text(R.id.homeSub, if (!running) "Tap Get Internet or Share Internet to start" else if (offers.isEmpty()) "No Internet offers nearby yet" else offers.size.toString() + " Internet offer" + (if (offers.size > 1) "s" else "") + " nearby, from " + offers.minOf { it.pricePerMb } + " CFA / MB")
+                val coverage = ProductState.coverageWord(ProductState.coverageNow(offers.count { !it.viaRelay }, offers.count { it.viaRelay }))
+                text(R.id.homeSub, if (!running) "Tap Get Internet or Share Internet to start" else if (offers.isEmpty()) coverage else coverage + " · from " + offers.minOf { it.pricePerMb } + " CFA / MB")
                 money = ""
             }
         }
@@ -233,7 +234,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         for (o in offers) {
             val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(18), dp(16), dp(18), dp(16)) }
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
-            card.addView(TextView(this).apply { text = "Internet available · " + node.peerName(o.sellerShort); setTextAppearance(R.style.H2) })
+            card.addView(TextView(this).apply { text = "Internet available · " + node.peerName(o.sellerShort) + (if (o.viaRelay) " · through another phone" else ""); setTextAppearance(R.style.H2) })
             card.addView(TextView(this).apply { text = ProductState.priceLine(o.pricePerMb); setTextAppearance(R.style.Big) })
             card.addView(TextView(this).apply { text = ProductState.signalWord(o.rssi) + " · " + ProductState.upstreamWord(o.upstreamType) + (if (o.validated) " · Checked" else ""); setTextAppearance(R.style.Muted) })
             card.setOnClickListener { pendingOffer = o; refresh() }
