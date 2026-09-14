@@ -154,6 +154,15 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 
 Not here: Mobile Money, custody, automatic cashout, multi-hop Internet.
 
+## Open decision
+
+`docs/DECISION_WIFI_SHARING.md`: a seller phone connected to a Wi-Fi router
+often cannot create the hotspot a customer joins (Android
+`ERROR_NO_CHANNEL`, no app-side band control). Switching Wi-Fi off on the
+seller fixes it, but that would remove home / shop / public Wi-Fi from the
+coverage model. Three options, one recommendation, waiting for the
+architect.
+
 ## Build (on the VPS)
 
 Everything builds on the Windows VPS. No PC, no Android Studio.

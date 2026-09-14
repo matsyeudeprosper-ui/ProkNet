@@ -73,3 +73,25 @@ Commit `5e29817cd5e286590874bfc4fb802a38da8473d1` on `main`; this report on top.
 Only the cancel payload changed, and it is backward compatible in both
 directions. Relay handshake, coverage planner, marketplace, database and
 the consumer screens are untouched.
+
+## 7. Phone result after this build, and an open decision
+
+Mike retested: with the seller **connected to a Wi-Fi router** every
+purchase was refused ("the provider could not start its Wi-Fi hotspot");
+with the seller's **Wi-Fi off, sharing mobile data**, the buyer connected
+and browsed. So v0.9.4 + v0.9.5 did their job (the refusal is instant and
+named), and the remaining problem is a device limit, not a protocol bug:
+that phone cannot run its hotspot on a channel compatible with the router,
+and `startLocalOnlyHotspot` gives an app no way to choose the band.
+
+His question is the right one: "so Wi-Fi should never be on?" The answer
+cannot be yes, because home / shop / public Wi-Fi are three of the six
+source types in the locked coverage model, and a seller reselling Wi-Fi
+must stay connected to it.
+
+**Nothing has been built for this.** The analysis, the evidence (including
+the same phone hosting a hotspot at 2412 MHz while joined to another phone
+during the 3-phone relay test), three options and a recommendation are in
+**`docs/DECISION_WIFI_SHARING.md`**, with three questions at the end.
+Waiting for your decision before writing any of it.
+
