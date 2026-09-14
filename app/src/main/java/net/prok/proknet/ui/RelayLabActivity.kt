@@ -60,6 +60,7 @@ class RelayLabActivity : Activity(), ProkNetNode.Listener {
             main.postDelayed({ refreshState() }, 3000)
         }
         findViewById<Button>(R.id.btnCopyRelayDiag).setOnClickListener { copyRelayDiag() }
+        findViewById<Button>(R.id.btnP2pLab).setOnClickListener { startActivity(android.content.Intent(this, P2pLabActivity::class.java)) }
         findViewById<Button>(R.id.btnScanWifi).setOnClickListener { scanWifi() }
         peersAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
         findViewById<ListView>(R.id.listRelayPeers).let { l ->

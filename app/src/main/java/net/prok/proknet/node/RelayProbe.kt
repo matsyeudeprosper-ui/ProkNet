@@ -98,6 +98,7 @@ object RelayProbe {
         sb.append(node.shareCheck).append(" on ").append(net.prok.proknet.core.ShareCheck.describe(node.shareFreqMhz))
             .append(" [").append(node.shareNetworkKey).append("]")
             .append(if (node.shareDetail.isNotEmpty()) " - " + node.shareDetail else "").append("\n")
+        if (node.p2p.phase != "IDLE") sb.append(node.p2p.diag())
         sb.append("--- relay ---\n")
         sb.append(node.relay.stateLine()).append("\n")
         node.relay.session?.let { sb.append("current: ").append(it.summary()).append("\n") }

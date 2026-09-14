@@ -98,6 +98,19 @@ class LinkState {
         return Action.OPEN_SOCKET
     }
 
+    /**
+     * v0.9.7: a socket is already connected to a peer over another medium
+     * (Wi-Fi Direct). Skip the negotiation and go straight to the signed
+     * handshake; the peer is learned from the handshake itself.
+     */
+    fun adopt(asHost: Boolean, now: Long): Action {
+        if (!isIdle) return Action.NONE
+        role = if (asHost) Role.HOST else Role.INITIATOR
+        peer = null; lastError = ""
+        go(State.HANDSHAKE, now)
+        return Action.OPEN_SOCKET
+    }
+
     fun clientConnected(now: Long): Action {
         if (state != State.OFFERING) return Action.NONE
         go(State.HANDSHAKE, now)

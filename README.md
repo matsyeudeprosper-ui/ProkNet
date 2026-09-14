@@ -40,6 +40,7 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.4 | A phone asked to host ALWAYS answers: a stale or idle link is dropped for the new customer, a real refusal is sent back with its reason (busy / no hotspot), and a host that gives up tells the waiting phone | phone diag: works, the refusal arrives in 2 s; the provider cannot create its hotspot |
 | v0.9.5 | The refusal carries the provider's own Android error, so the buyer names the single thing to change; Location pre-check and one hotspot retry on the provider; an explicit refusal no longer starts a retry backoff | phone test: seller on Wi-Fi refused, same seller on mobile data works |
 | v0.9.6 | Sharing capability probe: a seller on Wi-Fi tests its own hotspot once per network before any customer, remembers the answer with the band, and the coverage engine stops planning Wi-Fi resale through that phone while keeping the network as an observed source | built, 114 JVM tests pass |
+| v0.9.7 | Wi-Fi Direct experiment (method B) behind the developer screens: form a P2P group while the seller stays on its home router, adopt the P2P socket into the existing authenticated link, COPY P2P DIAG. Method A untouched | built, 119 JVM tests pass; **not proven on phones** |
 
 ### v0.1 - what it does
 

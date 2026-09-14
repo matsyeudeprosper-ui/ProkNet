@@ -647,6 +647,28 @@ class WifiTransport(
         if (fsm.fail(reason, now()) == LinkState.Action.TEARDOWN) teardown(reason) else { setPhase("DOWN", reason) }
     }
 
+    /**
+     * v0.9.7: take a socket that some other medium already connected to a
+     * ProkNet peer (Wi-Fi Direct) and make it THE link: same signed
+     * handshake, same framing, same tunnel and accounting on top. Method A
+     * (hotspot) is untouched; this is how method B reuses everything.
+     */
+    fun adoptSocket(socket: Socket, isHost: Boolean, medium: String): Boolean {
+        if (!isRunning) { DiagLog.w(tag, "cannot adopt a " + medium + " socket: transport not running"); return false }
+        if (fsm.adopt(isHost, now()) != LinkState.Action.OPEN_SOCKET) {
+            DiagLog.w(tag, "cannot adopt a " + medium + " socket: busy (" + fsm.describe() + ")")
+            try { socket.close() } catch (_: Exception) {}
+            return false
+        }
+        setPhase("AUTH", medium + " socket connected (" + (if (isHost) "host" else "client") + "), signed handshake")
+        io.execute {
+            val l = Link(socket, isHost)
+            if (l.handshake()) main.post { linkUp(l) }
+            else { l.close(); main.post { fail(medium + " handshake failed") } }
+        }
+        return true
+    }
+
     /** v0.9: drop the current link / attempt on purpose. */
     fun disconnect(reason: String) { if (isRunning) main.post { if (!fsm.isIdle) teardown(reason) else { fsm.reset(now()); setPhase("IDLE", reason) } } }
 

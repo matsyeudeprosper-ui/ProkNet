@@ -746,6 +746,50 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Wi-Fi Direct experiment, method B (v0.9.7) - NOT PROVEN
+
+Phone evidence: a seller joined to a home router (Freebox) cannot create a
+LocalOnlyHotspot, so no buyer reaches it; the same seller with Wi-Fi off and
+mobile data on works. Selling home, shop or public Wi-Fi therefore needs a
+local link that can exist WHILE the seller stays joined to that router.
+
+```
+home router
+     |   the seller stays connected: this is what must survive
+seller phone
+     |   Wi-Fi Direct group
+buyer phone
+```
+
+- **Method A stays the only path the consumer app uses.** Method B lives in
+  a developer screen (Relay Lab -> WI-FI DIRECT LAB) and changes nothing
+  else.
+- `core/P2pPlan` (pure): `role(groupFormed, isGroupOwner)`,
+  `socketTarget` (the group owner listens, the client dials it, whichever
+  way Android decided), `ready`, `verdict` (NO_GROUP /
+  GROUP_BUT_STA_LOST / LINK_FAILED / LINK_UP_STA_KEPT) and
+  `isLocalLinkIface` so a `p2p*` interface can never be chosen as an
+  upstream. Its own port, 47742, so both methods can listen at once.
+- `transport/P2pLink` (Android): `WifiP2pManager` discovery, `createGroup`
+  on the seller, `connect` on the buyer, the four P2P broadcasts, group and
+  connection info, a server socket on the group owner and a dialling client
+  with retries. It records the phone's own Wi-Fi network **before and
+  after** the group forms, because a group that kills the STA connection is
+  a failure even if bytes flow.
+- **The data path is not new.** `P2pLink` only produces a connected socket;
+  `WifiTransport.adoptSocket(socket, isHost, medium)` then runs the same
+  signed handshake and the same framing, so the tunnel, the VPN, the
+  contract and the checkpoints above it are the existing code. In
+  `LinkState`, `adopt(asHost)` goes straight to HANDSHAKE from idle and is
+  refused while method A is busy.
+- Seller upstream safety: `Gateway` now marks any `p2p*` interface as a
+  local ProkNet link, so a customer's traffic can never be routed back into
+  the P2P group instead of out to the router.
+
+Success is only what the phones show: the seller still on the router, the
+buyer browsing through it. Until then this is an experiment, and
+`docs/TESTING.md` section 25 is how it is run.
+
 ## Can this phone resell its own Wi-Fi? (v0.9.6)
 
 A provider serves a customer through a local-only hotspot. On most chipsets

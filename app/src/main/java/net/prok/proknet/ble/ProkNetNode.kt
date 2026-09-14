@@ -31,7 +31,9 @@ import net.prok.proknet.transport.BleTransport
 import net.prok.proknet.transport.Frame
 import net.prok.proknet.transport.Transport
 import net.prok.proknet.transport.TransportListener
+import net.prok.proknet.transport.P2pLink
 import net.prok.proknet.transport.WifiTransport
+import net.prok.proknet.core.P2pPlan
 
 /**
  * One ProkNet node (v0.5) = cryptographic identity + store + transports
@@ -139,6 +141,39 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onChanged() { main.post { pushStatus() } }
     })
     /** Price the buyer saw in the scan when it pressed BUY (locks the proposal). */
+    /**
+     * v0.9.7 EXPERIMENT (developer screens only): a local link over Wi-Fi Direct, so a seller can
+     * serve a customer while it stays connected to its home router. The socket it produces is adopted
+     * by the normal Wi-Fi transport, so the signed handshake, the tunnel, the VPN and the accounting
+     * above it are exactly the same code as method A.
+     */
+    val p2p = P2pLink(context, object : P2pLink.Hooks {
+        override fun onSocket(socket: java.net.Socket, isHost: Boolean) {
+            DiagLog.i(tag, "Wi-Fi Direct produced a socket (" + (if (isHost) "group owner" else "client") + "): adopting it as the ProkNet link")
+            if (!wifi.adoptSocket(socket, isHost, "Wi-Fi Direct")) DiagLog.w(tag, "the Wi-Fi Direct socket could not be adopted")
+        }
+        override fun onChanged() { main.post { pushStatus() } }
+        override fun staDescription(): String = wifi.currentWifi()?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: ""
+    })
+
+    /** Developer test: this phone becomes the Wi-Fi Direct group owner and waits for a buyer. */
+    fun p2pSell(): String? {
+        if (!isRunning) return "start the node first"
+        val r = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
+        if (r != P2pPlan.Ready.OK) return P2pPlan.readyText(r)
+        return p2p.startSeller()
+    }
+
+    /** Developer test: look for a Wi-Fi Direct group to join. */
+    fun p2pBuy(): String? {
+        if (!isRunning) return "start the node first"
+        val r = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
+        if (r != P2pPlan.Ready.OK) return P2pPlan.readyText(r)
+        return p2p.startBuyer()
+    }
+
+    fun p2pStop() { p2p.stop(); if (wifi.linkedPeer != null) wifi.disconnect("Wi-Fi Direct test stopped") }
+
     // ---- v0.9.6: can this phone serve a customer while it stays on its own Wi-Fi network? ----
     private val capPrefs = context.getSharedPreferences("proknet_share_cap", Context.MODE_PRIVATE)
     @Volatile var shareCheck: ShareCheck.Result = ShareCheck.Result.UNKNOWN
@@ -545,6 +580,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     override fun onLinkState(transport: String, state: String) {
         linkStates[transport] = state
+        if (transport == Routing.TRANSPORT_WIFI) p2p.linkAuthenticated = wifi.linkedPeer != null
         main.post {
             pushStatus(); engine.onWifiChanged(); queue.onPeersChanged()
             // Buyer waiting for the link: start the session as soon as the authenticated link is up.

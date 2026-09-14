@@ -1,107 +1,112 @@
-# CLAUDE_REPORT - ProkNet v0.9.6 "can this phone resell its own Wi-Fi?"
+# CLAUDE_REPORT - ProkNet v0.9.7 "Wi-Fi Direct experiment (method B)"
 
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 114/114 automated tests pass, released, not yet tested on phones**
+Status: **built, 119/119 automated tests pass, released. The physics is NOT
+proven: no phone has run it yet. Home Wi-Fi resale is not solved.**
 
-Option B from `docs/DECISION_WIFI_SHARING.md`, approved with three
-clarifications, all implemented.
+## 1. What this is
 
-## 1. The probe
+A small proof, not a transport rewrite. Method A (LocalOnlyHotspot) is
+untouched and is still the only path the consumer app uses. Method B lives
+behind Profil -> developer screen -> Relay Lab -> **WI-FI DIRECT LAB**.
 
-`node/HotspotProbe` starts a local-only hotspot, closes it immediately and
-reports either "started" or the exact Android error. It runs:
+Target topology, which the phones must confirm:
 
-- when SELL is switched on, 1.2 s after the gateway has its upstream;
-- again whenever the upstream network changes under a seller;
-- on demand from Relay Lab -> **TEST SHARING** (forces a fresh run).
+```
+home router (Freebox)
+      |   seller stays connected: this is what must survive
+seller phone
+      |   Wi-Fi Direct group
+buyer phone  ->  Chrome loads sites
+```
 
-It never runs while a Wi-Fi link or a session is in use, and it is capped
-at 15 s in case Android never calls back.
+## 2. The data path is NOT new
 
-## 2. The rules, pure and tested (`core/ShareCheck`)
+`transport/P2pLink` only builds the pipe: discovery, group formation, and a
+connected TCP socket. That socket is then handed to
+`WifiTransport.adoptSocket(socket, isHost, medium)`, which runs **the same**
+signed HELLO/AUTH handshake, the same LinkIo framing and the same link
+object as method A. Everything above it is therefore unchanged: TunnelClient,
+Gateway, the VPN, the contract, the checkpoints and the ledger.
 
-- `needed(upstreamType)`: only a **Wi-Fi** upstream can clash with a
-  hotspot. A phone selling mobile data is never tested and is always
-  allowed to share.
-- `shouldProbe`: only when needed and this network has no remembered
-  answer.
-- `verdict(upstreamType, started)` -> NOT_NEEDED / CAN_SHARE / CANNOT_SHARE.
-- `canShareWhileOnWifi(result)` -> true / false / **null when never
-  tested**. Unknown is not a refusal; only a tested failure is.
-- `key(ssid, bssid)`: one answer **per network** (BSSID first, SSID as
-  fallback, "unknown" when Android redacts both). The same phone may manage
-  one router and not another.
-- `band` / `channel` / `isDfs` / `describe`: every result is recorded with
-  its frequency, e.g. "5 GHz DFS ch 60 (5300 MHz)".
+In `LinkState`, `adopt(asHost)` moves an idle machine straight to HANDSHAKE
+(the peer is learned from the handshake) and returns NONE while method A is
+busy, so the experiment can never interrupt a real session.
 
-Stored per network key in `proknet_share_cap` (verdict, Android own error
-text, frequency, timestamp), so the second time the answer is instant and
-no hotspot flashes.
+## 3. Group owner direction is not assumed
 
-## 3. The coverage engine
+`P2pPlan.role(groupFormed, isGroupOwner)` and `socketTarget(role,
+groupOwnerAddress)`: whoever ends up group owner listens on port **47742**
+(its own port, so both methods can listen at once), the other dials it with
+six retries. The seller asks to be the owner (`createGroup`) and the buyer
+asks to be the client (`groupOwnerIntent = 0`), but if Android decides the
+other way round both sides still work.
 
-- `CoverageNode.canShareWhileOnWifi` (default true, false only after a
-  tested refusal) and `InternetSource.wifiBased` / `frequencyMhz` / `band`.
-- `Coverage.canDeliver(node)` now gates **every** place the planner picks a
-  provider: direct, through relays, fundable, and mover routes. `score`
-  refuses such a route with its own reason as a second line of defence.
-- **The source is not removed from the map.** `observedSources` keeps every
-  source seen, `deliverableSources` is the subset someone present can hand
-  over today, `blockedSources` gives the difference with a reason. A Wi-Fi
-  network that this phone cannot resell stays a candidate for a capable
-  phone later, exactly as asked.
+## 4. Keeping the home Wi-Fi is half the result
 
-## 4. What the user sees
+`P2pLink` records the phone's own Wi-Fi network **before** the group and
+**after** it, and `P2pPlan.verdict(...)` is explicit about it:
 
-One sentence, on the seller own sharing card, only for the phone and the
-network concerned:
+| verdict | meaning |
+|---|---|
+| NO_GROUP | no Wi-Fi Direct group formed |
+| GROUP_BUT_STA_LOST | group formed BUT the phone left its Wi-Fi network: useless for selling home Wi-Fi |
+| LINK_FAILED | group and home Wi-Fi kept, but the ProkNet link did not authenticate |
+| LINK_UP_STA_KEPT | the one we want |
 
-> Ce telephone ne peut pas partager ce reseau Wi-Fi. Vous pouvez partager
-> vos donnees mobiles a la place.
+Seller safety: `Gateway` now treats any `p2p*` interface as a local ProkNet
+link, so a customer's traffic can never be routed back into the P2P group
+instead of out to the router.
 
-While the test runs: "Verification du partage sur ce reseau Wi-Fi...".
-Sharing is **not** switched off, and there is no global advice to turn
-Wi-Fi off anywhere in the app.
+## 5. Diagnostics (COPY P2P DIAG)
 
-## 5. Tests (114, +6)
+isP2pSupported, Wi-Fi Direct enabled, phase, role, group ssid / owner /
+clients / interface, the socket line (local and remote address), every IPv4
+interface, the phone's Wi-Fi network before and now, whether the ProkNet
+link authenticated over P2P, the peer list, the verdict, the last Android
+error, plus the buyer/seller tunnel state, all networks and the last 100 log
+lines.
 
-New `ShareCheckTest` (4): only a Wi-Fi upstream is tested; the test runs
-once per network; unknown is not a refusal; the key is per network with the
-BSSID winning and a fallback when Android redacts it; bands and channels
-including DFS.
+## 6. Tests (119, +5)
 
-New in `CoverageTest` (2): **the decisive one** builds a phone that was
-tested and refused, and proves that no route is planned through it, that
-`canDeliver` is false, that the source is still in `observedSources` and
-named in `blockedSources` with a reason, that a capable phone in the same
-zone delivers the same source, that the same incapable phone still sells
-its mobile data, and that an untested phone is not blocked. The second
-checks that a source keeps its band.
+`P2pPlanTest`: both group-owner directions produce the right listener and
+dialler; the experiment is only attempted when the hardware, Wi-Fi and P2P
+are there; the four verdicts including GROUP_BUT_STA_LOST; a p2p interface
+is never an upstream (also checked through the real `Tunnel.chooseUpstream`);
+and the plumbing itself, where `adopt` goes to HANDSHAKE from idle and is
+refused while method A is negotiating.
 
-## 6. Build
+No regression: method A, the relay handshake, the coverage engine and the
+marketplace tests are unchanged and green.
 
-Build 19, versionName 0.9.6, 1.19 MB,
-SHA256 `069d4857ad9b5e84ad31c011bbae60c084ccecc0a5ad70f15580db0eca58cccc`.
+## 7. Build
+
+Build 20, versionName 0.9.7, 1.22 MB,
+SHA256 `eef95372e0f8f09e4ebb91f3cbe8aaba9dc78cd9c64d775a5adb81f9b5f476f0`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.6
-Commit `fccb6ed8ea27c3db47e11973ca139d6f5ff9a49c` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.7
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 7. Wi-Fi Direct
+## 8. What the phones must show
 
-Not implemented, as instructed. Documented as the next transport
-experiment in `docs/ARCHITECTURE.md` and in the decision record. The Relay
-Lab already reports whether each phone supports P2P, so the data to decide
-it will accumulate on its own.
+`docs/TESTING.md` section 25, two phones, both with mobile data OFF and the
+seller on the Freebox. The useful output is COPY P2P DIAG from both phones
+plus the verdict line.
 
-## 8. What the phone test should produce
+I will not claim home Wi-Fi resale works until that test passes. If the
+verdict comes back GROUP_BUT_STA_LOST on these phones, Wi-Fi Direct is the
+wrong answer for this hardware and the next candidate has to be decided,
+not assumed.
 
-`docs/TESTING.md` section 24. The useful output for you is the share-check
-line from COPY DIAG on each phone, which carries the verdict, the band, the
-channel and Android own error. That is the data that will show whether
-failures are all 5 GHz / DFS, and whether a 2.4 GHz network lets a seller
-share while staying on Wi-Fi.
+## 9. Note on the VPS
+
+The build disk fell under the 1 GB guard again. I cleared Gradle's derived
+`transforms-4` cache (431 MB, rebuilt automatically, no downloads) rather
+than touching the research data in the old session scratchpad. Free space is
+back to about 1.35 GB, and the Windows Update cache (8.6 GB) still needs an
+RDP session.

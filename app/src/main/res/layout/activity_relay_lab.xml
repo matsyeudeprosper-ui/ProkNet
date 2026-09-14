@@ -25,6 +25,8 @@
             <Button android:id="@+id/btnCopyRelayDiag" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="COPY RELAY DIAG" />
         </LinearLayout>
 
+        <Button android:id="@+id/btnP2pLab" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="WI-FI DIRECT LAB (experimental)" />
+
         <TextView android:id="@+id/txtRelayState" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:fontFamily="monospace" android:layout_marginTop="6dp" android:text="" />
 
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Peers (tap to select the upstream seller)" />

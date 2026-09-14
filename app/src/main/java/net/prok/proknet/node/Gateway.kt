@@ -101,7 +101,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
                 val lp = cm.getLinkProperties(n)
                 val iface = lp?.interfaceName ?: ""
                 val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                val isProk = wifi && (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) || iface.startsWith("ap") || iface.startsWith("swlan"))
+                // v0.9.7: p2p interfaces join the list of local-only links that can never be an upstream
+                val isProk = wifi && (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) || net.prok.proknet.core.P2pPlan.isLocalLinkIface(iface))
                 out.add(n to Tunnel.NetView(
                     n.toString() + "/" + iface, caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
                     caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED), caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR), wifi, isProk,

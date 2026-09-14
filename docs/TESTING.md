@@ -768,3 +768,45 @@ Both phones on 0.9.5.
   channel. This is the data that shows whether failures are all 5 GHz/DFS.
 - Did a 2.4 GHz network let the seller share while staying on Wi-Fi?
 - Any phone where the probe itself misbehaved (long flash, Wi-Fi dropped).
+
+## 25. v0.9.7 Wi-Fi Direct experiment (two phones)
+
+Both phones on 0.9.7. Nothing in the normal app changes; everything here is
+Profil -> Ouvrir l ecran developpeur -> Relay Lab -> WI-FI DIRECT LAB.
+
+Setup:
+- SELLER: connected to the home router (Freebox), **mobile data OFF**,
+  Prok running. Note the Wi-Fi network name shown at the top of the lab.
+- BUYER: **mobile data OFF**, Wi-Fi ON, Prok running.
+
+Run:
+1. SELLER: tap **P2P SELL TEST**. Expected: phase CREATING GROUP then
+   GROUP OWNER, a group line with an ssid and an interface (p2p-wlan0-0),
+   and - the whole point - "my Wi-Fi network now" still showing the
+   Freebox. If it changes to none, stop and report: that is the
+   GROUP_BUT_STA_LOST verdict.
+2. BUYER: tap **P2P BUY TEST**, wait for the seller in the peer list, tap
+   it. Approve any Android invitation. Expected: phase CLIENT, then a
+   socket line, then "ProkNet link: WIFI UP with prok-...".
+3. BUYER: tap **USE INTERNET**, approve the VPN prompt, then **NET TEST**.
+   Then open Chrome and load a site.
+4. SELLER: check that its own Wi-Fi network is STILL the Freebox and that
+   the seller line shows the buyer and bytes.
+5. Both phones: **COPY P2P DIAG** and send both.
+
+The verdict line at the bottom of the lab is what matters:
+- LINK_UP_STA_KEPT = the experiment succeeded.
+- GROUP_BUT_STA_LOST = Wi-Fi Direct killed the home connection: useless for
+  reselling home Wi-Fi on this phone.
+- NO_GROUP / LINK_FAILED = it did not get that far; the errors are in the
+  diag.
+
+### Checklist for the v0.9.7 report
+
+- The verdict on each phone, and who ended up group owner.
+- The seller's Wi-Fi network before and after the group formed.
+- The p2p interface name and IPs, and the socket line.
+- Did Chrome load pages on the buyer? Data and cost seen on the seller.
+- Any Android error text from either diag.
+
+Nothing about home Wi-Fi resale is claimed until this passes.
