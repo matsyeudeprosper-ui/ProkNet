@@ -158,6 +158,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     /** A seller cannot serve anybody without Wi-Fi and Location: Android needs both for the hotspot. */
     private fun sellerWarning(): String = when {
+        // v0.9.9: the hotspot is refused here but the direct link took over, so say nothing alarming
+        node.p2pFallbackActive -> getString(R.string.share_wifi_direct)
         // v0.9.6: tested on THIS network. Not a global rule, and mobile data still works.
         node.canShareWhileOnWifi() == false -> getString(R.string.share_wifi_impossible)
         node.shareCheck == net.prok.proknet.core.ShareCheck.Result.UNKNOWN && node.sellOn &&

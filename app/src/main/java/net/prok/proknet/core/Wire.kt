@@ -45,6 +45,8 @@ object Wire {
     const val OP_WIFI_REQUEST = 1
     const val OP_WIFI_OFFER = 2
     const val OP_WIFI_CANCEL = 3
+    /** v0.9.9: "invite me into your Wi-Fi Direct group", carrying this phone's P2P device name. */
+    const val OP_P2P_REQUEST = 4
 
     /** Hotspot security as reported by the host (v0.5.1). */
     const val SEC_UNKNOWN = 0
@@ -57,19 +59,26 @@ object Wire {
     const val CANCEL_GENERIC = 0
     const val CANCEL_NO_HOTSPOT = 1   // could not create the local-only hotspot (Wi-Fi / Location off, tethering...)
     const val CANCEL_BUSY = 2         // already linked to someone else and serving them
+    const val CANCEL_P2P = 3          // v0.9.9: could not bring the other phone into the Wi-Fi Direct group
 
-    fun cancelName(reason: Int) = when (reason) { CANCEL_NO_HOTSPOT -> "cannot create the hotspot"; CANCEL_BUSY -> "busy with another phone"; else -> "cancelled" }
+    fun cancelName(reason: Int) = when (reason) {
+        CANCEL_NO_HOTSPOT -> "cannot create the hotspot"; CANCEL_BUSY -> "busy with another phone"
+        CANCEL_P2P -> "cannot invite into the Wi-Fi Direct group"; else -> "cancelled"
+    }
 
     /** The wording the UI layer classifies (English, like every other engine string). */
     fun cancelReasonText(reason: Int) = when (reason) {
         CANCEL_NO_HOTSPOT -> "the provider could not start its Wi-Fi hotspot"
         CANCEL_BUSY -> "the provider is already serving another phone"
+        CANCEL_P2P -> "the provider could not invite this phone into its Wi-Fi Direct group"
         else -> "the provider stopped the connection attempt"
     }
 
     sealed class Control {
         class WifiRequest(val port: Int) : Control()
         class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
+        /** v0.9.9: buyer -> seller, "invite me into your group"; [deviceName] is this phone's P2P name. */
+        class P2pRequest(val deviceName: String) : Control()
         /**
          * [reason] is CANCEL_*; a v0.5..v0.9.3 peer sends no byte at all, which reads as CANCEL_GENERIC.
          * v0.9.5: [detail] is the host's own error text, so the waiting phone can show and log the REAL
@@ -94,6 +103,11 @@ object Wire {
     fun wifiRequest(port: Int): ByteArray = ByteBuffer.allocate(3).put(OP_WIFI_REQUEST.toByte()).putShort(port.toShort()).array()
     const val CANCEL_DETAIL_MAX = 120
 
+    fun p2pRequest(deviceName: String): ByteArray {
+        val n = deviceName.take(64).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(1 + n.size).put(OP_P2P_REQUEST.toByte()).put(n).array()
+    }
+
     fun wifiCancel(reason: Int = CANCEL_GENERIC, detail: String = ""): ByteArray {
         val d = detail.take(CANCEL_DETAIL_MAX).toByteArray(Charsets.UTF_8)
         return ByteBuffer.allocate(2 + d.size).put(OP_WIFI_CANCEL.toByte()).put(reason.toByte()).put(d).array()
@@ -116,6 +130,7 @@ object Wire {
             val b = ByteBuffer.wrap(body)
             when (b.get().toInt() and 0xFF) {
                 OP_WIFI_REQUEST -> Control.WifiRequest(b.short.toInt() and 0xFFFF)
+                OP_P2P_REQUEST -> Control.P2pRequest(if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
                 OP_WIFI_CANCEL -> {
                     val r = if (b.remaining() >= 1) b.get().toInt() and 0xFF else CANCEL_GENERIC
                     val d = if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else ""

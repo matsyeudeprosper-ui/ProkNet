@@ -63,6 +63,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private var receiver: BroadcastReceiver? = null
     private var server: ServerSocket? = null
     private var cleanupSeq = 0
+    @Volatile private var discovering = false
 
     // ---- what the lab screen reads: one source of truth ------------------------------------------
 
@@ -85,6 +86,15 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     @Volatile var p2pEnabled = true
         private set
     @Volatile var peers: List<Peer> = emptyList()
+        private set
+    /** v0.9.9: this phone's own Wi-Fi Direct name. Android hides its own MAC, the name is what the peer can match. */
+    @Volatile var myDeviceName: String = ""
+        private set
+    /** How many phones actually joined the group. The v0.9.8 run was stuck at 0. */
+    @Volatile var clientCount: Int = 0
+        private set
+    /** The last invitation this phone sent, and what Android answered. */
+    @Volatile var lastInvite: String = ""
         private set
 
     class Peer(val name: String, val address: String, val status: String, val isGroupOwner: Boolean) {
@@ -182,6 +192,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private fun closeSockets(): String {
+        stopDiscovering()
         val had = server != null
         try { server?.close() } catch (_: Exception) {}
         server = null
@@ -211,14 +222,18 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         return null
     }
 
-    /** Buyer: clean first (a stale group or listener would block discovery), then look for peers. */
+    /**
+     * Buyer / guest: clean first, then become discoverable and WAIT. Since
+     * v0.9.9 the guest does not call connect(): the owner invites it. The
+     * node still has a deliberate fallback ladder if no invitation arrives.
+     */
     fun startBuyer(): String? {
         if (!ensureChannel()) return lastError
         lastError = ""; linkAuthenticated = false
         staBefore = hooks.staDescription(); staAfter = staBefore
         DiagLog.i(tag, "BUY TEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
         life.start(P2pPlan.Want.BUY)
-        cleanup("before BUY") { discover() }
+        cleanup("before BUY") { keepDiscovering("guest waiting to be invited") }
         return null
     }
 
@@ -293,7 +308,14 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             }
             WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
             WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> refreshAll()
-            WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> changed()
+            WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+                val d = try { i.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE) } catch (e: Exception) { null }
+                if (d != null) {
+                    if (d.deviceName != null && d.deviceName != myDeviceName) DiagLog.i(tag, "this phone is \"" + d.deviceName + "\" on Wi-Fi Direct (its own MAC is hidden by Android)")
+                    myDeviceName = d.deviceName ?: myDeviceName
+                }
+                changed()
+            }
         }
     }
 
@@ -320,7 +342,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (life.cleaning) { DiagLog.i(tag, "group info ignored during cleanup"); return }
         if (g == null) return
         val iface = try { g.`interface` } catch (e: Exception) { null }
-        val info = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + (g.clientList?.size ?: 0) + " iface=" + (iface ?: "?")
+        clientCount = g.clientList?.size ?: 0
+        val info = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + clientCount + " iface=" + (iface ?: "?")
         life.onGroup(true, g.isGroupOwner, info)
         ifaceInfo = interfaces()
         DiagLog.i(tag, "group: " + info + " | interfaces: " + ifaceInfo)
@@ -338,7 +361,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (!formed) { changed(); return }
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
         when (life.role) {
-            P2pPlan.Role.GROUP_OWNER -> listen()
+            P2pPlan.Role.GROUP_OWNER -> { listen(); keepDiscovering("group owner waiting for a guest") }
             P2pPlan.Role.CLIENT -> {
                 val target = P2pPlan.socketTarget(life.role, go)
                 if (target == null) { fail("no group owner address"); return }
@@ -347,6 +370,61 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             P2pPlan.Role.NONE -> {}
         }
         changed()
+    }
+
+    /**
+     * v0.9.9: discovery has to stay alive on BOTH sides. The owner needs the
+     * guest in its peer list to invite it; the guest has to stay
+     * discoverable to be invited. Android stops discovery on its own after
+     * a couple of minutes, so it is re-issued while we are waiting.
+     */
+    private fun keepDiscovering(why: String) {
+        if (discovering) return
+        discovering = true
+        DiagLog.i(tag, "keeping Wi-Fi Direct discovery alive: " + why)
+        val r = object : Runnable {
+            override fun run() {
+                if (!discovering) return
+                discover()
+                main.postDelayed(this, 30_000)
+            }
+        }
+        main.post(r)
+    }
+
+    private fun stopDiscovering() { discovering = false }
+
+    /**
+     * v0.9.9, the fix the phone run pointed at: the phone that OWNS the group
+     * invites the guest. A phone that already owns a group cannot join
+     * another one, which is why the buyer's own connect() was accepted and
+     * then went nowhere.
+     */
+    fun invite(address: String, name: String): String? {
+        val m = manager; val c = channel
+        if (m == null || c == null) return "no p2p channel"
+        if (life.role != P2pPlan.Role.GROUP_OWNER) DiagLog.w(tag, "inviting although this phone is not the group owner (role " + life.role + ")")
+        val cfg = WifiP2pConfig().apply {
+            deviceAddress = address
+            wps.setup = WpsInfo.PBC
+            groupOwnerIntent = 15      // we own the group and keep it
+        }
+        lastInvite = "inviting " + name + " (" + address + ")"
+        DiagLog.i(tag, "INVITE: " + lastInvite)
+        changed()
+        return try {
+            m.connect(c, cfg, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { lastInvite = "invitation to " + name + " accepted by Android, waiting for it to join"; DiagLog.i(tag, lastInvite); changed() }
+                override fun onFailure(reason: Int) { lastInvite = "invitation to " + name + " REFUSED: " + reasonName(reason); DiagLog.e(tag, lastInvite); changed() }
+            })
+            null
+        } catch (e: SecurityException) { lastInvite = "permission: " + e.message; DiagLog.e(tag, lastInvite); lastInvite }
+    }
+
+    /** Find a discovered peer by the name it sent us over BLE. */
+    fun findPeer(name: String): Peer? {
+        val addr = P2pPlan.matchPeer(peers.map { P2pPlan.PeerRef(it.name, it.address) }, name) ?: return null
+        return peers.firstOrNull { it.address == addr }
     }
 
     // ---- sockets --------------------------------------------------------------------------------------
@@ -417,6 +495,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("Wi-Fi Direct enabled: ").append(p2pEnabled).append("\n")
         sb.append("state: ").append(v.describe()).append("\n")
         sb.append("clean (nothing left from a previous role): ").append(v.clean).append("\n")
+        sb.append("this phone on Wi-Fi Direct: \"").append(myDeviceName.ifEmpty { "?" }).append("\"\n")
+        sb.append("clients joined the group: ").append(clientCount).append("\n")
+        sb.append("last invitation: ").append(lastInvite.ifEmpty { "none" }).append("\n")
         sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")
         sb.append("my Wi-Fi network NOW: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")

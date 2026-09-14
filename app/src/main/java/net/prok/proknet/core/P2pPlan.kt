@@ -191,6 +191,62 @@ object P2pPlan {
         fun fail() { if (!cleaning) stage = Stage.FAILED }
     }
 
+    // ---- who invites whom (v0.9.9) ----------------------------------------------------------------
+
+    /**
+     * Phone evidence from v0.9.8: the seller's group forms, it stays on the
+     * Freebox, it sees the buyer in its peer list, but `clients` stays 0.
+     * The buyer taps, `connect()` is accepted, the seller turns "invited",
+     * and no group ever forms on the buyer.
+     *
+     * That is the wrong direction. A phone that already OWNS a group cannot
+     * join another one, so the invitation must travel the other way: the
+     * group owner invites the guest, and the guest only has to be
+     * discoverable and wait.
+     */
+    enum class Join { OWNER_INVITES, GUEST_WAITS }
+
+    fun joinRole(iOwnAGroup: Boolean): Join = if (iOwnAGroup) Join.OWNER_INVITES else Join.GUEST_WAITS
+
+    /** The guest never waits in silence: it asks again, then tries itself, then gives up with a reason. */
+    enum class GuestStep { WAIT, ASK_AGAIN, TRY_MYSELF, GIVE_UP }
+
+    const val INVITE_ASK_AGAIN_MS = 12_000L
+    const val INVITE_TRY_SELF_MS = 24_000L
+    const val INVITE_GIVE_UP_MS = 45_000L
+
+    fun guestStep(elapsedMs: Long, groupFormed: Boolean, ownerVisible: Boolean): GuestStep = when {
+        groupFormed -> GuestStep.WAIT                                   // we are in, nothing to do
+        elapsedMs >= INVITE_GIVE_UP_MS -> GuestStep.GIVE_UP
+        elapsedMs >= INVITE_TRY_SELF_MS && ownerVisible -> GuestStep.TRY_MYSELF
+        elapsedMs >= INVITE_ASK_AGAIN_MS -> GuestStep.ASK_AGAIN
+        else -> GuestStep.WAIT
+    }
+
+    fun guestStepText(s: GuestStep): String = when (s) {
+        GuestStep.WAIT -> "waiting for the provider to invite this phone"
+        GuestStep.ASK_AGAIN -> "asking the provider again"
+        GuestStep.TRY_MYSELF -> "the provider has not invited us: trying to join its group directly"
+        GuestStep.GIVE_UP -> "the provider could not bring this phone into its Wi-Fi Direct group"
+    }
+
+    /** One discovered Wi-Fi Direct peer, as the owner sees it. */
+    class PeerRef(val name: String, val address: String)
+
+    /**
+     * Android hides a phone's OWN Wi-Fi Direct MAC since Android 10, so a
+     * buyer cannot tell the seller its address; it sends its device NAME
+     * over the existing BLE channel and the seller matches it here.
+     */
+    fun matchPeer(peers: List<PeerRef>, wantedName: String): String? {
+        val want = wantedName.trim()
+        if (want.isEmpty()) return null
+        peers.firstOrNull { it.name == want }?.let { return it.address }
+        peers.firstOrNull { it.name.equals(want, ignoreCase = true) }?.let { return it.address }
+        peers.firstOrNull { it.name.contains(want, ignoreCase = true) || want.contains(it.name, ignoreCase = true) }?.let { return it.address }
+        return null
+    }
+
     /** Which transport a developer test asked for. Method A stays the default everywhere else. */
     enum class Method { HOTSPOT, WIFI_DIRECT }
 

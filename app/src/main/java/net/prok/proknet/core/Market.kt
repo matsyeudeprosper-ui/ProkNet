@@ -31,10 +31,12 @@ object Market {
     const val FLAG_RELAY = 2       // willing to carry/forward for others
     const val FLAG_VALIDATED = 4   // upstream validated by Android
     const val FLAG_VIA_RELAY = 8   // v0.9: this phone relays a seller behind it (price = that seller's price)
+    const val FLAG_P2P = 64        // v0.9.9: the way in is a Wi-Fi Direct group, not a hotspot (bit 6, above the upstream bits)
     const val UPSTREAM_SHIFT = 4   // bits 4-5: Tunnel.UP_* (0 none, 1 cellular, 2 wifi, 3 other)
 
-    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int, viaRelay: Boolean = false): Int =
-        (if (sell) FLAG_SELL else 0) or (if (relay) FLAG_RELAY else 0) or (if (validated) FLAG_VALIDATED else 0) or (if (viaRelay) FLAG_VIA_RELAY else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
+    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int, viaRelay: Boolean = false, p2p: Boolean = false): Int =
+        (if (sell) FLAG_SELL else 0) or (if (relay) FLAG_RELAY else 0) or (if (validated) FLAG_VALIDATED else 0) or (if (viaRelay) FLAG_VIA_RELAY else 0) or
+            (if (p2p) FLAG_P2P else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
 
     fun upstreamOf(flags: Int): Int = (flags shr UPSTREAM_SHIFT) and 3
 
@@ -44,6 +46,8 @@ object Market {
         val relaying get() = flags and FLAG_RELAY != 0
         val validated get() = flags and FLAG_VALIDATED != 0
         val viaRelay get() = flags and FLAG_VIA_RELAY != 0
+        /** v0.9.9: join this seller through its Wi-Fi Direct group instead of a hotspot. */
+        val p2p get() = flags and FLAG_P2P != 0
         val upstreamType get() = upstreamOf(flags)
         fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + (if (viaRelay) " via relay" else "") + "  " + pricePerMb + " CFA/MB  signal " + signalWord(rssi) + "  " +
             (if (selling) (if (validated) "available" else "available (unverified)") else "not selling")

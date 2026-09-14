@@ -151,6 +151,7 @@
     <string name="toast_need_bluetooth_perm">Prok a besoin de l\'autorisation Bluetooth pour voir les personnes à proximité</string>
     <string name="seller_needs_wifi">Activez le Wi-Fi sur ce téléphone : il sert à créer le point d\'accès de vos clients.</string>
     <string name="seller_needs_location">Activez la localisation : Android en a besoin pour créer le point d\'accès.</string>
+    <string name="share_wifi_direct">Partage activ\u00e9 par liaison directe entre t\u00e9l\u00e9phones (essai).</string>
     <string name="share_wifi_impossible">Ce t\u00e9l\u00e9phone ne peut pas partager ce r\u00e9seau Wi-Fi. Vous pouvez partager vos donn\u00e9es mobiles \u00e0 la place.</string>
     <string name="share_wifi_checking">V\u00e9rification du partage sur ce r\u00e9seau Wi-Fi\u2026</string>
     <string name="toast_need_wifi">Activez le Wi-Fi sur votre téléphone pour vous connecter.</string>

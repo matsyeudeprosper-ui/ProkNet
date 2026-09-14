@@ -838,3 +838,43 @@ cleanup that v0.9.7 got wrong; section 25 is still the real experiment.
 - Does the interfaces line still show p2p0 after STOP?
 - Does BUY after SELL now discover peers?
 - Then run section 25 again for the real Wi-Fi Direct verdict.
+
+## 27. v0.9.9 the real test, from the normal app
+
+Both phones on 0.9.9. This is the flow that decides whether home Wi-Fi
+resale works. Nothing here needs the developer screens.
+
+Setup:
+- SELLER: connected to the Freebox, **mobile data OFF**, Prok running.
+- BUYER: **mobile data OFF**, Wi-Fi ON, Prok running.
+
+Run:
+1. SELLER: PARTAGER INTERNET, price 5, start. Expected: sharing starts, and
+   after a second or two the card says "Partage active par liaison directe
+   entre telephones (essai)". The phone must STILL be on the Freebox.
+2. BUYER: OBTENIR INTERNET. The seller's offer appears as usual. Tap it,
+   then SE CONNECTER.
+3. Expected on the buyer, in French, with no jargon: Recherche d un
+   fournisseur..., then Connexion..., Securisation..., Demarrage
+   d Internet... (accept the Android VPN prompt), then Connecte.
+4. Open Chrome on the buyer and load two or three sites.
+5. SELLER: the card must show a customer and the data going up.
+
+Then, for the record, developer screen -> Relay Lab -> WI-FI DIRECT LAB ->
+COPY P2P DIAG on BOTH phones. The lines that matter:
+- seller: role GROUP_OWNER, **clients joined: 1**, its Wi-Fi network still
+  the Freebox before and now, last invitation accepted;
+- buyer: role CLIENT, group formed, socket connected to 192.168.49.1:47742,
+  ProkNet link WIFI UP.
+
+If the buyer stops with "Impossible d etablir la connexion", the reason is
+in its log: no group, not invited, or not seen in the peer list.
+
+### Checklist for the v0.9.9 report
+
+- Did the seller stay on the Freebox the whole time?
+- Seller clients count, and the invitation line.
+- Did Chrome load pages? Data and cost on both phones.
+- Both COPY P2P DIAG outputs.
+
+Home Wi-Fi resale is claimed only when this exact flow passes.

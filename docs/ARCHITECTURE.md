@@ -746,6 +746,63 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The group owner invites (v0.9.9)
+
+The v0.9.8 run narrowed the failure to the join itself. The seller's group
+forms, it stays on the Freebox, it sees the buyer in its peer list, but
+`clients` stays 0; the buyer taps, `connect()` is accepted, the seller turns
+"invited", and no group ever forms on the buyer.
+
+That direction cannot work: a phone that already OWNS a group cannot join
+another one, so the buyer's invitation has nowhere to land. The invitation
+must travel the other way.
+
+```
+seller creates the group and stays on the router
+buyer becomes discoverable and WAITS
+buyer -> seller over BLE: P2P_REQUEST("<its Wi-Fi Direct name>")
+seller matches the name in its peer list and calls connect() = an invitation
+buyer joins, seller clients = 1
+group owner accepts the TCP socket, the existing transport adopts it
+tunnel, VPN, contract, checkpoints: unchanged
+```
+
+- `P2pPlan.joinRole(iOwnAGroup)` -> OWNER_INVITES / GUEST_WAITS.
+- The buyer cannot send its own P2P MAC: Android hides a phone's own
+  address since Android 10. It sends its device NAME over the BLE control
+  channel (`Wire.OP_P2P_REQUEST`) and `P2pPlan.matchPeer` finds it in the
+  owner's peer list (exact, then case-insensitive, then contains).
+- No silent waiting: `P2pPlan.guestStep(elapsed, groupFormed, ownerVisible)`
+  -> WAIT, ASK_AGAIN at 12 s, TRY_MYSELF at 24 s (only if the owner is
+  visible, since Android sometimes wants the guest to move), GIVE_UP at
+  45 s with a real message.
+- A refusal has its own code, `Wire.CANCEL_P2P`, carrying the reason ("the
+  provider has no Wi-Fi Direct group right now", "the provider cannot see
+  this phone in its Wi-Fi Direct peer list").
+- Discovery is kept alive on both sides while waiting, because Android
+  stops it after a couple of minutes.
+
+## From the normal screens (v0.9.9)
+
+The experiment is no longer developer-only:
+
+- Seller taps **PARTAGER INTERNET**. Mobile data upstream keeps the
+  hotspot. A Wi-Fi upstream is probed as in v0.9.6, and when the hotspot is
+  refused on that network the phone now creates a Wi-Fi Direct group
+  instead of giving up, and advertises it with a new BLE flag
+  (`Market.FLAG_P2P`, bit 6). The sharing card says "Partage activé par
+  liaison directe entre téléphones (essai)" and nothing else changes.
+- Buyer taps **OBTENIR INTERNET** and picks the offer. If the offer carries
+  the flag, `buy()` runs the Wi-Fi Direct path instead of a hotspot
+  request. The buyer sees the usual French states and never the words P2P,
+  group owner or invitation.
+- Everything above the link is untouched: the socket is adopted by
+  `WifiTransport`, so the signed handshake, the tunnel, the VPN, the
+  contract and the checkpoints are the same code as method A.
+
+The Wi-Fi Direct Lab stays for diagnostics, with the peer list now
+inviting when this phone owns the group.
+
 ## The P2P lifecycle is deterministic (v0.9.8)
 
 The first phone run found a cleanup bug, not a physics answer. After STOP

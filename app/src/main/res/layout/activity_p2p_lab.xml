@@ -12,7 +12,7 @@
 
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:text="Wi-Fi Direct Lab (experimental method B)" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:layout_marginTop="4dp"
-            android:text="Goal: the SELLER stays connected to the home router (Freebox) and still serves a buyer. Seller: mobile data OFF, stay on the router, tap P2P SELL TEST. Buyer: mobile data OFF, tap P2P BUY TEST, then tap the seller in the list. When the link is UP, use the developer Internet controls (or BUY) as usual, then COPY P2P DIAG." />
+            android:text="Goal: the SELLER stays connected to the home router and still serves a buyer. Seller: stay on the router, tap P2P SELL TEST, then tap the buyer in the peer list to INVITE it (a phone that owns a group must invite, it cannot join another one). Buyer: tap P2P BUY TEST and WAIT to be invited. The normal app does all of this by itself now; this screen is for diagnostics." />
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
             <Button android:id="@+id/btnP2pSell" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="P2P SELL TEST" />
@@ -26,7 +26,7 @@
 
         <TextView android:id="@+id/txtP2pState" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:fontFamily="monospace" android:layout_marginTop="6dp" android:text="" />
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Wi-Fi Direct peers (tap to join)" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Wi-Fi Direct peers (owner: tap to INVITE; guest: tap to join)" />
         <ListView android:id="@+id/listP2pPeers" android:layout_width="match_parent" android:layout_height="160dp" />
 
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:layout_marginTop="10dp" android:text="Internet through this link (buyer side)" />

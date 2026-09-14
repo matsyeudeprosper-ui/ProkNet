@@ -222,4 +222,65 @@ class P2pPlanTest {
         assertEquals(P2pPlan.Step.DONE, P2pPlan.nextStep(P2pPlan.Step.REMOVE_GROUP))
         assertEquals(P2pPlan.Step.DONE, P2pPlan.nextStep(P2pPlan.Step.DONE))
     }
+
+    // ---- v0.9.9: who invites whom, and the guest's ladder ------------------------------------------
+
+    @Test
+    fun the_owner_invites_because_a_group_owner_cannot_join_another_group() {
+        // exactly the v0.9.8 phone result: seller owns a group, sees the buyer, clients stays 0,
+        // buyer's own connect() is accepted and nothing happens
+        assertEquals(P2pPlan.Join.OWNER_INVITES, P2pPlan.joinRole(iOwnAGroup = true))
+        assertEquals(P2pPlan.Join.GUEST_WAITS, P2pPlan.joinRole(iOwnAGroup = false))
+    }
+
+    @Test
+    fun the_guest_never_waits_in_silence() {
+        // freshly asked: just wait
+        assertEquals(P2pPlan.GuestStep.WAIT, P2pPlan.guestStep(0, groupFormed = false, ownerVisible = true))
+        assertEquals(P2pPlan.GuestStep.WAIT, P2pPlan.guestStep(P2pPlan.INVITE_ASK_AGAIN_MS - 1, false, true))
+        // nothing yet: ask again
+        assertEquals(P2pPlan.GuestStep.ASK_AGAIN, P2pPlan.guestStep(P2pPlan.INVITE_ASK_AGAIN_MS, false, true))
+        // still nothing and we can see the owner: try to join it ourselves
+        assertEquals(P2pPlan.GuestStep.TRY_MYSELF, P2pPlan.guestStep(P2pPlan.INVITE_TRY_SELF_MS, false, true))
+        // ... but not if we cannot even see it
+        assertEquals(P2pPlan.GuestStep.ASK_AGAIN, P2pPlan.guestStep(P2pPlan.INVITE_TRY_SELF_MS, false, ownerVisible = false))
+        // and it always ends with a reason, never a silent wait
+        assertEquals(P2pPlan.GuestStep.GIVE_UP, P2pPlan.guestStep(P2pPlan.INVITE_GIVE_UP_MS, false, true))
+        assertEquals(P2pPlan.GuestStep.GIVE_UP, P2pPlan.guestStep(P2pPlan.INVITE_GIVE_UP_MS + 60_000, false, false))
+        // once we are in the group there is nothing left to do
+        assertEquals(P2pPlan.GuestStep.WAIT, P2pPlan.guestStep(P2pPlan.INVITE_GIVE_UP_MS, groupFormed = true, ownerVisible = true))
+        assertTrue(P2pPlan.INVITE_ASK_AGAIN_MS < P2pPlan.INVITE_TRY_SELF_MS && P2pPlan.INVITE_TRY_SELF_MS < P2pPlan.INVITE_GIVE_UP_MS)
+        for (g in P2pPlan.GuestStep.values()) assertTrue(P2pPlan.guestStepText(g).isNotEmpty())
+    }
+
+    @Test
+    fun the_owner_finds_the_guest_by_the_name_it_sent() {
+        // Android hides a phone's own P2P MAC, so the buyer sends its NAME over BLE
+        val peers = listOf(P2pPlan.PeerRef("C1 Pro", "aa:bb:cc:00:11:22"), P2pPlan.PeerRef("OnePlus Nord", "aa:bb:cc:00:11:33"))
+        assertEquals("aa:bb:cc:00:11:33", P2pPlan.matchPeer(peers, "OnePlus Nord"))
+        assertEquals("aa:bb:cc:00:11:33", P2pPlan.matchPeer(peers, "onePLUS nord"))
+        assertEquals("aa:bb:cc:00:11:22", P2pPlan.matchPeer(peers, "C1"))
+        assertNull(P2pPlan.matchPeer(peers, "Samsung"))
+        assertNull(P2pPlan.matchPeer(peers, ""))
+        assertNull(P2pPlan.matchPeer(emptyList(), "C1 Pro"))
+    }
+
+    @Test
+    fun a_seller_can_advertise_that_the_way_in_is_a_direct_link() {
+        val hotspot = Market.Offer("aaaa0000", 5, Market.flags(sell = true, relay = false, validated = true, upstreamType = Tunnel.UP_WIFI), -50, 0)
+        val direct = Market.Offer("aaaa0000", 5, Market.flags(true, false, true, Tunnel.UP_WIFI, p2p = true), -50, 0)
+        assertFalse(hotspot.p2p)
+        assertTrue(direct.p2p)
+        // the new bit must not disturb anything the buyer already reads
+        assertTrue(direct.selling); assertTrue(direct.validated); assertFalse(direct.viaRelay)
+        assertEquals(Tunnel.UP_WIFI, direct.upstreamType)
+        assertEquals(5, direct.pricePerMb)
+        // and the request that carries the buyer's name survives the wire
+        val body = Wire.p2pRequest("OnePlus Nord")
+        assertEquals("OnePlus Nord", (Wire.parseControl(body) as Wire.Control.P2pRequest).deviceName)
+        assertEquals("", (Wire.parseControl(byteArrayOf(Wire.OP_P2P_REQUEST.toByte())) as Wire.Control.P2pRequest).deviceName)
+        // a refusal has its own reason and reads in plain words
+        assertTrue(Wire.cancelReasonText(Wire.CANCEL_P2P).contains("Wi-Fi Direct group"))
+        assertTrue(ProductState.lostHint(Wire.cancelReasonText(Wire.CANCEL_P2P)).isNotEmpty())
+    }
 }

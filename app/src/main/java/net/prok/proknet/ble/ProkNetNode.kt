@@ -156,6 +156,80 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun staDescription(): String = wifi.currentWifi()?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: ""
     })
 
+    /** v0.9.9: this phone owns a Wi-Fi Direct group and a buyer asked to be let in (over BLE). */
+    private fun onP2pRequest(peerShort: String, deviceName: String) {
+        DiagLog.i(tag, "P2P REQUEST from prok-" + peerShort + ": its Wi-Fi Direct name is \"" + deviceName + "\"")
+        if (!p2p.groupFormed || p2p.role != P2pPlan.Role.GROUP_OWNER) {
+            DiagLog.w(tag, "cannot invite prok-" + peerShort + ": this phone owns no Wi-Fi Direct group")
+            sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, "the provider has no Wi-Fi Direct group right now")) {}
+            return
+        }
+        invitePeerByName(peerShort, deviceName, attempt = 1)
+    }
+
+    private fun invitePeerByName(peerShort: String, deviceName: String, attempt: Int) {
+        val found = p2p.findPeer(deviceName)
+        if (found != null) {
+            val err = p2p.invite(found.address, found.name)
+            if (err != null) sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
+            return
+        }
+        if (attempt >= 4) {
+            DiagLog.w(tag, "\"" + deviceName + "\" never appeared in my Wi-Fi Direct peer list (" + p2p.peers.size + " peers seen)")
+            sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, "the provider cannot see this phone in its Wi-Fi Direct peer list")) {}
+            return
+        }
+        DiagLog.i(tag, "\"" + deviceName + "\" not in the peer list yet (attempt " + attempt + "/4), waiting for discovery")
+        main.postDelayed({ invitePeerByName(peerShort, deviceName, attempt + 1) }, 5_000)
+    }
+
+    // ---- buyer side of method B -------------------------------------------------------------------
+
+    @Volatile private var buyViaP2p = false
+    @Volatile private var p2pWaitStart = 0L
+
+    /** The buyer becomes discoverable and asks the seller to invite it; it never joins on its own first. */
+    private fun startP2pBuy(peerShort: String): Boolean {
+        buyViaP2p = true
+        p2pWaitStart = System.currentTimeMillis()
+        val err = p2p.startBuyer()
+        if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
+        DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
+        main.postDelayed({ askForInvite(peerShort) }, 2500)     // let this phone learn its own P2P name first
+        main.postDelayed({ p2pWaitStep(peerShort) }, 4000)
+        return true
+    }
+
+    private fun askForInvite(peerShort: String) {
+        if (!buyViaP2p || buyerWanted != peerShort) return
+        val name = p2p.myDeviceName
+        if (name.isEmpty()) { DiagLog.w(tag, "this phone does not know its own Wi-Fi Direct name yet, retrying"); main.postDelayed({ askForInvite(peerShort) }, 2500); return }
+        DiagLog.i(tag, "asking prok-" + peerShort + " to invite \"" + name + "\" into its Wi-Fi Direct group")
+        sendControl(peerShort, Wire.p2pRequest(name)) { ok -> if (!ok) DiagLog.w(tag, "the invitation request could not be delivered over BLE") }
+    }
+
+    /** No silent waiting: ask again, then try to join by ourselves, then give up with a reason. */
+    private fun p2pWaitStep(peerShort: String) {
+        if (!buyViaP2p || buyerWanted != peerShort || wifi.linkedPeer != null) return
+        val elapsed = System.currentTimeMillis() - p2pWaitStart
+        val owner = p2p.peers.firstOrNull { it.isGroupOwner } ?: p2p.peers.firstOrNull()
+        when (P2pPlan.guestStep(elapsed, p2p.groupFormed, owner != null)) {
+            P2pPlan.GuestStep.WAIT -> {}
+            P2pPlan.GuestStep.ASK_AGAIN -> { DiagLog.i(tag, P2pPlan.guestStepText(P2pPlan.GuestStep.ASK_AGAIN)); askForInvite(peerShort) }
+            P2pPlan.GuestStep.TRY_MYSELF -> {
+                DiagLog.w(tag, P2pPlan.guestStepText(P2pPlan.GuestStep.TRY_MYSELF) + " (" + (owner?.name ?: "?") + ")")
+                owner?.let { p2p.connectTo(it.address) }
+            }
+            P2pPlan.GuestStep.GIVE_UP -> {
+                DiagLog.e(tag, P2pPlan.guestStepText(P2pPlan.GuestStep.GIVE_UP))
+                lastBuyError = "the provider could not invite this phone into its Wi-Fi Direct group"
+                stopInternet("Wi-Fi Direct join failed")
+                return
+            }
+        }
+        main.postDelayed({ p2pWaitStep(peerShort) }, 4000)
+    }
+
     /** Developer test: this phone becomes the Wi-Fi Direct group owner and waits for a buyer. */
     fun p2pSell(): String? {
         if (!isRunning) return "start the node first"
@@ -203,6 +277,26 @@ class ProkNetNode(private val context: Context) : TransportListener {
             .apply()
     }
 
+    /** v0.9.9: true when this phone serves customers through a Wi-Fi Direct group instead of a hotspot. */
+    @Volatile var p2pFallbackActive = false
+        private set
+
+    /**
+     * v0.9.9: the hotspot is refused on this Wi-Fi network, so try method B instead of telling the
+     * seller to give up. Nothing above the link changes: the group produces a socket, the socket is
+     * adopted, and the tunnel runs as usual.
+     */
+    private fun startP2pFallback(why: String) {
+        if (p2pFallbackActive || !gateway.providing) return
+        val ready = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
+        if (ready != P2pPlan.Ready.OK) { DiagLog.w(tag, "no Wi-Fi Direct fallback: " + P2pPlan.readyText(ready)); return }
+        DiagLog.i(tag, "SHARING BY WI-FI DIRECT (" + why + "): creating a group while staying on this Wi-Fi network")
+        p2pFallbackActive = true
+        p2p.startSeller()
+        refreshAdvert()
+        pushStatus()
+    }
+
     /**
      * v0.9.6: run when SELL is switched on (and when the upstream network changes). A phone selling
      * mobile data needs no test. A phone selling its own Wi-Fi is tested ONCE per network: the hotspot
@@ -223,6 +317,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!ShareCheck.shouldProbe(type, remembered)) {
             shareCheck = remembered; shareDetail = capPrefs.getString("why:" + key, "") ?: ""
             DiagLog.i(tag, "SHARE CHECK " + remembered + " (remembered) for " + key + " on " + ShareCheck.describe(shareFreqMhz))
+            if (remembered == ShareCheck.Result.CANNOT_SHARE) startP2pFallback("hotspot known to be refused on this network")
             pushStatus(); return
         }
         if (!wifi.state.isIdle || gateway.session != null) { DiagLog.i(tag, "share check postponed (" + why + "): a Wi-Fi link is in use"); return }
@@ -233,7 +328,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 shareDetail = o.detail
                 writeCap(key, shareCheck, o.detail, o.freqMhz)
                 DiagLog.i(tag, "SHARE CHECK " + shareCheck + " on " + ShareCheck.describe(o.freqMhz) + " [" + key + "]: " + o.detail +
-                    (if (shareCheck == ShareCheck.Result.CANNOT_SHARE) " - this phone cannot RESELL this network; the network itself stays on the map for another phone" else ""))
+                    (if (shareCheck == ShareCheck.Result.CANNOT_SHARE) " - no hotspot on this network; trying Wi-Fi Direct instead" else ""))
+                if (shareCheck == ShareCheck.Result.CANNOT_SHARE) startP2pFallback("hotspot refused on this network")
                 pushStatus()
             }
         }
@@ -338,7 +434,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             return
         }
         val up = gateway.upstream
-        val flags = Market.flags(sell = gateway.providing && up != null, relay = relayOn, validated = up?.validated == true, upstreamType = Tunnel.upstreamType(up))
+        val flags = Market.flags(sell = gateway.providing && up != null, relay = relayOn, validated = up?.validated == true,
+            upstreamType = Tunnel.upstreamType(up), p2p = p2pFallbackActive)
         ble.setCapabilities(flags, if (gateway.providing) sellPrice else 0)
     }
 
@@ -351,7 +448,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
             sellPrice = price; sellMinPrice = minPrice; sellMaxMb = maxMb
             gateway.start()
             main.postDelayed({ if (gateway.providing) checkSharing("sharing switched on") }, 1200)
-        } else gateway.stop()
+        } else {
+            gateway.stop()
+            if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
+        }
         refreshAdvert(); pushStatus()
         return null
     }
@@ -371,6 +471,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         lastBuyError = ""
         DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
         if (wifi.canReach(peer.shortId)) return if (offer.viaRelay) awaitIntroduction(peer.shortId) else tunnel.start(buyPrice)
+        if (offer.p2p) return startP2pBuy(peer.shortId)    // v0.9.9: this seller is reachable through its Wi-Fi Direct group
         return requestWifi(peer)
     }
 
@@ -449,6 +550,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
+        if (buyViaP2p) { buyViaP2p = false; p2p.stop() }
         buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
@@ -734,6 +836,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val c = Wire.parseControl(body)
         val upWants = wifiUp.state.peer == peerShort && !wifiUp.state.isIdle
         when {
+            c is Wire.Control.P2pRequest -> onP2pRequest(peerShort, c.deviceName)
             c is Wire.Control.WifiRequest -> wifi.onControl(peerShort, body)
             upWants -> wifiUp.onControl(peerShort, body)
             else -> wifi.onControl(peerShort, body)
@@ -754,7 +857,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (relay.relayMode || relay.providerShort != null || relay.relayedBuyer != null) sb.append(" | ").append(relay.stateLine())
         sb.append(" | keys ").append(store.peerKeyCount())
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
-        if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | CANNOT resell this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
+        if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | hotspot refused on this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
+        if (p2pFallbackActive) sb.append(" | sharing by Wi-Fi Direct: ").append(p2p.phase).append(" clients ").append(p2p.clientCount)
         if (relayOn) sb.append(" | RELAY on")
         if (tunnel.state != "DISCONNECTED" || buyerWanted != null) sb.append(" | BUY: ").append(tunnel.state)
         sb.append(" | ").append(q)

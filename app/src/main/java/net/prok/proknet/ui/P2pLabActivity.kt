@@ -62,8 +62,10 @@ class P2pLabActivity : Activity(), ProkNetNode.Listener {
             l.adapter = peersAdapter
             l.setOnItemClickListener { _, _, pos, _ ->
                 val p = p2pPeers.getOrNull(pos) ?: return@setOnItemClickListener
-                val err = node.p2p.connectTo(p.address)
-                toast(err ?: ("Joining " + p.name + "..."))
+                // v0.9.9: a phone that owns the group INVITES; only a guest joins by itself
+                val err = if (node.p2p.role == P2pPlan.Role.GROUP_OWNER) node.p2p.invite(p.address, p.name) else node.p2p.connectTo(p.address)
+                val what = if (node.p2p.role == P2pPlan.Role.GROUP_OWNER) "Inviting " else "Joining "
+                toast(err ?: (what + p.name + "..."))
                 refresh()
             }
         }
@@ -132,7 +134,9 @@ class P2pLabActivity : Activity(), ProkNetNode.Listener {
             "supported " + p.supported + " | enabled " + p.p2pEnabled + " | phase " + p.phase + " | role " + p.role + "\n" +
             "my Wi-Fi network now: " + (sta?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: "none") + "\n" +
             "before the test: " + p.staBefore.ifEmpty { "none" } + "\n" +
-            "group: " + p.groupInfo.ifEmpty { "none" } + "\n" +
+            "group: " + p.groupInfo.ifEmpty { "none" } + " | clients joined: " + p.clientCount + "\n" +
+            "this phone on Wi-Fi Direct: \"" + p.myDeviceName.ifEmpty { "?" } + "\"\n" +
+            "last invitation: " + p.lastInvite.ifEmpty { "none" } + "\n" +
             "socket: " + p.socketInfo.ifEmpty { "none" } + "\n" +
             "ProkNet link: " + node.wifi.phase + (node.wifi.linkedPeer?.let { " with prok-" + it } ?: "") + "\n" +
             "VERDICT: " + P2pPlan.verdictText(p.verdict()) + (if (p.lastError.isNotEmpty()) "\nlast error: " + p.lastError else "")
