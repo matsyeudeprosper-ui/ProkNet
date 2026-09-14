@@ -89,11 +89,13 @@ class ProductStateTest {
         // v0.9.3: the three real setup failures each say what to check, and none of them says "walk"
         val noAnswer = ProductState.lostHint("the provider did not answer within 60s (its Wi-Fi or Location may be off, or the app is not open)")
         assertTrue(noAnswer, noAnswer.contains("Wi-Fi") && noAnswer.contains("localisation"))
-        val noHotspot = ProductState.lostHint("the provider could not start its Wi-Fi hotspot")
+        val busy = ProductState.lostHint(Wire.cancelReasonText(Wire.CANCEL_BUSY))
+        assertTrue(busy, busy.contains("occup\u00e9"))
+        val noHotspot = ProductState.lostHint(Wire.cancelReasonText(Wire.CANCEL_NO_HOTSPOT))
         assertTrue(noHotspot, noHotspot.contains("point d'acc\u00e8s"))
         val notJoined = ProductState.lostHint("the Wi-Fi network was not joined (the Android dialog was not approved?)")
         assertTrue(notJoined, notJoined.contains("CONNECTER"))
-        for (w in listOf(noAnswer, noHotspot, notJoined)) assertFalse(w, w.contains("Rapprochez"))
+        for (w in listOf(noAnswer, noHotspot, notJoined, busy)) assertFalse(w, w.contains("Rapprochez"))
         // a real radio failure still says what helps
         assertEquals(closer, ProductState.lostHint("Wi-Fi link closed: connection closed"))
         assertEquals(closer, ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))

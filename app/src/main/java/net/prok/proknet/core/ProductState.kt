@@ -70,6 +70,8 @@ object ProductState {
         // v0.9.3: the three ways the setup really fails, each with what to check
         any(lastError, "did not answer", "did not introduce", "no contract answer", "no SESSION_OK", "did not join") ->
             "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."
+        any(lastError, "already serving", "busy") ->
+            "Le fournisseur est d\u00e9j\u00e0 occup\u00e9 avec un autre t\u00e9l\u00e9phone. R\u00e9essayez dans un moment."
         any(lastError, "hotspot", "cannot host", "could not start") ->
             "Le fournisseur n'a pas pu créer le point d'accès. Qu'il active le Wi-Fi et la localisation, puis réessayez."
         any(lastError, "not joined", "dialog", "unavailable") ->

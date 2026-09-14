@@ -693,3 +693,28 @@ hotspot for prok-... (wifi on/off)" and the exact hotspot error.
 - The exact message and how long it took, for each of the three cases.
 - Did the seller card show the Wi-Fi / Location warning?
 - Does the normal flow still work end to end?
+
+## 22. v0.9.4 the seller always answers
+
+**Install this build on BOTH phones.** The fix is mostly on the phone that
+SHARES; a seller running an older build still answers nothing.
+
+1. Normal case: seller shares, buyer connects. Must work end to end.
+2. Repeat the purchase three times in a row without restarting anything.
+   Every attempt must reach the Android dialog; none may hang on
+   "Recherche d un fournisseur...".
+3. Seller side, on purpose: link the two phones once (buy and stop), then
+   buy again a few minutes later. The seller now drops the idle link and
+   hosts again instead of ignoring the request.
+4. Seller with Wi-Fi OFF: the buyer must stop within seconds with "Le
+   fournisseur n a pas pu creer le point d acces...".
+5. Two buyers, one seller: while the first is connected and browsing, the
+   second taps Connect. Expected on the second: "Le fournisseur est deja
+   occupe avec un autre telephone. Reessayez dans un moment." (not a
+   60 s wait, and the first session must not break).
+
+### Checklist for the v0.9.4 report
+
+- Build number shown in Profil on BOTH phones (it must be 0.9.4).
+- Did any attempt still hang until the 60 s timeout?
+- The exact message for cases 4 and 5.

@@ -50,6 +50,12 @@ class WireTest {
         assertEquals(listOf(Wire.SEC_WPA2, Wire.SEC_WPA3), Wire.joinAttempts(Wire.SEC_TRANSITION))
         assertEquals(listOf(Wire.SEC_WPA2, Wire.SEC_WPA3), Wire.joinAttempts(Wire.SEC_UNKNOWN))
         assertTrue(Wire.parseControl(Wire.wifiCancel()) is Wire.Control.WifiCancel)
+        // v0.9.4: a cancel says why, and a cancel from an older build (no reason byte) still parses
+        assertEquals(Wire.CANCEL_BUSY, (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_BUSY)) as Wire.Control.WifiCancel).reason)
+        assertEquals(Wire.CANCEL_NO_HOTSPOT, (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_NO_HOTSPOT)) as Wire.Control.WifiCancel).reason)
+        assertEquals(Wire.CANCEL_GENERIC, (Wire.parseControl(byteArrayOf(Wire.OP_WIFI_CANCEL.toByte())) as Wire.Control.WifiCancel).reason)
+        assertTrue(Wire.cancelReasonText(Wire.CANCEL_BUSY).contains("already serving"))
+        assertTrue(Wire.cancelReasonText(Wire.CANCEL_NO_HOTSPOT).contains("hotspot"))
         assertNull(Wire.parseControl(null)); assertNull(Wire.parseControl(ByteArray(0))); assertNull(Wire.parseControl(byteArrayOf(9)))
         assertNull(Wire.parseControl(Wire.wifiOffer("xy", "", 1, listOf("1.2.3.4")).copyOfRange(0, 3)))
         val rnd = java.util.Random(5)

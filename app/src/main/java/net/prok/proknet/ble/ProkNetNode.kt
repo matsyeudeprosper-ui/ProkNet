@@ -68,12 +68,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
+        override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
     })
     /** v0.9: the relay phone's second Wi-Fi link, client-only, towards its seller. Never carries packets or transfers. */
     val wifiUp = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
         override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
+        override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
     }, Routing.TRANSPORT_WIFI_UP, mayHost = false)
     private val transports: List<Transport> get() = listOf(wifi, ble)
 

@@ -53,10 +53,25 @@ object Wire {
     const val SEC_TRANSITION = 3
     const val SEC_OPEN = 4
 
+    /** v0.9.4: why a host gave up, so the waiting phone can say something useful instead of timing out. */
+    const val CANCEL_GENERIC = 0
+    const val CANCEL_NO_HOTSPOT = 1   // could not create the local-only hotspot (Wi-Fi / Location off, tethering...)
+    const val CANCEL_BUSY = 2         // already linked to someone else and serving them
+
+    fun cancelName(reason: Int) = when (reason) { CANCEL_NO_HOTSPOT -> "cannot create the hotspot"; CANCEL_BUSY -> "busy with another phone"; else -> "cancelled" }
+
+    /** The wording the UI layer classifies (English, like every other engine string). */
+    fun cancelReasonText(reason: Int) = when (reason) {
+        CANCEL_NO_HOTSPOT -> "the provider could not start its Wi-Fi hotspot"
+        CANCEL_BUSY -> "the provider is already serving another phone"
+        else -> "the provider stopped the connection attempt"
+    }
+
     sealed class Control {
         class WifiRequest(val port: Int) : Control()
         class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
-        object WifiCancel : Control()
+        /** [reason] is CANCEL_*; a v0.5..v0.9.3 peer sends no byte at all, which reads as CANCEL_GENERIC. */
+        class WifiCancel(val reason: Int = CANCEL_GENERIC) : Control()
     }
 
     /**
@@ -73,7 +88,7 @@ object Wire {
     }
 
     fun wifiRequest(port: Int): ByteArray = ByteBuffer.allocate(3).put(OP_WIFI_REQUEST.toByte()).putShort(port.toShort()).array()
-    fun wifiCancel(): ByteArray = byteArrayOf(OP_WIFI_CANCEL.toByte())
+    fun wifiCancel(reason: Int = CANCEL_GENERIC): ByteArray = byteArrayOf(OP_WIFI_CANCEL.toByte(), reason.toByte())
 
     fun wifiOffer(ssid: String, pass: String, port: Int, ips: List<String>, security: Int = SEC_UNKNOWN, hidden: Boolean = false): ByteArray {
         val s = ssid.toByteArray(Charsets.UTF_8); val p = pass.toByteArray(Charsets.UTF_8)
@@ -92,7 +107,7 @@ object Wire {
             val b = ByteBuffer.wrap(body)
             when (b.get().toInt() and 0xFF) {
                 OP_WIFI_REQUEST -> Control.WifiRequest(b.short.toInt() and 0xFFFF)
-                OP_WIFI_CANCEL -> Control.WifiCancel
+                OP_WIFI_CANCEL -> Control.WifiCancel(if (b.remaining() >= 1) b.get().toInt() and 0xFF else CANCEL_GENERIC)
                 OP_WIFI_OFFER -> {
                     val sn = b.get().toInt() and 0xFF; val ssid = String(ByteArray(sn).also { b.get(it) }, Charsets.UTF_8)
                     val pn = b.get().toInt() and 0xFF; val pass = String(ByteArray(pn).also { b.get(it) }, Charsets.UTF_8)

@@ -73,6 +73,30 @@ class LinkStateTest {
         val u = LinkState(); u.request("b", 0); u.offerReceived("b", 1); u.networkAvailable(2); u.handshakeOk("b", 3)
         assertEquals(LinkState.Action.NONE, u.tick(999_999, 45_000))
 
+        // v0.9.4: a phone asked to host always gives an answer. This is the bug the OnePlus hit:
+        // the seller held a link from an earlier test, so it ignored every request in silence and the
+        // buyer only saw "searching..." until its own 60 s timeout.
+        val host = LinkState()
+        assertEquals(LinkState.HostAnswer.HOST, host.hostAnswer("aaaa0000", "ffff0000", linkInUse = false))
+        host.requestReceived("aaaa0000", "ffff0000", 0); host.hotspotUp(1); host.clientConnected(2); host.handshakeOk("aaaa0000", 3)
+        assertTrue(host.isUp)
+        // the same peer asks again: its side is gone
+        assertEquals(LinkState.HostAnswer.DROP_STALE_THEN_HOST, host.hostAnswer("aaaa0000", "ffff0000", linkInUse = false))
+        // somebody else asks while the link is idle: serve the newcomer
+        assertEquals(LinkState.HostAnswer.DROP_STALE_THEN_HOST, host.hostAnswer("bbbb0000", "ffff0000", linkInUse = false))
+        // ... but not while a customer is really being served
+        assertEquals(LinkState.HostAnswer.REFUSE_BUSY, host.hostAnswer("bbbb0000", "ffff0000", linkInUse = true))
+        // mid-negotiation with someone else: refuse, and the requester is told
+        val busy = LinkState(); busy.requestReceived("aaaa0000", "ffff0000", 0)
+        assertEquals(LinkState.HostAnswer.REFUSE_BUSY, busy.hostAnswer("bbbb0000", "ffff0000", linkInUse = false))
+        assertEquals(LinkState.HostAnswer.DROP_STALE_THEN_HOST, busy.hostAnswer("aaaa0000", "ffff0000", linkInUse = false))
+        // both asked at once: the lower ID hosts
+        val tie = LinkState(); tie.request("aaaa0000", 0)
+        assertEquals(LinkState.HostAnswer.IGNORE_TIE_BREAK, tie.hostAnswer("aaaa0000", "ffff0000", linkInUse = false))
+        assertEquals(LinkState.HostAnswer.HOST, LinkState().also { it.request("ffff0000", 0) }.hostAnswer("ffff0000", "aaaa0000", linkInUse = false))
+        // a phone doing nothing always hosts
+        assertEquals(LinkState.HostAnswer.HOST, LinkState().hostAnswer("aaaa0000", "ffff0000", linkInUse = true))
+
         // v0.9.3: each step has its own patience; only the two that wait for a human keep the long one
         val s = LinkState()
         assertEquals(60_000L, s.stepTimeoutMs(LinkState.State.REQUESTING))

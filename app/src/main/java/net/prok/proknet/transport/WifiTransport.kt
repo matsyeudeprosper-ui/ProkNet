@@ -67,6 +67,8 @@ class WifiTransport(
         fun knownPeerPub(peerShort: String): ByteArray?
         /** Is a ProkNet Activity visible? The Android join dialog needs the app in front. */
         fun appVisible(): Boolean
+        /** v0.9.4: is a real session running on the current link? An idle link may be dropped for a new customer. */
+        fun linkInUse(): Boolean
     }
 
     /** v0.6: where tunnel frames go. Called on the link's read thread; must not block for long. */
@@ -200,13 +202,23 @@ class WifiTransport(
                 is Wire.Control.WifiRequest -> {
                     DiagLog.i(tag, "NEGOTIATE: WIFI_REQUEST from prok-" + peerShort)
                     if (!mayHost) { DiagLog.i(tag, "request ignored: this instance never hosts"); return@post }
-                    if (fsm.staleLinkRequest(peerShort)) {
-                        DiagLog.i(tag, "prok-" + peerShort + " asks again although I still hold a link with it: the old link is stale, dropping it and hosting a fresh one")
-                        teardown("stale link: prok-" + peerShort + " asked for a new one")
+                    val inUse = try { control.linkInUse() } catch (e: Exception) { false }
+                    when (fsm.hostAnswer(peerShort, identity.shortIdHex, inUse)) {
+                        LinkState.HostAnswer.DROP_STALE_THEN_HOST -> {
+                            DiagLog.i(tag, "prok-" + peerShort + " asks for a link while I still hold an idle one (" + fsm.describe() + "): dropping it and hosting a fresh one")
+                            teardown("idle link dropped for a request from prok-" + peerShort, notifyPeer = false)
+                        }
+                        LinkState.HostAnswer.REFUSE_BUSY -> {
+                            DiagLog.w(tag, "refusing prok-" + peerShort + ": this phone is busy (" + fsm.describe() + ") - telling it so it does not wait")
+                            sendCancelNow(peerShort, Wire.CANCEL_BUSY)
+                            return@post
+                        }
+                        LinkState.HostAnswer.IGNORE_TIE_BREAK -> { DiagLog.i(tag, "both phones asked at once: prok-" + peerShort + " hosts, I join"); return@post }
+                        LinkState.HostAnswer.HOST -> {}
                     }
                     when (fsm.requestReceived(peerShort, identity.shortIdHex, now())) {
                         LinkState.Action.START_HOTSPOT -> { setPhase("HOSTING", "starting hotspot for prok-" + peerShort); startHotspot() }
-                        else -> DiagLog.i(tag, "request from prok-" + peerShort + " ignored: " + fsm.describe())
+                        else -> { DiagLog.w(tag, "request from prok-" + peerShort + " could not be accepted: " + fsm.describe()); sendCancelNow(peerShort, Wire.CANCEL_BUSY) }
                     }
                 }
                 is Wire.Control.WifiOffer -> {
@@ -216,7 +228,12 @@ class WifiTransport(
                         else -> DiagLog.i(tag, "offer ignored: " + fsm.describe())
                     }
                 }
-                Wire.Control.WifiCancel -> { if (fsm.peer == peerShort && !fsm.isIdle) { DiagLog.i(tag, "peer cancelled the Wi-Fi link"); teardown("the provider could not start its Wi-Fi hotspot") } }
+                is Wire.Control.WifiCancel -> {
+                    if (fsm.peer == peerShort && !fsm.isIdle) {
+                        DiagLog.i(tag, "prok-" + peerShort + " cancelled the link: " + Wire.cancelName(c.reason))
+                        teardown(Wire.cancelReasonText(c.reason), notifyPeer = false)
+                    }
+                }
             }
         }
     }
@@ -276,11 +293,16 @@ class WifiTransport(
      * step timeout, which is exactly what a user reports as "it searches then
      * says connection lost".
      */
-    private fun cancelToPeer() {
-        val peer = fsm.peer ?: return
-        DiagLog.i(tag, "telling prok-" + peer + " that this phone cannot host the link")
-        try { control.sendControl(peer, Wire.wifiCancel()) { ok -> DiagLog.i(tag, "cancel delivered to prok-" + peer + ": " + ok) } } catch (e: Exception) { DiagLog.w(tag, "cancel: " + e) }
+    private fun cancelToPeer(reason: Int = Wire.CANCEL_NO_HOTSPOT) { fsm.peer?.let { sendCancelOnce(it, reason) } }
+
+    @Volatile private var cancelSent = false
+
+    private fun sendCancelNow(peer: String, reason: Int) {
+        DiagLog.i(tag, "telling prok-" + peer + " to stop waiting: " + Wire.cancelName(reason))
+        try { control.sendControl(peer, Wire.wifiCancel(reason)) { ok -> DiagLog.i(tag, "cancel delivered to prok-" + peer + ": " + ok) } } catch (e: Exception) { DiagLog.w(tag, "cancel: " + e) }
     }
+
+    private fun sendCancelOnce(peer: String, reason: Int) { if (!cancelSent) { cancelSent = true; sendCancelNow(peer, reason) } }
 
     private fun hotspotHint(reason: Int) = when (reason) {
         WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL -> " (no channel)"
@@ -563,8 +585,10 @@ class WifiTransport(
     /** v0.9: drop the current link / attempt on purpose. */
     fun disconnect(reason: String) { if (isRunning) main.post { if (!fsm.isIdle) teardown(reason) else { fsm.reset(now()); setPhase("IDLE", reason) } } }
 
-    private fun teardown(reason: String) {
+    private fun teardown(reason: String, notifyPeer: Boolean = true) {
         val peer = link?.peerRecord?.shortId ?: fsm.peer
+        // v0.9.4: if the link never came up, the other phone is still waiting for us. Say so now.
+        if (notifyPeer && link == null && peer != null && !fsm.isIdle) sendCancelOnce(peer, Wire.CANCEL_GENERIC)
         link?.close(); link = null
         if (peer != null) try { tunnelSink?.onLinkClosed(peer, reason) } catch (e: Exception) { DiagLog.w(tag, "tunnel sink: " + e) }
         pendingOffer = null
@@ -575,6 +599,7 @@ class WifiTransport(
         try { reservation?.close() } catch (_: Exception) {}; reservation = null
         if (fsm.state != LinkState.State.DOWN && fsm.state != LinkState.State.IDLE) fsm.fail(reason, now())
         setPhase("DOWN", reason + (if (fsm.retryDelayMs() > 0) " (retry allowed in " + (fsm.retryDelayMs() / 1000) + "s)" else ""))
+        cancelSent = false
     }
 
     /** v0.6: write one tunnel frame on the current authenticated link. False if there is no link. */

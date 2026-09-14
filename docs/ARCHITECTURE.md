@@ -746,6 +746,34 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Answering a link request (v0.9.4)
+
+The v0.5 rule ignored a WIFI_REQUEST, with no answer at all, whenever this
+phone was already UP or busy negotiating. A seller still holding a link
+from an earlier test therefore refused every customer for ever, and the
+customer saw only "searching..." until its own timeout. Every case now has
+an answer, decided by the pure `LinkState.hostAnswer(peer, myShort,
+linkInUse)`:
+
+| situation | answer |
+|---|---|
+| UP with the same peer (its side is gone, it would not ask otherwise) | drop the stale link, host |
+| UP with someone else, a session really running | refuse, send WIFI_CANCEL(BUSY) |
+| UP with someone else, link idle | drop the idle link, host the newcomer |
+| both asked at once, the other ID is lower | ignore, it hosts |
+| mid-negotiation for this same peer | tear it down, start over |
+| mid-negotiation for someone else | refuse, send WIFI_CANCEL(BUSY) |
+| idle | host |
+
+`linkInUse` comes from the node: a gateway session, a tunnel session or a
+relay session. An idle link is never a reason to refuse a customer.
+
+WIFI_CANCEL now carries a reason byte (`CANCEL_NO_HOTSPOT`, `CANCEL_BUSY`,
+generic). A build older than v0.9.4 sends no byte, which reads as generic,
+so the change is backward compatible. A host that gives up before the link
+came up (hotspot failure, step timeout) sends one too, so the waiting phone
+stops immediately instead of running its own timeout.
+
 ## Why a link setup fails (v0.9.3)
 
 One 120 s timeout for every step told the user nothing and took two

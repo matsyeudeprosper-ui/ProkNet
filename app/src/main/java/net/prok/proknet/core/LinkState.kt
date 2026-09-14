@@ -40,6 +40,29 @@ class LinkState {
     }
 
     /**
+     * v0.9.4: what to do when [peerShort] asks us to host a link. The v0.5
+     * rule simply ignored the request whenever this phone was UP or busy,
+     * with no answer at all, so a seller holding a dead link from an earlier
+     * test refused every customer for ever and the customer only saw
+     * "searching..." until its own timeout. Now every case has an answer.
+     *
+     * @param linkInUse a session is really running on the current link (a
+     *        customer is being served); an idle link is not a reason to refuse.
+     */
+    enum class HostAnswer { HOST, DROP_STALE_THEN_HOST, REFUSE_BUSY, IGNORE_TIE_BREAK }
+
+    fun hostAnswer(peerShort: String, myShort: String, linkInUse: Boolean): HostAnswer = when {
+        state == State.UP && peer == peerShort -> HostAnswer.DROP_STALE_THEN_HOST        // its side is gone: it would not ask otherwise
+        state == State.UP && linkInUse -> HostAnswer.REFUSE_BUSY                          // really serving someone else
+        state == State.UP -> HostAnswer.DROP_STALE_THEN_HOST                              // idle link with someone else: drop it
+        state == State.REQUESTING && peer == peerShort && myShort > peerShort -> HostAnswer.IGNORE_TIE_BREAK
+        state == State.REQUESTING && peer == peerShort -> HostAnswer.HOST                 // we asked them, they asked us: this side hosts
+        isBusy && peer == peerShort -> HostAnswer.DROP_STALE_THEN_HOST                    // mid-negotiation for this same peer: start it over cleanly
+        isBusy -> HostAnswer.REFUSE_BUSY
+        else -> HostAnswer.HOST
+    }
+
+    /**
      * v0.9.1: we believe we are linked to [peerShort], yet it is asking for a
      * new link. Its side is gone (app restart, link torn down without us
      * noticing), so the old link is stale and must be dropped before hosting

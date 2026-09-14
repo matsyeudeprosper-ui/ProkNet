@@ -1,79 +1,104 @@
-# CLAUDE_REPORT - ProkNet v0.9.3 "fail fast, say why"
+# CLAUDE_REPORT - ProkNet v0.9.4 "the seller always answers"
 
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
 Status: **built, 108/108 automated tests pass, released, not yet retested on phones**
 
-## 1. What Mike reported
+## 1. What the phone diagnostic proved
 
-Buying from a phone that was sharing: the screen stayed on "Recherche d un
-fournisseur..." for two minutes, then "Connexion perdue / Reessayez".
+Mike sent the buyer side (OnePlus CPH2409, prok-0f7d57b3, build 16):
 
-Reading the two screenshots against the code: the buyer never reached
-CONNECTING, so the Android join dialog never appeared and no WIFI_OFFER
-ever arrived. 15:48 -> 15:50 is exactly `STEP_TIMEOUT_MS` (120 s), so the
-link state machine timed out in REQUESTING. The hint was "Reessayez",
-which is what `lostHint("")` returns: the tunnel had no error because the
-failure happened one layer below, in the Wi-Fi link, and the screen never
-saw that reason.
+```
+16:11:47.627 WIFI: PHASE REQUESTING - WIFI_REQUEST -> prok-24e480e6 over BLE
+16:11:51.535 GATT-C: frame 1/1 -> DELIVERED (RECEIPT accepted: destination stored it)
+16:12:49.295 WIFI: PHASE DOWN - the provider did not answer within 60s
+```
 
-I cannot say from here WHICH side failed (the seller log has it). The most
-likely cause by far is the seller side: the hotspot is created by the phone
-that SHARES, and `startLocalOnlyHotspot` needs Wi-Fi on and Location on. A
-seller sharing its mobile data very often has Wi-Fi switched off.
+That receipt is decisive. ACCEPTED is only returned after the seller has
+decrypted the envelope, verified the signature and dispatched the control
+message to its Wi-Fi transport. So the seller was alive, knew the buyer's
+key, and received the request. It also advertises `SELL 5 CFA/MB mobile
+data`, so it is selling with a working upstream. It simply never answered.
 
-## 2. What v0.9.3 changes
+The seller is prok-24e480e6, the same phone that was the RELAY in the
+3-phone test an hour earlier, and the buyer is prok-0f7d57b3, the phone it
+was hosting then.
 
-- **Per-step patience** (`LinkState.stepTimeoutMs`, pure + tested):
-  REQUESTING 60 s, HOSTING 45 s, HANDSHAKE 30 s; 120 s only for the two
-  steps where a human must tap Android dialog. `timeoutReason(step)` turns
-  the expired step into a sentence instead of "step timeout in DOWN".
-- **The host says it cannot host.** On any `startLocalOnlyHotspot` failure
-  (callback, SecurityException, exception) the host now sends WIFI_CANCEL
-  over BLE. The buyer stops in seconds with "the provider could not start
-  its Wi-Fi hotspot" instead of waiting for its own timeout. The host also
-  logs "starting the local-only hotspot for prok-... (wifi on/off)".
-- **The reason survives.** `ProkNetNode.lastBuyError` holds why the attempt
-  ended; the node clears the purchase state (so the next SELL is not
-  refused) while the screen can still explain what happened.
-- **Actionable French.** `ProductState.lostHint` now has three specific
-  cases: nobody answered ("Sur son telephone : Wi-Fi et localisation
-  actives, application ouverte"), could not create the hotspot, network not
-  joined ("appuyez sur CONNECTER dans la fenetre Android"), plus the radio
-  case and the generic one.
-- **The warning where the fix is.** The seller sharing card and its setup
-  screen warn when Wi-Fi or Location is off on THAT phone. The buyer is
-  told to turn Wi-Fi on before it even tries.
+## 2. Root cause
 
-## 3. Tests (108)
+`LinkState.requestReceived` (unchanged since v0.5) answers nothing at all
+when this phone is UP or busy:
 
-`LinkStateTest`: the five per-step timeouts, and a REQUESTING attempt that
-survives 59 s and tears down at 61 s naming the step.
-`ProductStateTest`: the three new hints are specific, none of them says
-"move closer", and a plain protocol error still gets the generic sentence.
+```kotlin
+if (state == State.UP) return Action.NONE
+if (isBusy && !(state == State.REQUESTING && peer == peerShort)) return Action.NONE
+```
 
-## 4. Build
+A phone that still holds a link from an earlier session therefore refuses
+every new customer silently, for ever: TCP does not notice a peer that
+walked away while the link is idle, so nothing ever clears it. v0.9.1 fixed
+exactly one case of this (the SAME peer asking again) for the relay; the
+general case, and above all the silence, remained.
 
-Build 16, versionName 0.9.3, 1.18 MB,
-SHA256 `7fc61ff1c6fd4a5dbfd755553f41284f0ae80158248fda2cda3f76888f5dadab`.
+## 3. Fix: every request gets an answer
+
+`LinkState.hostAnswer(peerShort, myShort, linkInUse)`, pure and tested:
+
+| situation | answer |
+|---|---|
+| UP with the same peer | drop the stale link, host |
+| UP with someone else, a session really running | REFUSE_BUSY |
+| UP with someone else, link idle | drop the idle link, host |
+| both asked at once, other ID lower | ignore (it hosts) |
+| mid-negotiation for the same peer | tear down, start over |
+| mid-negotiation for someone else | REFUSE_BUSY |
+| idle | host |
+
+`linkInUse` is supplied by the node (`gateway.session != null ||
+tunnel.session != null || relay.session != null`): an idle link is never a
+reason to refuse a customer, a live session is.
+
+WIFI_CANCEL now carries a reason byte (CANCEL_NO_HOTSPOT, CANCEL_BUSY,
+generic); older builds send none, which reads as generic, so it is
+backward compatible. It is sent on REFUSE_BUSY, on any hotspot failure,
+and from `teardown` whenever the link never came up, so the other phone
+stops in about a second instead of running its own 60 s timeout.
+`ProductState.lostHint` turns CANCEL_BUSY into "Le fournisseur est deja
+occupe avec un autre telephone. Reessayez dans un moment."
+
+## 4. Tests (108)
+
+`LinkStateTest` drives the seven rows of that table, including the exact
+shape of this failure: a host that is UP from an earlier session and is
+asked again by the same peer, and by a different one, with and without a
+live session.
+`WireTest` round-trips the cancel reason and parses a reason-less cancel
+from an older build as generic.
+`ProductStateTest` checks the new French sentence and that none of the
+setup failures tells the user to walk.
+
+## 5. Build
+
+Build 17, versionName 0.9.4, 1.3 MB,
+SHA256 `128cb0309b38e70ec8e1866c11f2af9e1a3ecda9590c125c2bf0e55c8843b342`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.3
-Commit `e5bd8ed7f57a4e653aeb3c3f9fc9efa3b0a6909e` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.4
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 5. What this does NOT do
+## 6. Important for the retest
 
-It does not make a failing hotspot work. If the seller phone refuses to
-create a local-only hotspot, the pair still cannot link; the difference is
-that both users now know within seconds what to switch on. TESTING.md
-section 21 reproduces the three cases deliberately, and asks for COPY DIAG
-from both phones if it still fails with everything on.
+**Both phones must run 0.9.4.** The buyer side of this bug is only the
+symptom; the decision that was missing is on the phone that HOSTS. A seller
+still running 0.9.3 or earlier will keep answering nothing.
 
-## 6. Preserved
+## 7. Lesson recorded
 
-No protocol change except one extra WIFI_CANCEL, which v0.5 already defines
-and handles. The relay handshake, coverage planner, marketplace and
-database are untouched.
+A protocol step that can be refused must have a refusal message. Silence is
+indistinguishable from a lost packet, from a dead app and from a bug, and it
+costs the user a full timeout every time. The v0.9.1 relay fix and this one
+are the same lesson twice: ask and always answer, never announce once and
+hope.
