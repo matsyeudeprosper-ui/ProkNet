@@ -90,7 +90,7 @@ SHA256 `eef95372e0f8f09e4ebb91f3cbe8aaba9dc78cd9c64d775a5adb81f9b5f476f0`.
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.7
-Commit `CODE_COMMIT` on `main`; this report on top.
+Commit `d2ce93ab7274afaef7250cac693d196e1983f6a5` on `main`; this report on top.
 
 ## 8. What the phones must show
 
