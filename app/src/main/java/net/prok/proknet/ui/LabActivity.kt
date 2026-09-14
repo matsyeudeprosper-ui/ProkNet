@@ -524,6 +524,8 @@ class LabActivity : Activity(), ProkNetNode.Listener {
             "fingerprint: " + node.identity.fingerprint + (node.identity.legacyIdHex?.let { " (legacy id " + it.substring(0, 8) + ")" } ?: "") + "\n" +
             "service: " + (if (ProkNetService.running) "RUNNING" else "stopped") + ", battery-exempt: " + pm.isIgnoringBatteryOptimizations(packageName) + "\n" +
             "status: " + node.statusLine() + "\n" +
+            "share check: " + node.shareCheck + " on " + net.prok.proknet.core.ShareCheck.describe(node.shareFreqMhz) + " [" + node.shareNetworkKey + "]" +
+            (if (node.shareDetail.isNotEmpty()) " - " + node.shareDetail else "") + "\n" +
             (if (node.wifi.lastHotspotError.isNotEmpty()) "my hotspot error: " + node.wifi.lastHotspotError + "\n" else "") +
             (if (node.wifi.peerCancelDetail.isNotEmpty()) "provider refused, ITS error: " + node.wifi.peerCancelDetail + "\n" else "") +
             "ble: " + node.linkState(Routing.TRANSPORT_BLE) + " | sent " + node.ble.bytesSent + " B, recv " + node.ble.bytesReceived + " B\n" +

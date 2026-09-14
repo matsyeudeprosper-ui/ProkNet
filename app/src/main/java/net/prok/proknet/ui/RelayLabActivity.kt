@@ -24,6 +24,7 @@ import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.ShareCheck
 import net.prok.proknet.node.RelayProbe
 
 /**
@@ -52,6 +53,12 @@ class RelayLabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnLinkUp).setOnClickListener { linkUpstream() }
         findViewById<Button>(R.id.btnDropUp).setOnClickListener { node.dropUpstream(); toast("Upstream link dropped") }
         findViewById<Button>(R.id.btnProbe).setOnClickListener { refreshProbe(); refreshState() }
+        findViewById<Button>(R.id.btnShareCheck).setOnClickListener {
+            if (!node.isRunning) { toast("Start the node first"); return@setOnClickListener }
+            node.checkSharing("manual test", force = true)
+            toast("Testing the hotspot on this Wi-Fi network...")
+            main.postDelayed({ refreshState() }, 3000)
+        }
         findViewById<Button>(R.id.btnCopyRelayDiag).setOnClickListener { copyRelayDiag() }
         findViewById<Button>(R.id.btnScanWifi).setOnClickListener { scanWifi() }
         peersAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
@@ -100,6 +107,7 @@ class RelayLabActivity : Activity(), ProkNetNode.Listener {
     private fun refreshState() {
         val r = node.relay
         val t = "node " + (if (node.isRunning) "running" else "STOPPED") + " | " + r.stateLine() + "\n" +
+            "share while on Wi-Fi: " + node.shareCheck + " on " + ShareCheck.describe(node.shareFreqMhz) + " [" + node.shareNetworkKey + "]" + (if (node.shareDetail.isNotEmpty()) " - " + node.shareDetail else "") + "\n" +
             "DOWN (normal): " + node.wifi.phase + (node.wifi.linkedPeer?.let { " prok-" + it } ?: "") + " | relay tx " + node.wifi.relayBytesSent + " rx " + node.wifi.relayBytesReceived + "\n" +
             "UP: " + node.wifiUp.phase + (node.wifiUp.linkedPeer?.let { " prok-" + it } ?: "") + " | relay tx " + node.wifiUp.relayBytesSent + " rx " + node.wifiUp.relayBytesReceived + "\n" +
             (r.session?.let { "session " + it.id + ": to seller " + it.bytesToUp + " B / " + it.framesToUp + " frames, to buyer " + it.bytesToDown + " B / " + it.framesToDown + " frames, " + (it.durationMs / 1000) + " s\n" } ?: "") +

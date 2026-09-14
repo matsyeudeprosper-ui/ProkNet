@@ -746,6 +746,51 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Can this phone resell its own Wi-Fi? (v0.9.6)
+
+A provider serves a customer through a local-only hotspot. On most chipsets
+that hotspot must use the channel the phone's own Wi-Fi connection already
+sits on, so a phone joined to a 5 GHz or DFS network is often refused with
+`ERROR_NO_CHANNEL`. Android gives an app no way to choose the band, so the
+only honest answer is to test it.
+
+- `core/ShareCheck` (pure): `needed(upstreamType)` (only a Wi-Fi upstream
+  can clash), `shouldProbe`, `verdict`, `canShareWhileOnWifi` (null =
+  never tested, and **unknown is not a refusal**), `key(ssid, bssid)` (one
+  answer per network, BSSID first), and `band` / `channel` / `isDfs` /
+  `describe` so every failure is recorded with its frequency.
+- `node/HotspotProbe` (Android): starts a local-only hotspot, closes it
+  immediately, reports started or the exact Android error. 15 s cap.
+- `ProkNetNode.checkSharing(why, force)` runs it when SELL is switched on
+  and whenever the upstream network changes, never while a link is in use.
+  The verdict, the detail and the frequency are stored per network key in
+  `proknet_share_cap`, so the answer is instant next time. The Relay Lab
+  has a TEST SHARING button to force a fresh run.
+- The consumer screen shows one sentence, only for the phone and network
+  concerned: "Ce téléphone ne peut pas partager ce réseau Wi-Fi. Vous
+  pouvez partager vos données mobiles à la place." There is no global
+  advice to switch Wi-Fi off.
+
+In the coverage engine:
+
+- `CoverageNode.canShareWhileOnWifi` (default true; false only after a
+  tested refusal) and `InternetSource.wifiBased` / `frequencyMhz` / `band`.
+- `Coverage.canDeliver(node)` gates every place the planner picks a
+  provider (direct, relayed, fundable, mover), and `score` refuses such a
+  route with a reason as a second line of defence.
+- The source is **not** removed from the map: `observedSources` keeps every
+  source seen, `deliverableSources` is the subset someone present can hand
+  over today, and `blockedSources` explains the difference. A Wi-Fi network
+  that this phone cannot resell stays a candidate for a capable phone
+  later.
+
+## Next transport experiment (not started)
+
+Wi-Fi Direct (P2P group owner) coexists with a station connection more
+freely on many phones, and the Relay Lab already reports whether P2P is
+supported. It is the next candidate if the probe shows that many phones
+cannot resell Wi-Fi, and it comes after the 3-phone relay retest.
+
 ## Carrying the host's error to the user (v0.9.5)
 
 WIFI_CANCEL now carries `[reason byte][detail utf8]`, the detail being the

@@ -18,7 +18,9 @@ import net.prok.proknet.core.Transfer
 import net.prok.proknet.core.Wire
 import net.prok.proknet.core.hexToBytes
 import net.prok.proknet.core.toHex
+import net.prok.proknet.core.ShareCheck
 import net.prok.proknet.node.Gateway
+import net.prok.proknet.node.HotspotProbe
 import net.prok.proknet.node.RelayNode
 import net.prok.proknet.node.TransferEngine
 import net.prok.proknet.node.TunnelClient
@@ -111,7 +113,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
-        override fun onChanged() { main.post { refreshAdvert(); pushStatus() } }
+        override fun onChanged() { main.post { refreshAdvert(); pushStatus(); recheckSharingIfNetworkChanged() } }
     })
     val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
         override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = sendFromTunnel(type, streamId, data)
@@ -137,6 +139,78 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onChanged() { main.post { pushStatus() } }
     })
     /** Price the buyer saw in the scan when it pressed BUY (locks the proposal). */
+    // ---- v0.9.6: can this phone serve a customer while it stays on its own Wi-Fi network? ----
+    private val capPrefs = context.getSharedPreferences("proknet_share_cap", Context.MODE_PRIVATE)
+    @Volatile var shareCheck: ShareCheck.Result = ShareCheck.Result.UNKNOWN
+        private set
+    @Volatile var shareNetworkKey: String = ""
+        private set
+    @Volatile var shareFreqMhz: Int = 0
+        private set
+    @Volatile var shareDetail: String = ""
+        private set
+
+    /** Null = never tested on this network. False ONLY when Android refused the hotspot here. */
+    fun canShareWhileOnWifi(): Boolean? = ShareCheck.canShareWhileOnWifi(shareCheck)
+
+    private fun readCap(key: String): ShareCheck.Result = when (capPrefs.getString("cap:" + key, null)) {
+        "1" -> ShareCheck.Result.CAN_SHARE
+        "0" -> ShareCheck.Result.CANNOT_SHARE
+        else -> ShareCheck.Result.UNKNOWN
+    }
+
+    private fun writeCap(key: String, r: ShareCheck.Result, detail: String, freq: Int) {
+        capPrefs.edit()
+            .putString("cap:" + key, if (r == ShareCheck.Result.CAN_SHARE) "1" else "0")
+            .putString("why:" + key, detail)
+            .putInt("freq:" + key, freq)
+            .putLong("at:" + key, System.currentTimeMillis())
+            .apply()
+    }
+
+    /**
+     * v0.9.6: run when SELL is switched on (and when the upstream network changes). A phone selling
+     * mobile data needs no test. A phone selling its own Wi-Fi is tested ONCE per network: the hotspot
+     * is started and closed immediately, before any customer can fail on it.
+     */
+    fun checkSharing(why: String, force: Boolean = false) {
+        val type = Tunnel.upstreamType(gateway.upstream)
+        val net = wifi.currentWifi()
+        val key = ShareCheck.key(net?.ssid, net?.bssid)
+        shareNetworkKey = key
+        shareFreqMhz = net?.freqMhz ?: 0
+        if (!ShareCheck.needed(type)) {
+            shareCheck = ShareCheck.Result.NOT_NEEDED; shareDetail = ""
+            DiagLog.i(tag, "SHARE CHECK: upstream is " + Tunnel.upstreamName(type) + ", a hotspot cannot clash with it")
+            pushStatus(); return
+        }
+        val remembered = if (force) ShareCheck.Result.UNKNOWN else readCap(key)
+        if (!ShareCheck.shouldProbe(type, remembered)) {
+            shareCheck = remembered; shareDetail = capPrefs.getString("why:" + key, "") ?: ""
+            DiagLog.i(tag, "SHARE CHECK " + remembered + " (remembered) for " + key + " on " + ShareCheck.describe(shareFreqMhz))
+            pushStatus(); return
+        }
+        if (!wifi.state.isIdle || gateway.session != null) { DiagLog.i(tag, "share check postponed (" + why + "): a Wi-Fi link is in use"); return }
+        DiagLog.i(tag, "SHARE CHECK (" + why + "): testing the hotspot while joined to " + (net?.ssid ?: "a Wi-Fi network") + " on " + ShareCheck.describe(shareFreqMhz))
+        HotspotProbe.run(context, shareFreqMhz, key) { o ->
+            main.post {
+                shareCheck = ShareCheck.verdict(type, o.started)
+                shareDetail = o.detail
+                writeCap(key, shareCheck, o.detail, o.freqMhz)
+                DiagLog.i(tag, "SHARE CHECK " + shareCheck + " on " + ShareCheck.describe(o.freqMhz) + " [" + key + "]: " + o.detail +
+                    (if (shareCheck == ShareCheck.Result.CANNOT_SHARE) " - this phone cannot RESELL this network; the network itself stays on the map for another phone" else ""))
+                pushStatus()
+            }
+        }
+    }
+
+    /** The Wi-Fi network changed under a seller: the answer may be different on the new one. */
+    private fun recheckSharingIfNetworkChanged() {
+        if (!gateway.providing) return
+        val net = wifi.currentWifi()
+        if (ShareCheck.key(net?.ssid, net?.bssid) != shareNetworkKey) checkSharing("upstream network changed")
+    }
+
     // ---- v0.9 live relay ----
     val relay: RelayNode = RelayNode(identity, object : RelayNode.Hooks {
         override fun sendDown(type: Int, payload: ByteArray): Boolean = wifi.sendRaw(type, payload)
@@ -241,6 +315,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (relay.relayMode) return "relay mode is on"
             sellPrice = price; sellMinPrice = minPrice; sellMaxMb = maxMb
             gateway.start()
+            main.postDelayed({ if (gateway.providing) checkSharing("sharing switched on") }, 1200)
         } else gateway.stop()
         refreshAdvert(); pushStatus()
         return null
@@ -643,6 +718,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (relay.relayMode || relay.providerShort != null || relay.relayedBuyer != null) sb.append(" | ").append(relay.stateLine())
         sb.append(" | keys ").append(store.peerKeyCount())
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
+        if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | CANNOT resell this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
         if (relayOn) sb.append(" | RELAY on")
         if (tunnel.state != "DISCONNECTED" || buyerWanted != null) sb.append(" | BUY: ").append(tunnel.state)
         sb.append(" | ").append(q)

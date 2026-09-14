@@ -1,97 +1,107 @@
-# CLAUDE_REPORT - ProkNet v0.9.5 "the provider's own error, on the buyer's screen"
+# CLAUDE_REPORT - ProkNet v0.9.6 "can this phone resell its own Wi-Fi?"
 
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 108/108 automated tests pass, released, not yet retested on phones**
+Status: **built, 114/114 automated tests pass, released, not yet tested on phones**
 
-## 1. v0.9.4 verified on the phones
+Option B from `docs/DECISION_WIFI_SHARING.md`, approved with three
+clarifications, all implemented.
 
-Mike's diagnostic (build 17) shows the v0.9.4 mechanism working exactly as
-designed, five attempts in a row:
+## 1. The probe
 
-```
-17:35:01.748 GATT-C: frame 1/1 -> DELIVERED (RECEIPT accepted)
-17:35:03.298 WIFI: prok-24e480e6 cancelled the link: cannot create the hotspot
-17:35:03.298 WIFI: PHASE DOWN - the provider could not start its Wi-Fi hotspot
-```
+`node/HotspotProbe` starts a local-only hotspot, closes it immediately and
+reports either "started" or the exact Android error. It runs:
 
-Two seconds instead of sixty, with a real sentence on screen. The silent
-refusal is gone. What remains is the provider's actual problem: it cannot
-create a local-only hotspot. Its advert also changed from "mobile data" to
-**Wi-Fi**, so that phone is now connected to a Wi-Fi router and selling
-that, which is the classic case where Android answers ERROR_NO_CHANNEL
-(the AP cannot use the channel the station is on).
+- when SELL is switched on, 1.2 s after the gateway has its upstream;
+- again whenever the upstream network changes under a seller;
+- on demand from Relay Lab -> **TEST SHARING** (forces a fresh run).
 
-## 2. What v0.9.5 adds
+It never runs while a Wi-Fi link or a session is in use, and it is capped
+at 15 s in case Android never calls back.
 
-- **The cancel carries the host's error.** WIFI_CANCEL is now
-  `[reason][detail utf8 <=120]`. The host puts its own text in it
-  ("reason 1 (no channel: ...)", "Location services are off on the
-  provider", "missing the Nearby devices / Location permission"). Older
-  builds send no detail, which still parses.
-- **The buyer names one action.** `ProductState.lostHint` maps that detail
-  to a single French instruction: turn Location on / turn the Android
-  hotspot off / leave Wi-Fi and use mobile data / grant Nearby devices.
-- **The buyer's diagnostic shows it**: "provider refused, ITS error: ..."
-  in COPY DIAG and in the Relay Lab, so the next report needs one phone,
-  not two.
-- **Host-side prevention**: Location services are checked before calling
-  Android; the attempt logs which Wi-Fi network the phone is on; a failure
-  is retried once after closing any reservation this app still holds.
-- **No backoff after an explicit refusal** (`LinkState.forgetFailures`):
-  the exponential wait is for silent failures, not for a peer that said no
-  in one second. Mike hit "wait 40s" twice in the log; that is fixed.
+## 2. The rules, pure and tested (`core/ShareCheck`)
 
-## 3. Most likely resolution for the phones
+- `needed(upstreamType)`: only a **Wi-Fi** upstream can clash with a
+  hotspot. A phone selling mobile data is never tested and is always
+  allowed to share.
+- `shouldProbe`: only when needed and this network has no remembered
+  answer.
+- `verdict(upstreamType, started)` -> NOT_NEEDED / CAN_SHARE / CANNOT_SHARE.
+- `canShareWhileOnWifi(result)` -> true / false / **null when never
+  tested**. Unknown is not a refusal; only a tested failure is.
+- `key(ssid, bssid)`: one answer **per network** (BSSID first, SSID as
+  fallback, "unknown" when Android redacts both). The same phone may manage
+  one router and not another.
+- `band` / `channel` / `isDfs` / `describe`: every result is recorded with
+  its frequency, e.g. "5 GHz DFS ch 60 (5300 MHz)".
 
-If the detail comes back as ERROR_NO_CHANNEL, the provider must leave its
-Wi-Fi network and share mobile data instead. That is exactly the
-combination that worked in the 3-phone relay test, where the same phone
-hosted `AndroidShare_5999` while its mobile data was the upstream.
+Stored per network key in `proknet_share_cap` (verdict, Android own error
+text, frequency, timestamp), so the second time the answer is instant and
+no hotspot flashes.
 
-## 4. Tests (108)
+## 3. The coverage engine
 
-`WireTest`: the detail round-trips, is capped, and a reason-less cancel
-from an older build still parses. `ProductStateTest`: the four host errors
-each produce their own French instruction and none of them says "move
-closer". `LinkStateTest`: `forgetFailures` clears the backoff.
+- `CoverageNode.canShareWhileOnWifi` (default true, false only after a
+  tested refusal) and `InternetSource.wifiBased` / `frequencyMhz` / `band`.
+- `Coverage.canDeliver(node)` now gates **every** place the planner picks a
+  provider: direct, through relays, fundable, and mover routes. `score`
+  refuses such a route with its own reason as a second line of defence.
+- **The source is not removed from the map.** `observedSources` keeps every
+  source seen, `deliverableSources` is the subset someone present can hand
+  over today, `blockedSources` gives the difference with a reason. A Wi-Fi
+  network that this phone cannot resell stays a candidate for a capable
+  phone later, exactly as asked.
 
-## 5. Build
+## 4. What the user sees
 
-Build 18, versionName 0.9.5, 1.18 MB,
-SHA256 `46b8097f39cdc248523200a414f891f0b8e9a6891c734bac949b0b8cedf6b32c`.
+One sentence, on the seller own sharing card, only for the phone and the
+network concerned:
+
+> Ce telephone ne peut pas partager ce reseau Wi-Fi. Vous pouvez partager
+> vos donnees mobiles a la place.
+
+While the test runs: "Verification du partage sur ce reseau Wi-Fi...".
+Sharing is **not** switched off, and there is no global advice to turn
+Wi-Fi off anywhere in the app.
+
+## 5. Tests (114, +6)
+
+New `ShareCheckTest` (4): only a Wi-Fi upstream is tested; the test runs
+once per network; unknown is not a refusal; the key is per network with the
+BSSID winning and a fallback when Android redacts it; bands and channels
+including DFS.
+
+New in `CoverageTest` (2): **the decisive one** builds a phone that was
+tested and refused, and proves that no route is planned through it, that
+`canDeliver` is false, that the source is still in `observedSources` and
+named in `blockedSources` with a reason, that a capable phone in the same
+zone delivers the same source, that the same incapable phone still sells
+its mobile data, and that an untested phone is not blocked. The second
+checks that a source keeps its band.
+
+## 6. Build
+
+Build 19, versionName 0.9.6, 1.19 MB,
+SHA256 `069d4857ad9b5e84ad31c011bbae60c084ccecc0a5ad70f15580db0eca58cccc`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.5
-Commit `5e29817cd5e286590874bfc4fb802a38da8473d1` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.6
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 6. Preserved
+## 7. Wi-Fi Direct
 
-Only the cancel payload changed, and it is backward compatible in both
-directions. Relay handshake, coverage planner, marketplace, database and
-the consumer screens are untouched.
+Not implemented, as instructed. Documented as the next transport
+experiment in `docs/ARCHITECTURE.md` and in the decision record. The Relay
+Lab already reports whether each phone supports P2P, so the data to decide
+it will accumulate on its own.
 
-## 7. Phone result after this build, and an open decision
+## 8. What the phone test should produce
 
-Mike retested: with the seller **connected to a Wi-Fi router** every
-purchase was refused ("the provider could not start its Wi-Fi hotspot");
-with the seller's **Wi-Fi off, sharing mobile data**, the buyer connected
-and browsed. So v0.9.4 + v0.9.5 did their job (the refusal is instant and
-named), and the remaining problem is a device limit, not a protocol bug:
-that phone cannot run its hotspot on a channel compatible with the router,
-and `startLocalOnlyHotspot` gives an app no way to choose the band.
-
-His question is the right one: "so Wi-Fi should never be on?" The answer
-cannot be yes, because home / shop / public Wi-Fi are three of the six
-source types in the locked coverage model, and a seller reselling Wi-Fi
-must stay connected to it.
-
-**Nothing has been built for this.** The analysis, the evidence (including
-the same phone hosting a hotspot at 2412 MHz while joined to another phone
-during the 3-phone relay test), three options and a recommendation are in
-**`docs/DECISION_WIFI_SHARING.md`**, with three questions at the end.
-Waiting for your decision before writing any of it.
-
+`docs/TESTING.md` section 24. The useful output for you is the share-check
+line from COPY DIAG on each phone, which carries the verdict, the band, the
+channel and Android own error. That is the data that will show whether
+failures are all 5 GHz / DFS, and whether a 2.4 GHz network lets a seller
+share while staying on Wi-Fi.

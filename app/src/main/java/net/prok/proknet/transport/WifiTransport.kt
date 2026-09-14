@@ -149,6 +149,27 @@ class WifiTransport(
 
     /** Is Wi-Fi on? A hotspot cannot be started without it on most phones. */
     val wifiEnabled: Boolean get() = try { wifi.isWifiEnabled } catch (e: Exception) { false }
+
+    /** v0.9.6: the real Wi-Fi network this phone uses for Internet (never the ProkNet link, which is local-only). */
+    class NetInfo(val ssid: String?, val bssid: String?, val freqMhz: Int)
+
+    @Suppress("DEPRECATION")
+    fun currentWifi(): NetInfo? {
+        try {
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                val info = if (Build.VERSION.SDK_INT >= 29) caps.transportInfo as? WifiInfo else null
+                val legacy = if (info == null) wifi.connectionInfo else null
+                val ssid = (info?.ssid ?: legacy?.ssid)?.trim('"')?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+                val bssid = info?.bssid ?: legacy?.bssid
+                val freq = info?.frequency ?: legacy?.frequency ?: 0
+                return NetInfo(ssid, bssid, freq)
+            }
+        } catch (e: Exception) { DiagLog.w(tag, "current wifi: " + e) }
+        return null
+    }
     val state: LinkState get() = fsm
     val linkedPeer: String? get() = if (fsm.isUp) fsm.peer else null
 

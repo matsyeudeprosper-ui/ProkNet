@@ -54,9 +54,15 @@ object Coverage {
         val costPerMbCentimes: Long,
         val reliability: Double,
         val validated: Boolean = true,
+        /** v0.9.6: the Wi-Fi channel it was observed on, 0 when unknown. Kept so failures can be correlated. */
+        val frequencyMhz: Int = 0,
     ) {
         /** v0.9.1: an unvalidated source (captive portal behind an open SSID, dead uplink) is never planned on. */
         val usable: Boolean get() = redistributable(trust) && validated && reliability > 0.0
+        /** v0.9.6: reselling THIS needs the provider phone to hold a Wi-Fi connection and a hotspot at once. */
+        val wifiBased: Boolean get() = type == SourceType.HOME_WIFI || type == SourceType.SHOP_WIFI || type == SourceType.PUBLIC_WIFI
+        val band: String get() = ShareCheck.band(frequencyMhz)
+        fun describe(): String = id + " (" + type + ", " + trustWord(trust) + (if (wifiBased && frequencyMhz > 0) ", " + ShareCheck.describe(frequencyMhz) else "") + ")"
     }
 
     // ---- nodes and radio --------------------------------------------------------------------------
@@ -86,7 +92,51 @@ object Coverage {
         /** Could be turned into a provider for [activationCostCentimes] (a FUNDED source). */
         val fundable: Boolean = false,
         val activationCostCentimes: Long = 0L,
+        /**
+         * v0.9.6: can this phone serve a customer while it stays on its own Wi-Fi network?
+         * Measured by ShareCheck / HotspotProbe. False ONLY when it was tested and refused;
+         * it never removes the source from the map, it removes this phone as its deliverer.
+         */
+        val canShareWhileOnWifi: Boolean = true,
     )
+
+    /**
+     * v0.9.6: can [n] actually hand its source to a customer today? A phone that
+     * cannot run a hotspot while joined to its Wi-Fi network cannot resell that
+     * network, although it can still sell mobile data.
+     */
+    fun canDeliver(n: CoverageNode): Boolean {
+        val s = n.source ?: return false
+        if (!n.canProvide || !s.usable) return false
+        return !s.wifiBased || n.canShareWhileOnWifi
+    }
+
+    /**
+     * Every source seen around, deliverable or not. The connectivity map keeps a
+     * Wi-Fi network even when the phone that sees it cannot resell it: another,
+     * capable phone may deliver it later.
+     */
+    fun observedSources(nodes: List<CoverageNode>): List<InternetSource> =
+        nodes.mapNotNull { it.source }.distinctBy { it.id }.sortedBy { it.id }
+
+    /** The subset at least one node can hand to a customer right now. */
+    fun deliverableSources(nodes: List<CoverageNode>): List<InternetSource> =
+        nodes.filter { canDeliver(it) && it.hasInternet }.mapNotNull { it.source }.distinctBy { it.id }.sortedBy { it.id }
+
+    /** Sources on the map that nobody present can deliver today, with the reason. */
+    fun blockedSources(nodes: List<CoverageNode>): List<Pair<InternetSource, String>> {
+        val ok = deliverableSources(nodes).map { it.id }.toSet()
+        return observedSources(nodes).filter { it.id !in ok }.map { s ->
+            val why = when {
+                !redistributable(s.trust) -> "not redistributable (" + trustWord(s.trust) + ")"
+                !s.validated -> "not validated"
+                s.wifiBased && nodes.any { it.source?.id == s.id && it.canProvide && !it.canShareWhileOnWifi } ->
+                    "no phone here can resell this Wi-Fi network (tested: the hotspot is refused while joined to it)"
+                else -> "no provider available"
+            }
+            s to why
+        }
+    }
 
     /** Undirected radio link with a quality in 0..1 (probability it carries a session). */
     class CandidateLink(val a: String, val b: String, val quality: Double) {
@@ -192,15 +242,15 @@ object Coverage {
                 if (next in path) continue
                 val n = byId[next] ?: continue
                 val newPath = path + next
-                if (n.canProvide && n.hasInternet && n.source?.usable == true) routes.add(routeFor(newPath, n, n.source, policy, moveNode = null, activate = false, byId = byId))
-                if (n.canProvide && !n.hasInternet && n.fundable && n.source?.usable == true) routes.add(routeFor(newPath, n, n.source, policy, moveNode = null, activate = true, byId = byId))
+                if (canDeliver(n) && n.hasInternet) routes.add(routeFor(newPath, n, n.source!!, policy, moveNode = null, activate = false, byId = byId))
+                if (canDeliver(n) && !n.hasInternet && n.fundable) routes.add(routeFor(newPath, n, n.source!!, policy, moveNode = null, activate = true, byId = byId))
                 if (n.canRelay && newPath.size - 1 <= policy.maxRelays) dfs(newPath, quality + l.quality)
             }
         }
         dfs(listOf(buyer.nodeId), emptyList())
 
         // 2. a mover that closes a gap: buyer -> mover -> provider where at least one of the two links is missing
-        val providers = nodes.filter { it.nodeId != buyer.nodeId && it.canProvide && it.source?.usable == true && (it.hasInternet || it.fundable) }.sortedBy { it.nodeId }
+        val providers = nodes.filter { it.nodeId != buyer.nodeId && canDeliver(it) && (it.hasInternet || it.fundable) }.sortedBy { it.nodeId }
         for (m in nodes.filter { it.canMove && it.canRelay && it.nodeId != buyer.nodeId }.sortedBy { it.nodeId }) {
             for (p in providers) {
                 if (p.nodeId == m.nodeId) continue
@@ -280,6 +330,9 @@ object Coverage {
             val bad = r.hops.drop(1).dropLast(1).firstOrNull { byId[it]?.canRelay != true }
             if (bad != null) { feasible = false; reason = bad + " cannot relay" }
             else if (!redistributable(r.source.trust)) { feasible = false; reason = "source " + r.source.id + " is " + trustWord(r.source.trust) + ": not redistributable" }
+            else if (r.source.wifiBased && byId[r.provider]?.canShareWhileOnWifi == false) {
+                feasible = false; reason = r.provider + " cannot resell a Wi-Fi network (its hotspot is refused while it is joined to one)"
+            }
             else if (!r.source.usable) { feasible = false; reason = "source " + r.source.id + " is not usable: " + (if (!r.source.validated) "not validated" else "unreliable") }
             else if (r.relayCount > policy.maxRelays) { feasible = false; reason = "too many relays" }
             else if (moveJobs.any { byId[it.nodeId]?.canMove != true }) { feasible = false; reason = "mover cannot move" }

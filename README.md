@@ -38,7 +38,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.2 | Consumer app in FRENCH (first market), sharing refusal says what is really wrong, a failed buy attempt no longer blocks the next SELL | built, 108 JVM tests pass |
 | v0.9.3 | Link setup fails fast with a real reason: per-step timeouts, the host says at once when it cannot create the hotspot, the buyer screen says what to check, the seller screen warns about Wi-Fi / Location | phone diag: the seller received the request and answered nothing |
 | v0.9.4 | A phone asked to host ALWAYS answers: a stale or idle link is dropped for the new customer, a real refusal is sent back with its reason (busy / no hotspot), and a host that gives up tells the waiting phone | phone diag: works, the refusal arrives in 2 s; the provider cannot create its hotspot |
-| v0.9.5 | The refusal carries the provider's own Android error, so the buyer names the single thing to change; Location pre-check and one hotspot retry on the provider; an explicit refusal no longer starts a retry backoff | built, 108 JVM tests pass, awaiting the two-phone retest |
+| v0.9.5 | The refusal carries the provider's own Android error, so the buyer names the single thing to change; Location pre-check and one hotspot retry on the provider; an explicit refusal no longer starts a retry backoff | phone test: seller on Wi-Fi refused, same seller on mobile data works |
+| v0.9.6 | Sharing capability probe: a seller on Wi-Fi tests its own hotspot once per network before any customer, remembers the answer with the band, and the coverage engine stops planning Wi-Fi resale through that phone while keeping the network as an observed source | built, 114 JVM tests pass |
 
 ### v0.1 - what it does
 
@@ -154,14 +155,15 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 
 Not here: Mobile Money, custody, automatic cashout, multi-hop Internet.
 
-## Open decision
+## Decided
 
 `docs/DECISION_WIFI_SHARING.md`: a seller phone connected to a Wi-Fi router
 often cannot create the hotspot a customer joins (Android
-`ERROR_NO_CHANNEL`, no app-side band control). Switching Wi-Fi off on the
-seller fixes it, but that would remove home / shop / public Wi-Fi from the
-coverage model. Three options, one recommendation, waiting for the
-architect.
+`ERROR_NO_CHANNEL`, no app-side band control). **Option B approved and
+built in v0.9.6**: the phone tests itself once per network, says so in one
+sentence, and the coverage engine stops planning Wi-Fi resale through it
+while keeping the network as an observed candidate source. Wi-Fi Direct is
+the next transport experiment, not started.
 
 ## Build (on the VPS)
 

@@ -135,6 +135,50 @@ class CoverageTest {
     }
 
     @Test
+    fun a_wifi_source_behind_an_incapable_phone_stays_on_the_map_but_is_not_deliverable() {
+        // v0.9.6: this phone was TESTED and cannot run its hotspot while joined to that Wi-Fi network
+        val incapable = CoverageNode("W", "Z", hasInternet = true, source = freeWifi, canProvide = true, canShareWhileOnWifi = false)
+        val ranked = Coverage.plan(demand, listOf(buyer(), incapable), listOf(link("A", "W")))
+        assertTrue("no route may go through a phone that cannot resell Wi-Fi", ranked.isEmpty())
+        assertFalse(Coverage.canDeliver(incapable))
+
+        // ... but the source itself is NOT forgotten: it stays an observed candidate on the map
+        assertTrue(Coverage.observedSources(listOf(incapable)).any { it.id == freeWifi.id })
+        assertTrue(Coverage.deliverableSources(listOf(incapable)).isEmpty())
+        val blocked = Coverage.blockedSources(listOf(incapable))
+        assertEquals(1, blocked.size)
+        assertEquals(freeWifi.id, blocked[0].first.id)
+        assertTrue(blocked[0].second, blocked[0].second.contains("resell"))
+
+        // another phone on the same source CAN deliver it: the map was right to keep it
+        val capable = CoverageNode("G", "Z", hasInternet = true, source = freeWifi, canProvide = true)
+        val both = listOf(buyer(), incapable, capable)
+        val ranked2 = Coverage.plan(demand, both, listOf(link("A", "W"), link("A", "G")))
+        assertEquals(listOf("A", "G"), ranked2[0].route.hops)
+        assertTrue(Coverage.deliverableSources(both).any { it.id == freeWifi.id })
+        assertTrue(Coverage.blockedSources(both).isEmpty())
+
+        // the same incapable phone still sells its MOBILE DATA: the limit is about reselling Wi-Fi only
+        val onMobile = CoverageNode("W", "Z", hasInternet = true, source = mobile, canProvide = true, canShareWhileOnWifi = false)
+        assertTrue(Coverage.canDeliver(onMobile))
+        assertEquals(listOf("A", "W"), Coverage.plan(demand, listOf(buyer(), onMobile), listOf(link("A", "W")))[0].route.hops)
+
+        // a hand-built route through it is refused with a reason, and untested (default true) is not a refusal
+        val r = Coverage.CandidateRoute(listOf("A", "W"), freeWifi, listOf(Coverage.CoverageJob("W", Coverage.JobKind.PROVIDE, 0)))
+        val s = Coverage.score(r, demand, listOf(buyer(), incapable).associateBy { it.nodeId }, listOf(link("A", "W")), Coverage.Policy())
+        assertFalse(s.feasible); assertTrue(s.reason, s.reason.contains("cannot resell a Wi-Fi network"))
+        assertTrue(Coverage.canDeliver(CoverageNode("U", "Z", hasInternet = true, source = freeWifi, canProvide = true)))
+    }
+
+    @Test
+    fun the_band_of_a_wifi_source_is_kept_with_it() {
+        val fiveGhz = InternetSource("cafe5", SourceType.PUBLIC_WIFI, Trust.OPEN_REUSABLE, 0, 0.9, true, 5300)
+        assertTrue(fiveGhz.wifiBased); assertEquals("5 GHz DFS", fiveGhz.band)
+        assertFalse(mobile.wifiBased); assertEquals("unknown", mobile.band)
+        assertTrue(fiveGhz.describe().contains("ch 60"))
+    }
+
+    @Test
     fun ranking_is_deterministic_for_any_input_order() {
         val nodes = listOf(buyer(), provider("F", freeWifi, 0.9), relay("R1"), relay("R2", charging = true), relay("R3", battery = 10), provider("M", mobile), mover("V", 800), provider("Q", mobile, 0.8))
         val links = listOf(link("A", "F", 0.6), link("A", "R1"), link("R1", "R2"), link("R2", "M"), link("A", "R3", 0.8), link("R3", "Q"), link("R1", "Q", 0.7))

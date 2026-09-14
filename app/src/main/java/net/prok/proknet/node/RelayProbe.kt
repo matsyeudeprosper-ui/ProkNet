@@ -94,6 +94,10 @@ object RelayProbe {
             .append("\n  relay bytes sent ").append(node.wifi.relayBytesSent).append(" recv ").append(node.wifi.relayBytesReceived).append("\n")
         sb.append("UPSTREAM link: ").append(node.wifiUp.linkState()).append("\n  ").append(node.wifiUp.linkDescription())
             .append("\n  relay bytes sent ").append(node.wifiUp.relayBytesSent).append(" recv ").append(node.wifiUp.relayBytesReceived).append("\n")
+        sb.append("--- can this phone resell its Wi-Fi? ---\n")
+        sb.append(node.shareCheck).append(" on ").append(net.prok.proknet.core.ShareCheck.describe(node.shareFreqMhz))
+            .append(" [").append(node.shareNetworkKey).append("]")
+            .append(if (node.shareDetail.isNotEmpty()) " - " + node.shareDetail else "").append("\n")
         sb.append("--- relay ---\n")
         sb.append(node.relay.stateLine()).append("\n")
         node.relay.session?.let { sb.append("current: ").append(it.summary()).append("\n") }

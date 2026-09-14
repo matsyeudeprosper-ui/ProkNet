@@ -3,7 +3,8 @@
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **open question, nothing built yet, waiting for a decision**
+Status: **DECIDED 2026-09-14 by the architect: option B. Built and released
+as v0.9.6.** This document is kept as the record of why.
 
 ## 1. What happened on the phones
 
@@ -95,3 +96,19 @@ that one and share **without** turning Wi-Fi off. If it works, the rule is
 3. Does a phone that cannot share while on Wi-Fi still advertise its Wi-Fi
    upstream as a source (for a later relay or a mover), or is it demoted to
    mobile-data-only provider?
+
+## 8. Decision and what was built (2026-09-14)
+
+Option B approved, with three clarifications from the architect:
+
+1. The source stays in the connectivity map as an observed candidate even
+   when the phone that sees it cannot resell it. Implemented as
+   `observedSources` / `deliverableSources` / `blockedSources`; only the
+   PHONE is removed as a deliverer, never the network.
+2. No global "turn Wi-Fi off" advice. The consumer message names this
+   phone and this network, and says mobile data still works.
+3. The upstream band, frequency and channel are recorded with every
+   result, so a correlation with 5 GHz / DFS can be checked later.
+
+Wi-Fi Direct stays unimplemented and is documented as the next transport
+experiment. See `CLAUDE_REPORT.md` for the v0.9.6 build.

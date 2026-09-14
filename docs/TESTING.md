@@ -743,3 +743,28 @@ Both phones on 0.9.5.
 - The exact sentence the buyer showed, and the provider error line from the
   buyer's COPY DIAG.
 - Which change on the provider made it work.
+
+## 24. v0.9.6 the phone tests itself before a customer does
+
+1. Seller phone connected to your Wi-Fi router, mobile data off. Turn
+   sharing on. Within a couple of seconds the sharing card must say:
+   "Ce telephone ne peut pas partager ce reseau Wi-Fi. Vous pouvez partager
+   vos donnees mobiles a la place." Nothing else changes: sharing stays on.
+2. Same phone, Wi-Fi off, mobile data on, sharing on: no warning at all,
+   and a buyer connects as usual.
+3. If the router has a 2.4 GHz network, join the seller to it and turn
+   sharing on: if that phone can host there, the warning must NOT appear
+   and a buyer must connect while the seller stays on Wi-Fi. This is the
+   case the rule exists for.
+4. Developer screen -> COPY DIAG on the seller: the line "share check:
+   CAN_SHARE / CANNOT_SHARE on 5 GHz DFS ch 60 (5300 MHz) [bssid:...]" with
+   the Android error. Relay Lab -> TEST SHARING forces a fresh test.
+5. Turn sharing off and on again: the answer must be instant (remembered),
+   with no second hotspot flash.
+
+### Checklist for the v0.9.6 report
+
+- The exact share-check line from COPY DIAG on each phone, with band and
+  channel. This is the data that shows whether failures are all 5 GHz/DFS.
+- Did a 2.4 GHz network let the seller share while staying on Wi-Fi?
+- Any phone where the probe itself misbehaved (long flash, Wi-Fi dropped).

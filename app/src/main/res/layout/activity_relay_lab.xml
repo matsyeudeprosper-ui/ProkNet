@@ -21,6 +21,7 @@
         </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
             <Button android:id="@+id/btnProbe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="REFRESH" />
+            <Button android:id="@+id/btnShareCheck" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="TEST SHARING" />
             <Button android:id="@+id/btnCopyRelayDiag" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="COPY RELAY DIAG" />
         </LinearLayout>
 
