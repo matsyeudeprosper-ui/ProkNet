@@ -146,6 +146,12 @@ class LinkState {
     /** Can a new attempt start now? Exponential wait after failures, capped. */
     fun retryDelayMs(): Long = if (failures == 0) 0 else minOf(60_000L, 5_000L shl minOf(failures - 1, 4))
 
+    /**
+     * v0.9.5: the backoff exists for attempts that FAILED silently (radio, timeouts). When the peer
+     * answered "no" in one second, the user may press again at once: the cost is one BLE message.
+     */
+    fun forgetFailures() { failures = 0 }
+
     fun canRetry(now: Long): Boolean = (state == State.DOWN && now - lastChange >= retryDelayMs()) || state == State.IDLE
 
     fun reset(now: Long) { role = Role.NONE; peer = null; go(State.IDLE, now) }

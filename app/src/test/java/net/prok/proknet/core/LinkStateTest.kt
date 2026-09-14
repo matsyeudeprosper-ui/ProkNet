@@ -73,6 +73,14 @@ class LinkStateTest {
         val u = LinkState(); u.request("b", 0); u.offerReceived("b", 1); u.networkAvailable(2); u.handshakeOk("b", 3)
         assertEquals(LinkState.Action.NONE, u.tick(999_999, 45_000))
 
+        // v0.9.5: an explicit refusal must not punish the user with the silent-failure backoff
+        val refused = LinkState()
+        refused.request("aaaa0000", 0); refused.fail("the provider could not start its Wi-Fi hotspot", 1_000)
+        assertTrue(refused.retryDelayMs() > 0)
+        refused.forgetFailures()
+        assertEquals(0L, refused.retryDelayMs())
+        assertTrue(refused.canRetry(1_100))
+
         // v0.9.4: a phone asked to host always gives an answer. This is the bug the OnePlus hit:
         // the seller held a link from an earlier test, so it ignored every request in silence and the
         // buyer only saw "searching..." until its own 60 s timeout.

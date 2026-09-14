@@ -95,7 +95,16 @@ class ProductStateTest {
         assertTrue(noHotspot, noHotspot.contains("point d'acc\u00e8s"))
         val notJoined = ProductState.lostHint("the Wi-Fi network was not joined (the Android dialog was not approved?)")
         assertTrue(notJoined, notJoined.contains("CONNECTER"))
-        for (w in listOf(noAnswer, noHotspot, notJoined, busy)) assertFalse(w, w.contains("Rapprochez"))
+        // v0.9.5: each Android hotspot error names the ONE thing the provider must change
+        val loc = ProductState.lostHint("the provider could not start its Wi-Fi hotspot [Location services are off on the provider]")
+        assertTrue(loc, loc.contains("localisation"))
+        val teth = ProductState.lostHint("the provider could not start its Wi-Fi hotspot [reason 2 (incompatible mode: the Android hotspot / tethering is already active)]")
+        assertTrue(teth, teth.contains("partage de connexion"))
+        val chan = ProductState.lostHint("the provider could not start its Wi-Fi hotspot [reason 1 (no channel: disconnect Wi-Fi or use mobile data)]")
+        assertTrue(chan, chan.contains("donn\u00e9es mobiles"))
+        val perm = ProductState.lostHint("the provider could not start its Wi-Fi hotspot [the provider is missing the Nearby devices / Location permission]")
+        assertTrue(perm, perm.contains("proximit\u00e9"))
+        for (w in listOf(noAnswer, noHotspot, notJoined, busy, loc, teth, chan, perm)) assertFalse(w, w.contains("Rapprochez"))
         // a real radio failure still says what helps
         assertEquals(closer, ProductState.lostHint("Wi-Fi link closed: connection closed"))
         assertEquals(closer, ProductState.buyerHint(Buyer.LOST, "DOWN", false, "Wi-Fi network lost"))

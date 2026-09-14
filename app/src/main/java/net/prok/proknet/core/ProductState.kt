@@ -72,6 +72,15 @@ object ProductState {
             "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."
         any(lastError, "already serving", "busy") ->
             "Le fournisseur est d\u00e9j\u00e0 occup\u00e9 avec un autre t\u00e9l\u00e9phone. R\u00e9essayez dans un moment."
+        // v0.9.5: the provider now sends its own Android error, so we can name the ONE thing to change
+        any(lastError, "location services are off") ->
+            "Le fournisseur doit activer la localisation sur son téléphone, puis réessayer."
+        any(lastError, "incompatible mode", "tethering") ->
+            "Le fournisseur doit désactiver son point d'accès Android (partage de connexion), puis réessayer."
+        any(lastError, "no channel") ->
+            "Le fournisseur doit se déconnecter du Wi-Fi et utiliser ses données mobiles : son téléphone ne peut pas partager le canal Wi-Fi."
+        any(lastError, "permission") ->
+            "Le fournisseur doit autoriser « Appareils à proximité » et la localisation pour Prok, puis réessayer."
         any(lastError, "hotspot", "cannot host", "could not start") ->
             "Le fournisseur n'a pas pu créer le point d'accès. Qu'il active le Wi-Fi et la localisation, puis réessayez."
         any(lastError, "not joined", "dialog", "unavailable") ->

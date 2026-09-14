@@ -746,6 +746,31 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Carrying the host's error to the user (v0.9.5)
+
+WIFI_CANCEL now carries `[reason byte][detail utf8]`, the detail being the
+host's own error text, capped at 120 bytes (an older build sends neither,
+which still parses). So the phone that is waiting can log and show what
+Android told the OTHER phone, without anybody opening it:
+
+| host error | what the buyer's screen says (French) |
+|---|---|
+| Location services off | the provider must turn Location on |
+| ERROR_INCOMPATIBLE_MODE / tethering | the provider must turn its Android hotspot off |
+| ERROR_NO_CHANNEL | the provider must leave Wi-Fi and use mobile data: its phone cannot share the Wi-Fi channel |
+| SecurityException | the provider must grant Nearby devices and Location to Prok |
+| anything else | turn Wi-Fi and Location on, then try again |
+
+On the host side: Location services are checked BEFORE calling Android (it
+refuses a local-only hotspot without them, whatever the permissions say),
+the current Wi-Fi network is logged with the attempt, and a failure is
+retried once after closing any reservation this app may still hold.
+
+An explicit refusal also clears the retry budget
+(`LinkState.forgetFailures`): the exponential backoff exists for attempts
+that failed silently, not for a peer that answered "no" in one second. The
+user may press CONNECT again immediately.
+
 ## Answering a link request (v0.9.4)
 
 The v0.5 rule ignored a WIFI_REQUEST, with no answer at all, whenever this

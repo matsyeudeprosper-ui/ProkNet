@@ -90,6 +90,7 @@ object RelayProbe {
         sb.append("--- ProkNet links ---\n")
         sb.append("DOWNSTREAM / normal link: ").append(node.wifi.linkState()).append("\n  ").append(node.wifi.linkDescription())
             .append(if (node.wifi.hotspotSsid.isNotEmpty()) "\n  hotspot ssid " + node.wifi.hotspotSsid else "").append(if (node.wifi.lastHotspotError.isNotEmpty()) "\n  last hotspot error: " + node.wifi.lastHotspotError else "")
+            .append(if (node.wifi.peerCancelDetail.isNotEmpty()) "\n  provider refused, its own error: " + node.wifi.peerCancelDetail else "")
             .append("\n  relay bytes sent ").append(node.wifi.relayBytesSent).append(" recv ").append(node.wifi.relayBytesReceived).append("\n")
         sb.append("UPSTREAM link: ").append(node.wifiUp.linkState()).append("\n  ").append(node.wifiUp.linkDescription())
             .append("\n  relay bytes sent ").append(node.wifiUp.relayBytesSent).append(" recv ").append(node.wifiUp.relayBytesReceived).append("\n")

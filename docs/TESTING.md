@@ -718,3 +718,28 @@ SHARES; a seller running an older build still answers nothing.
 - Build number shown in Profil on BOTH phones (it must be 0.9.4).
 - Did any attempt still hang until the 60 s timeout?
 - The exact message for cases 4 and 5.
+
+## 23. v0.9.5 the provider says what is wrong with IT
+
+Both phones on 0.9.5.
+
+1. Provider connected to a Wi-Fi network, share, then buy from the other
+   phone. If the provider phone cannot share its Wi-Fi channel, the buyer
+   must now say: "Le fournisseur doit se deconnecter du Wi-Fi et utiliser
+   ses donnees mobiles...". Do exactly that on the provider (Wi-Fi OFF,
+   mobile data ON) and buy again: it must work.
+2. Provider with Location OFF: the buyer says the provider must turn
+   Location on. The provider log must show "cannot host: Location services
+   are off" WITHOUT calling Android.
+3. Provider with the Android hotspot (partage de connexion) ON: the buyer
+   says to turn it off.
+4. Press CONNECT twice in a row after a refusal: the second attempt must go
+   out immediately (no "wait 40s").
+5. Developer screen -> COPY DIAG on the BUYER now contains the provider's
+   own error line ("provider refused, ITS error: ...").
+
+### Checklist for the v0.9.5 report
+
+- The exact sentence the buyer showed, and the provider error line from the
+  buyer's COPY DIAG.
+- Which change on the provider made it work.

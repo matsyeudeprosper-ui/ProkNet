@@ -524,6 +524,8 @@ class LabActivity : Activity(), ProkNetNode.Listener {
             "fingerprint: " + node.identity.fingerprint + (node.identity.legacyIdHex?.let { " (legacy id " + it.substring(0, 8) + ")" } ?: "") + "\n" +
             "service: " + (if (ProkNetService.running) "RUNNING" else "stopped") + ", battery-exempt: " + pm.isIgnoringBatteryOptimizations(packageName) + "\n" +
             "status: " + node.statusLine() + "\n" +
+            (if (node.wifi.lastHotspotError.isNotEmpty()) "my hotspot error: " + node.wifi.lastHotspotError + "\n" else "") +
+            (if (node.wifi.peerCancelDetail.isNotEmpty()) "provider refused, ITS error: " + node.wifi.peerCancelDetail + "\n" else "") +
             "ble: " + node.linkState(Routing.TRANSPORT_BLE) + " | sent " + node.ble.bytesSent + " B, recv " + node.ble.bytesReceived + " B\n" +
             "wifi: " + node.linkState(Routing.TRANSPORT_WIFI) + " | sent " + node.wifi.bytesSent + " B, recv " + node.wifi.bytesReceived + " B\n" +
             "peers: " + peers.joinToString("; ") { describe(it) } + "\n" +

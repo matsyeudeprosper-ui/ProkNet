@@ -54,6 +54,12 @@ class WireTest {
         assertEquals(Wire.CANCEL_BUSY, (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_BUSY)) as Wire.Control.WifiCancel).reason)
         assertEquals(Wire.CANCEL_NO_HOTSPOT, (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_NO_HOTSPOT)) as Wire.Control.WifiCancel).reason)
         assertEquals(Wire.CANCEL_GENERIC, (Wire.parseControl(byteArrayOf(Wire.OP_WIFI_CANCEL.toByte())) as Wire.Control.WifiCancel).reason)
+        // v0.9.5: the refusal carries the host own Android error, and survives the round trip
+        val detail = "reason 1 (no channel: this phone is on a Wi-Fi network whose channel cannot be shared)"
+        val back = Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_NO_HOTSPOT, detail)) as Wire.Control.WifiCancel
+        assertEquals(Wire.CANCEL_NO_HOTSPOT, back.reason)
+        assertEquals(detail.take(Wire.CANCEL_DETAIL_MAX), back.detail)
+        assertEquals("", (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_BUSY)) as Wire.Control.WifiCancel).detail)
         assertTrue(Wire.cancelReasonText(Wire.CANCEL_BUSY).contains("already serving"))
         assertTrue(Wire.cancelReasonText(Wire.CANCEL_NO_HOTSPOT).contains("hotspot"))
         assertNull(Wire.parseControl(null)); assertNull(Wire.parseControl(ByteArray(0))); assertNull(Wire.parseControl(byteArrayOf(9)))

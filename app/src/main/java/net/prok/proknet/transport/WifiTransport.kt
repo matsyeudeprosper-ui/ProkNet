@@ -118,6 +118,10 @@ class WifiTransport(
         private set
     @Volatile var lastHotspotError: String = ""
         private set
+    /** v0.9.5: the error the OTHER phone reported when it refused to host. Shown in the diagnostic. */
+    @Volatile var peerCancelDetail: String = ""
+        private set
+    private var hotspotRetried = false
     private val relaySent = AtomicLong(); private val relayReceived = AtomicLong()
     val relayBytesSent: Long get() = relaySent.get()
     val relayBytesReceived: Long get() = relayReceived.get()
@@ -230,8 +234,11 @@ class WifiTransport(
                 }
                 is Wire.Control.WifiCancel -> {
                     if (fsm.peer == peerShort && !fsm.isIdle) {
-                        DiagLog.i(tag, "prok-" + peerShort + " cancelled the link: " + Wire.cancelName(c.reason))
-                        teardown(Wire.cancelReasonText(c.reason), notifyPeer = false)
+                        DiagLog.w(tag, "prok-" + peerShort + " cancelled the link: " + Wire.cancelName(c.reason) + (if (c.detail.isNotEmpty()) " - ITS OWN ERROR: " + c.detail else " (no detail: it runs an older build)"))
+                        peerCancelDetail = c.detail
+                        teardown(Wire.cancelReasonText(c.reason) + (if (c.detail.isNotEmpty()) " [" + c.detail + "]" else ""), notifyPeer = false)
+                        fsm.forgetFailures()   // it answered in a second; let the user press again at once
+                        push("provider refused: " + Wire.cancelName(c.reason))
                     }
                 }
             }
@@ -242,9 +249,23 @@ class WifiTransport(
 
     // ---- host side ---------------------------------------------------------------------------------
 
-    private fun startHotspot() {
+    /** Android needs Location services ON to create a local-only hotspot, whatever the permissions say. */
+    private fun locationOn(): Boolean = try {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+    } catch (e: Exception) { true }
+
+    private fun startHotspot(retry: Boolean = false) {
+        if (!retry) hotspotRetried = false
+        if (!locationOn()) {
+            lastHotspotError = "Location services are OFF on this phone"
+            DiagLog.e(tag, "cannot host: " + lastHotspotError + " - Android refuses a local-only hotspot without it")
+            cancelToPeer(Wire.CANCEL_NO_HOTSPOT, "Location services are off on the provider")
+            fail("cannot host: Location services are off on this phone"); return
+        }
         if (!wifi.isWifiEnabled) DiagLog.w(tag, "Wi-Fi is OFF on the host: the hotspot may still start on some phones, else turn Wi-Fi on")
-        DiagLog.i(tag, "starting the local-only hotspot for prok-" + (fsm.peer ?: "?") + " (wifi " + (if (wifi.isWifiEnabled) "on" else "OFF") + ")")
+        DiagLog.i(tag, "starting the local-only hotspot for prok-" + (fsm.peer ?: "?") + " (wifi " + (if (wifi.isWifiEnabled) "on" else "OFF") +
+            ", location on, connected to " + (currentSsid() ?: "no Wi-Fi network") + (if (retry) ", RETRY after closing the previous reservation" else "") + ")")
         try {
             wifi.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
@@ -273,16 +294,31 @@ class WifiTransport(
                         })
                     }
                 }
-                override fun onFailed(reason: Int) { main.post { lastHotspotError = "reason " + reason + hotspotHint(reason); cancelToPeer(); fail("hotspot failed, reason " + reason + hotspotHint(reason)) } }
+                override fun onFailed(reason: Int) {
+                    main.post {
+                        lastHotspotError = "reason " + reason + hotspotHint(reason)
+                        DiagLog.e(tag, "hotspot FAILED: " + lastHotspotError)
+                        // one retry after dropping a reservation this app may still hold from an earlier attempt
+                        if (!hotspotRetried && fsm.state == LinkState.State.HOSTING) {
+                            hotspotRetried = true
+                            try { reservation?.close() } catch (_: Exception) {}; reservation = null
+                            DiagLog.i(tag, "retrying the hotspot once in 1.5s")
+                            main.postDelayed({ if (fsm.state == LinkState.State.HOSTING) startHotspot(retry = true) }, 1500)
+                            return@post
+                        }
+                        cancelToPeer(Wire.CANCEL_NO_HOTSPOT, lastHotspotError)
+                        fail("hotspot failed, " + lastHotspotError)
+                    }
+                }
                 override fun onStopped() { main.post { DiagLog.w(tag, "hotspot stopped by the system"); reservation = null; if (fsm.isUp || fsm.isBusy) fail("hotspot stopped by the system") } }
             }, main)
         } catch (e: SecurityException) {
-            lastHotspotError = "permission: " + e.message
-            cancelToPeer()
+            lastHotspotError = "permission refused: " + e.message
+            cancelToPeer(Wire.CANCEL_NO_HOTSPOT, "the provider is missing the Nearby devices / Location permission")
             fail("hotspot needs the Nearby devices / Location permission: " + e.message)
         } catch (e: Exception) {
             lastHotspotError = "threw " + e
-            cancelToPeer()
+            cancelToPeer(Wire.CANCEL_NO_HOTSPOT, "hotspot call failed on the provider: " + e.javaClass.simpleName)
             fail("startLocalOnlyHotspot threw " + e)
         }
     }
@@ -293,24 +329,32 @@ class WifiTransport(
      * step timeout, which is exactly what a user reports as "it searches then
      * says connection lost".
      */
-    private fun cancelToPeer(reason: Int = Wire.CANCEL_NO_HOTSPOT) { fsm.peer?.let { sendCancelOnce(it, reason) } }
+    private fun cancelToPeer(reason: Int = Wire.CANCEL_NO_HOTSPOT, detail: String = "") { fsm.peer?.let { sendCancelOnce(it, reason, detail) } }
 
     @Volatile private var cancelSent = false
 
-    private fun sendCancelNow(peer: String, reason: Int) {
-        DiagLog.i(tag, "telling prok-" + peer + " to stop waiting: " + Wire.cancelName(reason))
-        try { control.sendControl(peer, Wire.wifiCancel(reason)) { ok -> DiagLog.i(tag, "cancel delivered to prok-" + peer + ": " + ok) } } catch (e: Exception) { DiagLog.w(tag, "cancel: " + e) }
+    private fun sendCancelNow(peer: String, reason: Int, detail: String = "") {
+        DiagLog.i(tag, "telling prok-" + peer + " to stop waiting: " + Wire.cancelName(reason) + (if (detail.isNotEmpty()) " - " + detail else ""))
+        try { control.sendControl(peer, Wire.wifiCancel(reason, detail)) { ok -> DiagLog.i(tag, "cancel delivered to prok-" + peer + ": " + ok) } } catch (e: Exception) { DiagLog.w(tag, "cancel: " + e) }
     }
 
-    private fun sendCancelOnce(peer: String, reason: Int) { if (!cancelSent) { cancelSent = true; sendCancelNow(peer, reason) } }
+    private fun sendCancelOnce(peer: String, reason: Int, detail: String = "") { if (!cancelSent) { cancelSent = true; sendCancelNow(peer, reason, detail) } }
 
     private fun hotspotHint(reason: Int) = when (reason) {
-        WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL -> " (no channel)"
-        WifiManager.LocalOnlyHotspotCallback.ERROR_GENERIC -> " (generic; is Wi-Fi on and Location enabled?)"
-        WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE -> " (incompatible mode: tethering already active?)"
+        WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL -> " (no channel: this phone is on a Wi-Fi network whose channel cannot be shared; disconnect Wi-Fi or use mobile data)"
+        WifiManager.LocalOnlyHotspotCallback.ERROR_GENERIC -> " (generic: Wi-Fi on? Location on? Android hotspot/tethering off?)"
+        WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE -> " (incompatible mode: the Android hotspot / tethering is already active)"
         WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED -> " (tethering disallowed by policy)"
         else -> ""
     }
+
+    /** The Wi-Fi network this phone is connected to, for the log only. */
+    @Suppress("DEPRECATION")
+    private fun currentSsid(): String? = try {
+        val info = wifi.connectionInfo
+        val s = info?.ssid?.trim('"')
+        if (s.isNullOrEmpty() || s == "<unknown ssid>" || info.networkId == -1) null else s
+    } catch (e: Exception) { null }
 
     private class Cred(val ssid: String?, val pass: String?, val security: Int, val hidden: Boolean, val band: String)
 
