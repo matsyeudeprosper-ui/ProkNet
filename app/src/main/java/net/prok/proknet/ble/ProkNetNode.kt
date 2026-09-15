@@ -303,8 +303,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val mine = P2pAdmission.look(p2p.realPeers(), p2pBuyerName)
         val now = System.currentTimeMillis()
         val since = if (p2pPlanAt == 0L) Long.MAX_VALUE else now - p2pPlanAt
+        // v0.9.21: a provider owns its group BEFORE any customer arrives, so the existence of the group
+        // proves nothing. Admission is over when somebody has actually joined.
+        val hasMember = p2p.plane.hasMember
+        val ownsGroup = p2p.groupFormed && p2p.role == P2pPlan.Role.GROUP_OWNER
         val fresh = P2pAdmission.plan(c.canSee, mine.canSee)
-        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, false, p2p.groupFormed, fresh)
+        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, false, hasMember, fresh)
         if (plan != p2pPlanChosen) {
             p2pPlanChosen = plan
             p2pPlanOwner = P2pAdmission.owner(plan)
@@ -313,18 +317,26 @@ class ProkNetNode(private val context: Context) : TransportListener {
         }
         DiagLog.i(tag, "admission: the customer \"" + p2pBuyerName.ifEmpty { "?" } + "\" " +
             (if (c.canSee) "can address me" else "cannot address me") + ", and I " + mine.describe() +
-            " -> " + P2pAdmission.planName(plan))
+            " | group formed=" + p2p.groupFormed + " role=" + p2p.role + " hasMember=" + hasMember +
+            " owner=" + p2pPlanOwner + " -> " + P2pAdmission.planName(plan))
         sendControl(peerShort, Wire.p2pJoinPlan(when (plan) {
             P2pAdmission.Plan.BUYER_CONNECT -> Wire.JOIN_PLAN_BUYER_CONNECT
             P2pAdmission.Plan.SELLER_INVITE -> Wire.JOIN_PLAN_SELLER_INVITE
             P2pAdmission.Plan.WAIT -> Wire.JOIN_PLAN_WAIT
         })) {}
         val invitedAgo = if (p2pInvitedAt == 0L) Long.MAX_VALUE else now - p2pInvitedAt
-        if (P2pAdmission.mayInvite(plan, mine, invitedAgo, p2p.groupFormed)) {
+        if (P2pAdmission.mayInvite(plan, mine, ownsGroup, hasMember, invitedAgo)) {
             p2pInvitedAt = now
             DiagLog.i(tag, "INVITING the customer into my group: \"" + mine.name + "\" (" + mine.address + ")")
             val err = p2p.invite(mine.address, mine.name)
-            if (err != null) sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
+            if (err != null) {
+                DiagLog.e(tag, "the invitation could not be sent: " + err)
+                sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
+            }
+        } else if (plan == P2pAdmission.Plan.SELLER_INVITE) {
+            DiagLog.i(tag, "not inviting right now: " +
+                (if (hasMember) "a customer is already on this link" else if (!ownsGroup) "this phone does not own a group yet"
+                 else if (!mine.canSee) "the customer is not addressable" else "the last invitation is still pending (" + (invitedAgo / 1000) + "s)"))
         } else if (plan == P2pAdmission.Plan.WAIT) {
             p2p.resumeDiscovery("neither phone can address the other yet")
         }
@@ -505,13 +517,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 return
             }
             P2pPlan.JoinStep.GIVE_UP -> {
-                if (p2pJoinPlan == P2pAdmission.Plan.WAIT || (p2pConnectAttempts == 0 && !sight.canSee)) {
-                    DiagLog.e(tag, P2pAdmission.BLIND_FAIL_REASON + " (plan " + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) + ")")
-                    failBuy(P2pAdmission.BLIND_FAIL_REASON, P2pAdmission.BLIND_FAIL_REASON)
-                } else {
-                    DiagLog.e(tag, P2pPlan.joinStepText(step) + " after " + p2pConnectAttempts + " attempts")
-                    failBuy("Wi-Fi Direct join failed", "could not join the provider Wi-Fi Direct group")
-                }
+                // v0.9.21: name the stage that actually failed. A planned attempt that did not complete
+                // is never collapsed back into "neither could address the other".
+                val why = P2pAdmission.failReason(p2pJoinPlan, p2pConnectAttempts)
+                DiagLog.e(tag, why + " | plan " + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) +
+                    ", I " + sight.describe() + ", join attempts " + p2pConnectAttempts)
+                failBuy(why, why)
                 return
             }
         }

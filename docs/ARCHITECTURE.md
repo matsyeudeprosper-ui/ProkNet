@@ -746,6 +746,60 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## A group is a room, membership is admission (v0.9.21)
+
+v0.9.20 made the right decision and then did nothing with it:
+
+```
+17:56:05.441  admission: the customer "OnePlus Nord CE 2 Lite 5G" cannot address me,
+              and I can address "OnePlus Nord CE 2 Lite 5G" at 1e:4f:f2:19:36:ce
+              -> SELLER_INVITE
+              role = GROUP_OWNER, group formed = true, clients = 0
+17:56:05      INVITING the customer into my group     never printed
+```
+
+`mayInvite` required `!groupFormed`, reading "a group exists" as "admission
+is complete". For this architecture that is simply wrong: **the provider
+creates and owns its Wi-Fi Direct group before any customer arrives**, so
+`groupFormed` is true from the moment sharing starts, and the invitation it
+had just decided on could never be sent.
+
+The truth is membership, which the data plane already models:
+`P2pDataPlane.Plane.hasMember` is a client count above zero for an owner, and
+"I joined" for a client.
+
+```
+groupFormed      the room exists
+hasMember        somebody is in it        <- admission is over
+```
+
+So `mayInvite`, `keepOwner` and `heldPlan` all take `hasMember` now, and
+`mayInvite` takes `ownsGroup` separately, because a provider must own a group
+before it can invite anybody into it. The state the invitation exists FOR is
+exactly the one the phone was in:
+
+```
+role GROUP_OWNER, group formed, clients 0,
+this phone can address the exact customer, plan SELLER_INVITE
+-> INVITE
+```
+
+Two smaller corrections came with it. A customer waiting for an invitation
+keeps reporting what it can see, because that report is what makes the
+provider decide again if an invitation did not arrive; without it a failed
+invitation had nothing to retry it. And every ending now names the stage that
+failed:
+
+```
+the provider could see this phone, but the Wi-Fi Direct invitation did not complete
+the customer could see the provider, but the Wi-Fi Direct join did not complete
+neither phone could address the other over Wi-Fi Direct
+```
+
+The last run ended with the third sentence, which was false: the provider
+could see the customer perfectly. Each has its own French wording on the
+customer's screen.
+
 ## Admission is symmetric (v0.9.20)
 
 Two real runs, two opposite failures:

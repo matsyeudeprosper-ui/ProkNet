@@ -89,30 +89,56 @@ object P2pAdmission {
         Plan.WAIT -> Owner.NOBODY
     }
 
-    /** An accepted association owns admission until the group forms or this runs out. */
+    /** An accepted association owns admission until a customer is really on the link, or this runs out. */
     const val ATTEMPT_OWN_MS = 20_000L
 
     /** How often a phone re-reports what it can see while nothing is decided. */
     const val VISIBILITY_EVERY_MS = 8_000L
 
-    /** Is the attempt in flight still the one that owns admission? */
-    fun keepOwner(current: Owner, sinceMs: Long, failed: Boolean, groupFormed: Boolean): Boolean =
-        current != Owner.NOBODY && !groupFormed && !failed && sinceMs < ATTEMPT_OWN_MS
+    /**
+     * **Admission is over when somebody has JOINED, not when a group
+     * exists.**
+     *
+     * v0.9.21, and it is the whole fix. A provider creates and owns its
+     * Wi-Fi Direct group before any customer arrives, so `groupFormed` is
+     * true from the moment it starts sharing. v0.9.20 used that as proof
+     * that admission was complete, and the invitation it had just decided on
+     * was therefore never sent:
+     *
+     * ```
+     * 17:56:05  admission: the customer "OnePlus Nord CE 2 Lite 5G" cannot address me,
+     *           and I can address it at 1e:4f:f2:19:36:ce -> SELLER_INVITE
+     *           (role GROUP_OWNER, group formed, clients 0)
+     * 17:56:05  INVITING ...   never printed
+     * ```
+     *
+     * The truth is membership: `P2pDataPlane.Plane.hasMember`, which is a
+     * client count above zero for an owner and "I joined" for a client.
+     */
+    fun keepOwner(current: Owner, sinceMs: Long, failed: Boolean, hasMember: Boolean): Boolean =
+        current != Owner.NOBODY && !hasMember && !failed && sinceMs < ATTEMPT_OWN_MS
 
     /**
      * The plan to act on now. A pending attempt is never overtaken by a
      * newer decision, so the two sides cannot both start associating.
      */
-    fun heldPlan(current: Plan?, currentOwner: Owner, sinceMs: Long, failed: Boolean, groupFormed: Boolean, fresh: Plan): Plan =
-        if (current != null && keepOwner(currentOwner, sinceMs, failed, groupFormed)) current else fresh
+    fun heldPlan(current: Plan?, currentOwner: Owner, sinceMs: Long, failed: Boolean, hasMember: Boolean, fresh: Plan): Plan =
+        if (current != null && keepOwner(currentOwner, sinceMs, failed, hasMember)) current else fresh
 
     /** What the customer does on this tick. */
     enum class BuyerStep { REPORT_VISIBILITY, CONNECT, WAIT_FOR_INVITE, WAIT_DISCOVERY }
 
+    /**
+     * v0.9.21: a customer waiting for an invitation keeps reporting what it
+     * can see. That report is what drives the provider's decision, so
+     * stopping it would leave a failed invitation with nothing to retry it.
+     * The plan is still held by the provider, so re-reporting cannot start a
+     * competing attempt.
+     */
     fun buyerStep(plan: Plan?, canSee: Boolean, reportedMsAgo: Long): BuyerStep = when {
-        plan == Plan.SELLER_INVITE -> BuyerStep.WAIT_FOR_INVITE
         plan == Plan.BUYER_CONNECT && canSee -> BuyerStep.CONNECT
         reportedMsAgo >= VISIBILITY_EVERY_MS -> BuyerStep.REPORT_VISIBILITY
+        plan == Plan.SELLER_INVITE -> BuyerStep.WAIT_FOR_INVITE
         else -> BuyerStep.WAIT_DISCOVERY
     }
 
@@ -124,13 +150,38 @@ object P2pAdmission {
     }
 
     /**
-     * May the provider send an invitation now? Only when it owns admission,
-     * it can really address the customer, and it is not repeating an
-     * invitation that is still pending.
+     * May the provider send an invitation now?
+     *
+     * The state this is FOR is a provider holding an empty group:
+     *
+     * ```
+     * role GROUP_OWNER, group formed, clients 0,
+     * this phone can address the exact customer, plan SELLER_INVITE
+     * ```
+     *
+     * It stops being allowed once a customer is really on the link, or while
+     * an invitation is still pending.
      */
-    fun mayInvite(plan: Plan, sellerSight: Sight, invitedMsAgo: Long, groupFormed: Boolean): Boolean =
-        plan == Plan.SELLER_INVITE && sellerSight.canSee && !groupFormed && invitedMsAgo >= ATTEMPT_OWN_MS
+    fun mayInvite(plan: Plan, sellerSight: Sight, ownsGroup: Boolean, hasMember: Boolean, invitedMsAgo: Long): Boolean =
+        plan == Plan.SELLER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ATTEMPT_OWN_MS
 
-    /** The sentence a purchase ends with when neither phone could address the other. */
+    // ---- how a purchase ends, truthfully -------------------------------------------------------------
+
+    /** Neither phone could ever address the other. */
     const val BLIND_FAIL_REASON = "neither phone could address the other over Wi-Fi Direct"
+    /** The provider could see the customer, and its invitation did not complete. */
+    const val INVITE_FAIL_REASON = "the provider could see this phone, but the Wi-Fi Direct invitation did not complete"
+    /** The customer could see the provider, and its join did not complete. */
+    const val JOIN_FAIL_REASON = "the customer could see the provider, but the Wi-Fi Direct join did not complete"
+
+    /**
+     * v0.9.21: report the stage that actually failed. A planned attempt that
+     * did not complete must never be collapsed back into "neither could
+     * address the other", which was simply false in the last run.
+     */
+    fun failReason(plan: Plan?, connectAttempts: Int): String = when {
+        plan == Plan.SELLER_INVITE -> INVITE_FAIL_REASON
+        plan == Plan.BUYER_CONNECT || connectAttempts > 0 -> JOIN_FAIL_REASON
+        else -> BLIND_FAIL_REASON
+    }
 }

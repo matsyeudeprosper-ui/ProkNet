@@ -67,6 +67,13 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.9.21: each admission ending says which stage failed, and each gets its own sentence
+        any(lastError, "invitation did not complete") ->
+            "Le fournisseur vous a invit\u00e9 mais la connexion directe n'a pas abouti. Rapprochez les t\u00e9l\u00e9phones et r\u00e9essayez."
+        any(lastError, "join did not complete") ->
+            "La connexion au r\u00e9seau du fournisseur n'a pas abouti. Rapprochez les t\u00e9l\u00e9phones et r\u00e9essayez."
+        any(lastError, "neither phone could address") ->
+            "Les deux t\u00e9l\u00e9phones ne se voient pas en Wi-Fi Direct. Rapprochez-les et r\u00e9essayez."
         // v0.9.13: the local Wi-Fi Direct link was built and the provider never answered on it
         any(lastError, "no transport answer", "local link formed") ->
             "Connexion locale créée, mais le fournisseur ne répond pas."

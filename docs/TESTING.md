@@ -1352,3 +1352,54 @@ LINK PROBE verdict: ...     (from BOTH phones)
 - If it formed: `GROUP CHANNEL` and the probe verdict from both phones.
 - If it did not: the visibility lines from both phones, so we can see who
   could address whom.
+
+## 39. v0.9.21 the invitation must actually be sent
+
+The one line that was missing from the whole of v0.9.20. On the SELLER, when
+the customer reports that it cannot address the provider:
+
+```
+admission: the customer "OnePlus Nord CE 2 Lite 5G" cannot address me, and I can address
+"OnePlus Nord CE 2 Lite 5G" at 1e:4f:f2:19:36:ce | group formed=true role=GROUP_OWNER
+hasMember=false owner=SELLER -> SELLER_INVITE
+JOIN PLAN = SELLER_INVITE: only the provider can address the customer, so the provider invites
+INVITING the customer into my group: "OnePlus Nord CE 2 Lite 5G" (1e:4f:f2:19:36:ce)
+INVITE: inviting OnePlus Nord CE 2 Lite 5G (1e:4f:f2:19:36:ce)
+invitation to OnePlus Nord CE 2 Lite 5G accepted by Android, waiting for it to join
+```
+
+`hasMember=false` with `group formed=true` is the normal state for a provider
+waiting for its first customer, and it MUST invite. If the log shows
+`not inviting right now: ...` instead, copy that line: it says which of the
+four conditions was not met.
+
+Then, still on the seller:
+
+```
+CLIENT COUNT 0 -> 1
+DATA PLANE generation N.1 created (client membership established)
+GROUP CHANNEL: ... | this phone's Wi-Fi: ...
+LINK PROBE verdict: ...
+```
+
+On the BUYER:
+
+```
+JOIN PLAN = SELLER_INVITE: only the provider can address the customer, so the provider invites
+waiting for the provider to invite this phone
+WI-FI DIRECT GROUP FORMED: role CLIENT ...
+LINK PROBE verdict: ...
+```
+
+**If it still fails**, the sentence now tells you where. "the provider could
+see this phone, but the Wi-Fi Direct invitation did not complete" means the
+invitation went out and Android never formed the group, which is a different
+fault from "neither phone could address the other".
+
+### Checklist for the v0.9.21 report
+
+- The seller's `admission:` line with `hasMember=` and `owner=`.
+- `INVITING` and `invitation ... accepted by Android`, or the
+  `not inviting right now:` reason.
+- `CLIENT COUNT 0 -> 1` on the seller.
+- `GROUP CHANNEL:` and the `LINK PROBE verdict:` from BOTH phones.

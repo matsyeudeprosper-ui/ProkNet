@@ -53,7 +53,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.17 | A purchase is judged by the transport it actually uses, and starts from a clean screen: no failure from an earlier attempt can end the next one before it begins | phone test: the screen behaved, and the join ladder then dialled a printer |
 | v0.9.18 | Only the provider that named itself is ever dialled, and an accepted join is waited for instead of being overtaken by its own successor | phone test: the probe confirmed the one way link with the radio lock held, and the seller then stopped being findable |
 | v0.9.19 | A provider whose customer left is findable again, and a provider on a 5 GHz home Wi-Fi asks for a 2.4 GHz group instead of sharing one channel with it | phone test: admission failed the other way round, the seller saw the buyer and the buyer saw nobody, so the band experiment never ran |
-| v0.9.20 | Admission is symmetric: the two phones exchange what each can see over BLE, the provider turns that into one plan (BUYER_CONNECT, SELLER_INVITE or WAIT), and one attempt owns admission until it forms a group or dies | built, 168 JVM tests pass |
+| v0.9.20 | Admission is symmetric: the two phones exchange what each can see over BLE, the provider turns that into one plan (BUYER_CONNECT, SELLER_INVITE or WAIT), and one attempt owns admission until it forms a group or dies | phone test: the plan was decided correctly and the invitation was never sent, because the provider's own empty group counted as admission being over |
+| v0.9.21 | A group is a room, membership is admission: a provider holding an EMPTY group invites the customer it can see, and every ending names the stage that actually failed | built, 172 JVM tests pass |
 
 ### v0.1 - what it does
 

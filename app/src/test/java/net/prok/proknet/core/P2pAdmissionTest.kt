@@ -6,9 +6,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v0.9.20, symmetric admission.
+ * v0.9.20 symmetric admission, corrected in v0.9.21.
  *
- * Two real runs, two opposite failures:
+ * Two real runs, two opposite visibilities:
  *
  * ```
  * CASE A (v0.9.11)  the buyer saw the seller; the OWNER's peer list showed the
@@ -17,7 +17,18 @@ import org.junit.Test
  *                   1e:4f:f2:19:36:ce; the buyer saw 0 peers, 0 attempts
  * ```
  *
- * So neither side may be assumed to be the one that can address the other.
+ * And then v0.9.20 decided SELLER_INVITE correctly and never sent the
+ * invitation, because it treated the provider's own empty group as proof that
+ * admission was already over:
+ *
+ * ```
+ * 17:56:05  admission: the customer ... cannot address me, and I can address
+ *           "OnePlus Nord CE 2 Lite 5G" at 1e:4f:f2:19:36:ce -> SELLER_INVITE
+ *           role GROUP_OWNER, group formed, clients 0
+ * 17:56:05  INVITING ...   never printed
+ * ```
+ *
+ * A group is a room. Admission is over when somebody is IN it.
  */
 class P2pAdmissionTest {
 
@@ -28,6 +39,13 @@ class P2pAdmissionTest {
 
     private val printer = P2pPlan.PeerRef("DIRECT-FB-HP DeskJet 2700 series", "14:cb:19:f5:f9:fc")
     private val tv = P2pPlan.PeerRef("Hisense VIDAA TV", "d6:f9:21:c3:41:a8")
+
+    /** The customer as the provider sees it: the exact name from BLE, at a real address. */
+    private val buyerInSight = P2pAdmission.Sight(true, buyerAddr, buyerName)
+
+    private fun owner(clients: Int) = P2pDataPlane.advance(
+        P2pDataPlane.advance(P2pDataPlane.NONE, P2pEndpoint.Observed(P2pPlan.Role.GROUP_OWNER, "p2p-wlan0-2", "192.168.49.1", "173"), 0, true),
+        P2pEndpoint.Observed(P2pPlan.Role.GROUP_OWNER, "p2p-wlan0-2", "192.168.49.1", "173"), clients, true)
 
     // ---- what each phone can see ---------------------------------------------------------------------
 
@@ -57,13 +75,10 @@ class P2pAdmissionTest {
 
     @Test
     fun the_plan_is_decided_by_what_the_two_phones_can_see() {
-        // the buyer sees the seller, the seller cannot identify the buyer: CASE A
         assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.plan(buyerSeesSeller = true, sellerSeesBuyer = false))
-        // the buyer is blind, the seller sees the buyer: CASE B
         assertEquals(P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.plan(buyerSeesSeller = false, sellerSeesBuyer = true))
         // both see each other: the customer joins, because that is the path that has formed groups
         assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.plan(buyerSeesSeller = true, sellerSeesBuyer = true))
-        // neither: nobody acts, both keep looking
         assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.plan(buyerSeesSeller = false, sellerSeesBuyer = false))
 
         assertEquals(P2pAdmission.Owner.BUYER, P2pAdmission.owner(P2pAdmission.Plan.BUYER_CONNECT))
@@ -75,6 +90,59 @@ class P2pAdmissionTest {
         }
     }
 
+    // ---- THE v0.9.21 CORRECTION: a group is a room, membership is admission ---------------------------
+
+    @Test
+    fun a_provider_holding_an_EMPTY_group_must_invite_the_customer_it_can_see() {
+        // exactly the state of the phone at 17:56:05
+        val empty = owner(clients = 0)
+        assertTrue("the provider owns a group", empty.endpointReady)
+        assertFalse("and nobody has joined it", empty.hasMember)
+
+        assertTrue("this is the state the invitation exists FOR",
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight,
+                ownsGroup = true, hasMember = empty.hasMember, invitedMsAgo = Long.MAX_VALUE))
+
+        // and the plan is not released just because the provider owns a group
+        assertTrue(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = false, hasMember = empty.hasMember))
+        assertEquals(P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.heldPlan(
+            P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER, 1_000,
+            failed = false, hasMember = empty.hasMember, fresh = P2pAdmission.Plan.WAIT))
+    }
+
+    @Test
+    fun once_a_customer_has_joined_admission_is_over() {
+        val live = owner(clients = 1)
+        assertTrue(live.hasMember)
+        assertFalse("no invitation once somebody is on the link",
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight,
+                ownsGroup = true, hasMember = live.hasMember, invitedMsAgo = Long.MAX_VALUE))
+        assertFalse("and the attempt no longer owns admission",
+            P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 0, failed = false, hasMember = live.hasMember))
+    }
+
+    @Test
+    fun a_provider_with_no_group_of_its_own_does_not_invite() {
+        assertFalse(P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight,
+            ownsGroup = false, hasMember = false, invitedMsAgo = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun an_invitation_is_not_repeated_while_pending_and_may_be_retried_after_it() {
+        assertTrue("the first one goes out",
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, Long.MAX_VALUE))
+        assertFalse("not again three seconds later",
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, 3_000))
+        assertTrue("but the window ends and nobody joined: try again",
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, P2pAdmission.ATTEMPT_OWN_MS))
+        // and after that window the plan may be taken again from scratch
+        assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.heldPlan(
+            P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER,
+            P2pAdmission.ATTEMPT_OWN_MS, false, hasMember = false, fresh = P2pAdmission.Plan.BUYER_CONNECT))
+    }
+
+    // ---- never guess ---------------------------------------------------------------------------------
+
     @Test
     fun a_seller_that_only_sees_an_anonymous_peer_waits_and_never_invites() {
         val anonymised = listOf(P2pPlan.PeerRef("", "00:00:00:00:00:00"))
@@ -82,7 +150,7 @@ class P2pAdmissionTest {
         assertFalse(mine.canSee)
         assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.plan(buyerSeesSeller = false, sellerSeesBuyer = mine.canSee))
         assertFalse("never invite a peer we cannot identify",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, invitedMsAgo = Long.MAX_VALUE, groupFormed = false))
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, true, false, Long.MAX_VALUE))
     }
 
     @Test
@@ -90,7 +158,6 @@ class P2pAdmissionTest {
         val sight = P2pAdmission.look(listOf(printer), sellerName)
         assertFalse(sight.canSee)
         assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.plan(sight.canSee, sellerSeesBuyer = false))
-        // and with that plan the customer never dials anything
         assertEquals(P2pAdmission.BuyerStep.WAIT_DISCOVERY,
             P2pAdmission.buyerStep(P2pAdmission.Plan.WAIT, sight.canSee, reportedMsAgo = 0))
     }
@@ -100,43 +167,26 @@ class P2pAdmissionTest {
     @Test
     fun a_pending_attempt_is_never_overtaken_by_a_new_decision() {
         // the provider decided SELLER_INVITE and invited. The customer then suddenly sees the provider.
-        val held = P2pAdmission.heldPlan(
-            current = P2pAdmission.Plan.SELLER_INVITE, currentOwner = P2pAdmission.Owner.SELLER,
-            sinceMs = 5_000, failed = false, groupFormed = false, fresh = P2pAdmission.Plan.BUYER_CONNECT)
-        assertEquals("the invitation in flight keeps admission", P2pAdmission.Plan.SELLER_INVITE, held)
+        assertEquals("the invitation in flight keeps admission", P2pAdmission.Plan.SELLER_INVITE,
+            P2pAdmission.heldPlan(P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER,
+                sinceMs = 5_000, failed = false, hasMember = false, fresh = P2pAdmission.Plan.BUYER_CONNECT))
 
-        // the customer, told to wait for an invitation, does not connect even though it can see
+        // a customer told to wait never connects, even when it can see the provider
         assertEquals(P2pAdmission.BuyerStep.WAIT_FOR_INVITE,
-            P2pAdmission.buyerStep(P2pAdmission.Plan.SELLER_INVITE, canSee = true, reportedMsAgo = 60_000))
+            P2pAdmission.buyerStep(P2pAdmission.Plan.SELLER_INVITE, canSee = true, reportedMsAgo = 0))
 
-        // the same the other way: a buyer connect in flight is not replaced by an invitation
+        // the same the other way: a join in flight is not replaced by an invitation
         assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.heldPlan(
             P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.Owner.BUYER, 5_000, false, false, P2pAdmission.Plan.SELLER_INVITE))
         assertFalse("the provider must not invite while the customer is joining",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.BUYER_CONNECT,
-                P2pAdmission.Sight(true, buyerAddr, buyerName), Long.MAX_VALUE, groupFormed = false))
+            P2pAdmission.mayInvite(P2pAdmission.Plan.BUYER_CONNECT, buyerInSight, true, false, Long.MAX_VALUE))
 
-        // an attempt that ran out of time releases admission
-        assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.heldPlan(
-            P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER,
-            P2pAdmission.ATTEMPT_OWN_MS, false, false, P2pAdmission.Plan.BUYER_CONNECT))
-        // so does one that failed, and so does a group that formed
-        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = true, groupFormed = false))
-        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = false, groupFormed = true))
-        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.NOBODY, 0, failed = false, groupFormed = false))
-        assertTrue(P2pAdmission.keepOwner(P2pAdmission.Owner.BUYER, 1_000, failed = false, groupFormed = false))
-    }
-
-    @Test
-    fun an_invitation_is_not_repeated_while_it_is_still_pending() {
-        val mine = P2pAdmission.Sight(true, buyerAddr, buyerName)
-        assertTrue(P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, Long.MAX_VALUE, groupFormed = false))
-        assertFalse("not again three seconds later",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, 3_000, groupFormed = false))
-        assertTrue("but again once the window is over",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, P2pAdmission.ATTEMPT_OWN_MS, groupFormed = false))
-        assertFalse("never once the group exists",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, mine, Long.MAX_VALUE, groupFormed = true))
+        // an attempt that ran out of time, or failed, or produced a member, releases admission
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, P2pAdmission.ATTEMPT_OWN_MS, false, false))
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = true, hasMember = false))
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = false, hasMember = true))
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.NOBODY, 0, failed = false, hasMember = false))
+        assertTrue(P2pAdmission.keepOwner(P2pAdmission.Owner.BUYER, 1_000, failed = false, hasMember = false))
     }
 
     // ---- the customer's own tick ---------------------------------------------------------------------
@@ -154,29 +204,49 @@ class P2pAdmissionTest {
         // told to connect but we have lost sight: report again instead of dialling nothing
         assertEquals(P2pAdmission.BuyerStep.REPORT_VISIBILITY,
             P2pAdmission.buyerStep(P2pAdmission.Plan.BUYER_CONNECT, canSee = false, reportedMsAgo = P2pAdmission.VISIBILITY_EVERY_MS))
+        // v0.9.21: waiting for an invitation still reports, because that report is what makes the
+        // provider decide again if its invitation did not arrive
+        assertEquals(P2pAdmission.BuyerStep.REPORT_VISIBILITY,
+            P2pAdmission.buyerStep(P2pAdmission.Plan.SELLER_INVITE, canSee = false, reportedMsAgo = P2pAdmission.VISIBILITY_EVERY_MS))
         for (s in P2pAdmission.BuyerStep.values()) assertTrue(P2pAdmission.buyerStepText(s).isNotEmpty())
-        assertTrue(P2pAdmission.BLIND_FAIL_REASON.isNotEmpty())
+    }
+
+    // ---- how a purchase ends -------------------------------------------------------------------------
+
+    @Test
+    fun the_ending_names_the_stage_that_actually_failed() {
+        // the last run ended saying neither phone could address the other. That was false: the
+        // provider could address the customer and its invitation never went out.
+        assertEquals(P2pAdmission.INVITE_FAIL_REASON, P2pAdmission.failReason(P2pAdmission.Plan.SELLER_INVITE, 0))
+        assertEquals(P2pAdmission.JOIN_FAIL_REASON, P2pAdmission.failReason(P2pAdmission.Plan.BUYER_CONNECT, 4))
+        assertEquals(P2pAdmission.JOIN_FAIL_REASON, P2pAdmission.failReason(null, 2))
+        assertEquals(P2pAdmission.BLIND_FAIL_REASON, P2pAdmission.failReason(P2pAdmission.Plan.WAIT, 0))
+        assertEquals(P2pAdmission.BLIND_FAIL_REASON, P2pAdmission.failReason(null, 0))
+
+        // and each one reaches the customer in French, with what to do next
+        assertTrue(ProductState.lostHint(P2pAdmission.INVITE_FAIL_REASON).contains("invit"))
+        assertTrue(ProductState.lostHint(P2pAdmission.JOIN_FAIL_REASON).contains("fournisseur"))
+        assertTrue(ProductState.lostHint(P2pAdmission.BLIND_FAIL_REASON).contains("Wi-Fi Direct"))
     }
 
     // ---- after the customer leaves -------------------------------------------------------------------
 
     @Test
     fun when_the_customer_leaves_admission_resets_and_the_provider_is_findable_again() {
-        // with a customer on the link there is no admission and no discovery
-        val live = P2pDataPlane.advance(
-            P2pDataPlane.advance(P2pDataPlane.NONE, P2pEndpoint.Observed(P2pPlan.Role.GROUP_OWNER, "p2p-wlan0-2", "192.168.49.1", "173"), 0, true),
-            P2pEndpoint.Observed(P2pPlan.Role.GROUP_OWNER, "p2p-wlan0-2", "192.168.49.1", "173"), 1, true)
+        val live = owner(clients = 1)
         assertTrue(live.hasMember)
         assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, live.hasMember))
-        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.BUYER, 0, failed = false, groupFormed = true))
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.BUYER, 0, failed = false, hasMember = true))
 
-        // the customer leaves: discovery returns and a fresh decision may be taken
         val alone = P2pDataPlane.advance(live, P2pEndpoint.Observed(P2pPlan.Role.GROUP_OWNER, "p2p-wlan0-2", "192.168.49.1", "173"), 0, true)
         assertFalse(alone.hasMember)
-        assertTrue(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, alone.hasMember))
+        assertTrue("the provider must be findable again", P2pPlan.discoveryWanted(P2pPlan.Want.SELL, alone.hasMember))
+        // and a fresh decision may be taken for the next customer
         assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.heldPlan(
             P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.Owner.BUYER,
-            P2pAdmission.ATTEMPT_OWN_MS + 1, false, false, P2pAdmission.Plan.WAIT))
+            P2pAdmission.ATTEMPT_OWN_MS + 1, false, hasMember = false, fresh = P2pAdmission.Plan.WAIT))
+        // an empty group is ready to invite the next one
+        assertTrue(P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, alone.hasMember, Long.MAX_VALUE))
     }
 
     // ---- the wire ------------------------------------------------------------------------------------
