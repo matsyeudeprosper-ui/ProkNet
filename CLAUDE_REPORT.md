@@ -1,89 +1,84 @@
-# CLAUDE_REPORT - ProkNet v0.9.17 "a purchase starts from a clean screen"
+# CLAUDE_REPORT - ProkNet v0.9.18 "never guess who you are talking to"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 155/155 automated tests pass, released. v0.9.16 has still NOT
-been exercised on the phones. Home Wi-Fi resale is NOT claimed.**
+Status: **built, 157/157 automated tests pass, released. The v0.9.16 questions
+are STILL unanswered on hardware. Home Wi-Fi resale is NOT claimed.**
 
-## 1. What happened
+## 1. What the run showed
 
-v0.9.16 was never tested, because the consumer screen ended every purchase
-before it began:
-
-```
-13:28:44.291  UI: CONNECT pressed: prok-24e480e6 5 CFA/MB
-13:28:46.815  asking prok-24e480e6 whether its Wi-Fi Direct group is ready
-13:28:48.386  UI: Stop Internet pressed          <- the user, after "Connexion perdue"
-```
-
-Three attempts, three stops within four seconds each, and no group ever
-formed. So there is no radio lock line, no group channel line and no probe
-verdict from that run. The v0.9.16 questions are all still open.
-
-## 2. The cause, from the diagnostic
+v0.9.17 fixed the screen: the purchase ran, the provider answered
+GROUP_READY, and the buyer started joining. Then the ladder spent itself on a
+printer:
 
 ```
-wifi: DOWN / DOWN (initiator with prok-24e480e6) - could not reach the host
-      (10.168.138.1: ... EHOSTUNREACH (No route to host) ...) (retry allowed in 5s)
+13:55:22.482  joining the provider group: attempt 1/4 to 72:cb:dd:b9:a1:da   (C1 Pro)
+13:55:22.505  connect accepted, waiting for the group
+13:55:25.852  Android was busy: trying to join again: attempt 2/4 to 72:cb:dd:b9:a1:da
+13:55:25.860  connect refused: BUSY (framework busy)
+13:55:33.860  Android was busy: trying to join again: attempt 3/4 to 14:cb:19:f5:f9:fc
+13:55:33.883  connect accepted for 14:cb:19:f5:f9:fc                         (HP DeskJet 2700)
+13:55:34.493  attempt 4/4 to 14:cb:19:f5:f9:fc
+13:55:37.867  could not join the provider Wi-Fi Direct group after 4 attempts
 ```
 
-That is the HOTSPOT transport (method A), holding a failure from an attempt
-minutes earlier, on the 10.168.138.x hotspot subnet. `ProductState.buyer`
-turns any phase beginning with `DOWN` into `LOST`, and the consumer screen
-read that transport even while the purchase was going over Wi-Fi Direct.
+No group formed, so there is still no radio lock line, no group channel line
+and no probe verdict. Both faults are mine.
 
-So the very first refresh after CONNECT said "Connexion perdue". The user did
-exactly the right thing and pressed stop.
+## 2. Fault one: the provider was chosen by guessing
 
-This is my bug and it is a product-level one: a failure from an old attempt
-must never end the next one.
+`pickSellerPeer` matched the name the provider sent over BLE and, when that
+name was not in the peer list, fell back to "any peer that owns a group". At
+13:55:32 the provider had dropped out of the list for a few seconds and the
+only group owner left was `DIRECT-FB-HP DeskJet 2700 series`.
 
-## 3. The fix
+That fallback existed for a provider too old to send its name. **It is gone.**
+A named provider that is not in the list means WAIT. A provider that sends no
+name at all also means WAIT. It is the same rule you set for
+`00:00:00:00:00:00`: this network does not guess who it is talking to.
 
-- **`ProkNetNode.buyPhase()`** is now the single place that decides which
-  transport the screen reflects: the Wi-Fi Direct link during a Wi-Fi Direct
-  purchase, the hotspot transport otherwise.
-  **`P2pPlan.buyPhase(stage, groupFormed, planeUsable, linked)`** is the pure
-  mapping, so FINDING, JOINING, TCP and AUTH mean the same thing on both
-  paths and the French wording layer is unchanged.
-- **`buy()` clears the failure surface** before anything starts: the buyer
-  error, `TunnelClient.lastError`, and any leftover hotspot state when
-  nothing is linked.
+## 3. Fault two: an accepted join was overtaken by its own successor
 
-## 4. A second finding, worth recording
+The next attempt was held off only when Android REFUSED. So an accepted
+`connect()` at 13:55:22.5 was followed by another at 13:55:25.8, and the
+framework answered BUSY to us, which then cascaded into attempts 3 and 4.
 
-The stale error itself is evidence. On the hotspot path the buyer had
-`10.168.138.61`, an address from the seller's own hotspot, and could not
-reach `10.168.138.1:47741`. That is the same shape as the Wi-Fi Direct
-result: the customer gets an address from the provider and then cannot get a
-connection back. I am not drawing a conclusion from one line in a diagnostic,
-but if the Wi-Fi Direct probe verdict comes back one way again, these two
-belong in the same sentence.
+The hold is now applied BEFORE asking, `P2pPlan.JOIN_ACCEPTED_WAIT_MS` =
+15 s, and only a refusal shortens it to the busy backoff. Four attempts still
+fit inside the 60 s ladder.
 
-## 5. Tests (155)
+## 4. Diagnostics
 
-The regression itself: a stale `DOWN ... could not reach the host
-(10.168.138.1)` makes the buyer LOST, and the same buyer on a Wi-Fi Direct
-purchase is FINDING, then CONNECTING as it joins, and only LOST when THIS
-attempt fails.
+Every attempt now names its target, `attempt 1/4 to "C1 Pro"
+(72:cb:dd:b9:a1:da)`, and the waiting line lists the addressable peers by
+name. A wrong target is visible at once instead of being a MAC address nobody
+recognises.
+
+## 5. Tests (157)
+
+The printer case verbatim: with the provider absent and the printer owning a
+group, the answer is null, not the printer; with the provider present it is
+the provider; with no name it is null. Plus the timing rule: an accepted join
+must outlast a busy backoff step, be long enough for a group to form, and
+still leave room for four attempts inside the give up time.
 
 ## 6. Build
 
-Build 30, versionName 0.9.17, 1.29 MB,
-SHA256 `6d59476cf315989c4ec50a080329342f452499ba5423a7043727f91a9fb7cc18`.
+Build 31, versionName 0.9.18, 1.29 MB,
+SHA256 `8211f96b3486087a013f01a1c987520d0e42f23e5d6adffed53c4c0ef3d324fc`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.17
-Commit `2e34e76` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.18
+Commit `c2d90f4` on `main`; this report on top.
 
-## 7. What the next run must produce
+## 7. Still unanswered, third build running
 
-Install on BOTH phones, then run section 34 **without pressing STOP**: the
-attempt ends by itself after about 45 seconds. The three lines that are still
-unanswered since v0.9.16 are:
+The three lines from v0.9.16 have never been produced by a phone, because
+each run has been stopped by a different fault above them. They are the whole
+point of the current work:
 
 ```
 RADIO LOCK held: ...
@@ -91,9 +86,9 @@ GROUP CHANNEL: ... | this phone's Wi-Fi: ...
 LINK PROBE verdict: ...        (from BOTH phones)
 ```
 
-If the verdict is one way again, the next levers are the ones listed in the
-v0.9.16 report: the owner invite association first, the 2.4 GHz group second,
-one at a time.
+What is known, and is not in doubt: the link was ONE WAY when it last got far
+enough to be measured. Everything the client sent reached the owner and
+nothing the owner sent reached the client.
 
 ## 8. The claim rule
 
