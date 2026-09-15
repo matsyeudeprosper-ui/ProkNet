@@ -286,12 +286,23 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Buyer side: the plan the provider decided, and when we last said what we can see. */
     @Volatile private var p2pJoinPlan: P2pAdmission.Plan? = null
     @Volatile private var p2pVisibilityAt = 0L
+    /**
+     * v0.9.22: when the chosen association ACTUALLY started, and nothing else.
+     *
+     * For BUYER_CONNECT that is the moment Android accepted our `connect()`.
+     * For SELLER_INVITE it is the moment the provider told us it owns the
+     * next action, because the provider invites in the same breath. Until one
+     * of those happens the purchase is still searching, and the search clock
+     * applies; afterwards only this one does.
+     */
+    @Volatile private var p2pAssociationAt = 0L
     /** Seller side: the customer's own P2P name, the plan in force, and when it was taken. */
     @Volatile private var p2pBuyerName = ""
     @Volatile private var p2pPlanChosen: P2pAdmission.Plan? = null
     @Volatile private var p2pPlanOwner = P2pAdmission.Owner.NOBODY
     @Volatile private var p2pPlanAt = 0L
     @Volatile private var p2pInvitedAt = 0L
+    @Volatile private var p2pPlanFailed = false
 
     /**
      * Seller: the customer says what it can see. Together with what THIS
@@ -308,11 +319,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val hasMember = p2p.plane.hasMember
         val ownsGroup = p2p.groupFormed && p2p.role == P2pPlan.Role.GROUP_OWNER
         val fresh = P2pAdmission.plan(c.canSee, mine.canSee)
-        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, false, hasMember, fresh)
+        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, p2pPlanFailed, hasMember, fresh)
         if (plan != p2pPlanChosen) {
             p2pPlanChosen = plan
             p2pPlanOwner = P2pAdmission.owner(plan)
             p2pPlanAt = now
+            p2pPlanFailed = false
             DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(plan) + ": " + P2pAdmission.planText(plan))
         }
         DiagLog.i(tag, "admission: the customer \"" + p2pBuyerName.ifEmpty { "?" } + "\" " +
@@ -331,6 +343,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             val err = p2p.invite(mine.address, mine.name)
             if (err != null) {
                 DiagLog.e(tag, "the invitation could not be sent: " + err)
+                p2pPlanFailed = true
                 sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
             }
         } else if (plan == P2pAdmission.Plan.SELLER_INVITE) {
@@ -351,7 +364,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
             else -> P2pAdmission.Plan.WAIT
         }
         if (plan != p2pJoinPlan) DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(plan) + ": " + P2pAdmission.planText(plan))
+        val wasPlan = p2pJoinPlan
         p2pJoinPlan = plan
+        // v0.9.22: the provider invites in the same breath as it sends SELLER_INVITE, so THIS is when
+        // the association starts for us, and the search clock stops deciding anything. Android may put
+        // a confirmation dialog in front of a person; that time belongs to the attempt, not to a
+        // leftover deadline from the discovery phase.
+        if (plan == P2pAdmission.Plan.SELLER_INVITE && wasPlan != plan) {
+            p2pAssociationAt = System.currentTimeMillis()
+            DiagLog.i(tag, "ASSOCIATION started, owner SELLER, clock starts NOW (up to " +
+                (P2pAdmission.ASSOCIATION_TIMEOUT_MS / 1000) + "s; Android may ask you to confirm on both phones)")
+        }
         if (plan != P2pAdmission.Plan.BUYER_CONNECT) p2p.resumeDiscovery("waiting to be invited, or still looking")
         main.post { p2pWaitStep(peerShort) }
     }
@@ -402,7 +425,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pWaitStart = System.currentTimeMillis()
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
-        p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L
+        p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L; p2pAssociationAt = 0L
         val err = p2p.startBuyer()
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
@@ -457,7 +480,22 @@ class ProkNetNode(private val context: Context) : TransportListener {
         }
         val sight = P2pAdmission.look(p2p.realPeers(), p2pSellerName)
         val sellerAddr = if (sight.canSee) sight.address else null
-        val step = P2pPlan.joinStep(p2pStatus, sight.canSee, p2pConnectAttempts, p2pReachableMs, p2p.groupFormed)
+        // v0.9.22: choosing a plan is not starting an attempt. While an accepted association is in
+        // flight ONLY its own clock decides, and the leftover search time decides nothing.
+        val ladder = P2pAdmission.ladder(p2pAssociationAt, System.currentTimeMillis(), p2pReachableMs)
+        if (ladder == P2pAdmission.Ladder.GIVE_UP) {
+            val why = P2pAdmission.failReason(p2pJoinPlan, p2pConnectAttempts)
+            DiagLog.e(tag, why + " | plan " + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) +
+                ", I " + sight.describe() + ", join attempts " + p2pConnectAttempts +
+                (if (p2pAssociationAt > 0L) ", the association had " + (P2pAdmission.ASSOCIATION_TIMEOUT_MS / 1000) + "s" else ", never associated"))
+            failBuy(why, why)
+            return
+        }
+        if (ladder == P2pAdmission.Ladder.ASSOCIATING && p2pReachableMs % 12_000L < 4_000L)
+            DiagLog.i(tag, "association in flight for " + ((System.currentTimeMillis() - p2pAssociationAt) / 1000) +
+                "s (" + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) + "): if Android asks, tap CONNECT on both phones")
+        // the search clock no longer ends the purchase: the ladder above owns that decision
+        val step = P2pPlan.joinStep(p2pStatus, sight.canSee, p2pConnectAttempts, 0L, p2p.groupFormed)
         // v0.9.20: WAIT_PEER and CONNECT are both admission, and admission is symmetric now. What this
         // phone can see is only half of the decision; the provider holds the other half.
         val admission = if (step == P2pPlan.JoinStep.WAIT_PEER || step == P2pPlan.JoinStep.CONNECT || step == P2pPlan.JoinStep.RETRY_BUSY)
@@ -502,8 +540,13 @@ class ProkNetNode(private val context: Context) : TransportListener {
                     DiagLog.i(tag, P2pPlan.joinStepText(step) + ": attempt " + p2pConnectAttempts + "/" + P2pPlan.CONNECT_ATTEMPTS +
                         " to \"" + P2pPlan.peerName(p2p.realPeers(), sellerAddr) + "\" (" + sellerAddr + ")")
                     p2p.connectTo(sellerAddr) { ok, why ->
-                        if (ok) DiagLog.i(tag, "join accepted: waiting up to " + (P2pPlan.JOIN_ACCEPTED_WAIT_MS / 1000) + "s for the group to form")
+                        if (ok) {
+                            p2pAssociationAt = System.currentTimeMillis()
+                            DiagLog.i(tag, "join accepted: the association clock starts NOW, up to " +
+                                (P2pAdmission.ASSOCIATION_TIMEOUT_MS / 1000) + "s for the group to form")
+                        }
                         else {
+                            p2pAssociationAt = 0L        // refused: we are searching again, not associating
                             val wait = P2pPlan.busyDelayMs(p2pConnectAttempts)
                             p2pNextConnectAt = System.currentTimeMillis() + wait
                             DiagLog.w(tag, "join refused (" + why + "), next attempt in " + (wait / 1000) + "s")
@@ -519,6 +562,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             P2pPlan.JoinStep.GIVE_UP -> {
                 // v0.9.21: name the stage that actually failed. A planned attempt that did not complete
                 // is never collapsed back into "neither could address the other".
+                // v0.9.22: this branch is now only reached when Android REFUSED every attempt.
                 val why = P2pAdmission.failReason(p2pJoinPlan, p2pConnectAttempts)
                 DiagLog.e(tag, why + " | plan " + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) +
                     ", I " + sight.describe() + ", join attempts " + p2pConnectAttempts)
@@ -769,7 +813,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         } else {
             gateway.stop()
             p2pMemberAddress = ""; p2pMemberPeer = ""
-            p2pPlanChosen = null; p2pPlanOwner = P2pAdmission.Owner.NOBODY; p2pPlanAt = 0L; p2pInvitedAt = 0L; p2pBuyerName = ""
+            p2pPlanChosen = null; p2pPlanOwner = P2pAdmission.Owner.NOBODY; p2pPlanAt = 0L; p2pInvitedAt = 0L
+            p2pBuyerName = ""; p2pPlanFailed = false
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
         }
         refreshAdvert(); pushStatus()

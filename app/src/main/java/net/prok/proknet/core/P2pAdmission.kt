@@ -89,8 +89,28 @@ object P2pAdmission {
         Plan.WAIT -> Owner.NOBODY
     }
 
-    /** An accepted association owns admission until a customer is really on the link, or this runs out. */
-    const val ATTEMPT_OWN_MS = 20_000L
+    /**
+     * v0.9.22: **one clock, measured from the moment an association was
+     * actually accepted.**
+     *
+     * Not from the start of the purchase. The phone run chose SELLER_INVITE
+     * after thirty seconds of searching and failed two milliseconds later,
+     * because the deadline it was judged against had already expired before
+     * the attempt existed:
+     *
+     * ```
+     * 19:10:36.476  JOIN PLAN = SELLER_INVITE
+     * 19:10:36.478  the provider could see this phone, but the invitation did not complete
+     * ```
+     *
+     * Android had put a confirmation dialog on both phones. The user was
+     * reading it while ProkNet tore the attempt down. So the window has to be
+     * long enough for a person to read a popup and tap Connect.
+     */
+    const val ASSOCIATION_TIMEOUT_MS = 40_000L
+
+    /** Looking for each other, before any association has been accepted. */
+    const val SEARCH_GIVE_UP_MS = 60_000L
 
     /** How often a phone re-reports what it can see while nothing is decided. */
     const val VISIBILITY_EVERY_MS = 8_000L
@@ -116,7 +136,45 @@ object P2pAdmission {
      * client count above zero for an owner and "I joined" for a client.
      */
     fun keepOwner(current: Owner, sinceMs: Long, failed: Boolean, hasMember: Boolean): Boolean =
-        current != Owner.NOBODY && !hasMember && !failed && sinceMs < ATTEMPT_OWN_MS
+        current != Owner.NOBODY && !hasMember && !failed && sinceMs < ASSOCIATION_TIMEOUT_MS
+
+    /**
+     * v0.9.22: **is an accepted association still in flight on this phone?**
+     *
+     * This is the one truth that keeps peer discovery off. Android emits a
+     * `groupFormed = false` connection change in the middle of its own join
+     * choreography, and v0.9.21 read that as "the attempt is dead, start
+     * looking again":
+     *
+     * ```
+     * 18:54:58.447  connect accepted
+     * 18:54:58.447  DISCOVERY off
+     * 18:54:58.470  stopPeerDiscovery refused: BUSY
+     * 18:54:58.472  connection formed=false
+     * 18:54:58.474  starting peer discovery again      <- wrong
+     * ```
+     *
+     * Scanning then ran through the whole data-path window. An attempt ends
+     * when membership forms, when Android refuses it, or when its own clock
+     * runs out. A transient callback is none of those.
+     */
+    fun associationPending(owner: Owner, startedAt: Long, now: Long, hasMember: Boolean, failed: Boolean): Boolean =
+        owner != Owner.NOBODY && startedAt > 0L && !hasMember && !failed && (now - startedAt) < ASSOCIATION_TIMEOUT_MS
+
+    /** Where a purchase is: still looking, associating, or out of time. */
+    enum class Ladder { SEARCH, ASSOCIATING, GIVE_UP }
+
+    /**
+     * Choosing a plan is not starting an attempt. Only an ACCEPTED
+     * association starts the association clock, and from that moment the
+     * search clock no longer decides anything.
+     */
+    fun ladder(associationStartedAt: Long, now: Long, searchedMs: Long): Ladder = when {
+        associationStartedAt > 0L ->
+            if (now - associationStartedAt >= ASSOCIATION_TIMEOUT_MS) Ladder.GIVE_UP else Ladder.ASSOCIATING
+        searchedMs >= SEARCH_GIVE_UP_MS -> Ladder.GIVE_UP
+        else -> Ladder.SEARCH
+    }
 
     /**
      * The plan to act on now. A pending attempt is never overtaken by a
@@ -163,7 +221,7 @@ object P2pAdmission {
      * an invitation is still pending.
      */
     fun mayInvite(plan: Plan, sellerSight: Sight, ownsGroup: Boolean, hasMember: Boolean, invitedMsAgo: Long): Boolean =
-        plan == Plan.SELLER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ATTEMPT_OWN_MS
+        plan == Plan.SELLER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ASSOCIATION_TIMEOUT_MS
 
     // ---- how a purchase ends, truthfully -------------------------------------------------------------
 

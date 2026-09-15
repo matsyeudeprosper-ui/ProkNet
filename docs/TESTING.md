@@ -1403,3 +1403,71 @@ fault from "neither phone could address the other".
   `not inviting right now:` reason.
 - `CLIENT COUNT 0 -> 1` on the seller.
 - `GROUP CHANNEL:` and the `LINK PROBE verdict:` from BOTH phones.
+
+## 40. v0.9.22 one clean run
+
+This is the run that finally judges the 2.4 GHz band. Read it in this order.
+
+**1. The plan, on both phones.**
+
+```
+JOIN PLAN = BUYER_CONNECT     or     JOIN PLAN = SELLER_INVITE
+```
+
+**2. The association, and its clock starting.**
+
+```
+ASSOCIATION started, owner BUYER, clock starts NOW: this phone is joining the provider group
+(up to 40s, a person may have to tap Connect)
+```
+
+or on the provider:
+
+```
+INVITING the customer into my group: "OnePlus Nord CE 2 Lite 5G" (1e:4f:f2:19:36:ce)
+invitation ... accepted by Android, waiting for it to join
+ASSOCIATION started, owner SELLER, clock starts NOW
+```
+
+**If Android shows a confirmation dialog on either phone, tap CONNECT.** The
+attempt now waits for you. It must NOT fail while that dialog is open.
+
+**3. No discovery while it is pending.** Between the association starting and
+the group forming there must be NO:
+
+```
+starting peer discovery from a clean state
+```
+
+A line saying `not starting discovery: an association is in flight` is the
+correct behaviour. If `discoverPeers accepted` appears in that window, the
+run is contaminated again and the probe verdict does not count.
+
+**4. Membership, then the radio locked to the data phase.**
+
+```
+CLIENT COUNT 0 -> 1
+DISCOVERY off: somebody is on this link: the radio stays on the group channel
+ASSOCIATION ended (membership formed)
+```
+
+`DISCOVERY off` must appear immediately after the client count, not fifteen
+seconds later.
+
+**5. Only then, the experiment.**
+
+```
+GROUP CHANNEL: 2.4 GHz ch N (24NN MHz) | this phone's Wi-Fi: ? 5 GHz ch 48 (5240 MHz)
+LINK PROBE verdict: ...        (from BOTH phones)
+```
+
+### Checklist for the v0.9.22 report
+
+- The JOIN PLAN from both phones.
+- The `ASSOCIATION started` line, and whether Android asked you to confirm.
+- Any `starting peer discovery` between that line and the group forming.
+- `CLIENT COUNT 0 -> 1` and the `DISCOVERY off` line right after it.
+- `GROUP CHANNEL:` and the `LINK PROBE verdict:` from both phones.
+
+**Only a run with no discovery in the data window decides the 2.4 GHz
+question.**

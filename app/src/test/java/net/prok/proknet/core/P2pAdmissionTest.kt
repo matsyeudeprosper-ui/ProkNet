@@ -134,11 +134,11 @@ class P2pAdmissionTest {
         assertFalse("not again three seconds later",
             P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, 3_000))
         assertTrue("but the window ends and nobody joined: try again",
-            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, P2pAdmission.ATTEMPT_OWN_MS))
+            P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, false, P2pAdmission.ASSOCIATION_TIMEOUT_MS))
         // and after that window the plan may be taken again from scratch
         assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.heldPlan(
             P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER,
-            P2pAdmission.ATTEMPT_OWN_MS, false, hasMember = false, fresh = P2pAdmission.Plan.BUYER_CONNECT))
+            P2pAdmission.ASSOCIATION_TIMEOUT_MS, false, hasMember = false, fresh = P2pAdmission.Plan.BUYER_CONNECT))
     }
 
     // ---- never guess ---------------------------------------------------------------------------------
@@ -182,7 +182,7 @@ class P2pAdmissionTest {
             P2pAdmission.mayInvite(P2pAdmission.Plan.BUYER_CONNECT, buyerInSight, true, false, Long.MAX_VALUE))
 
         // an attempt that ran out of time, or failed, or produced a member, releases admission
-        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, P2pAdmission.ATTEMPT_OWN_MS, false, false))
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, P2pAdmission.ASSOCIATION_TIMEOUT_MS, false, false))
         assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = true, hasMember = false))
         assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 1_000, failed = false, hasMember = true))
         assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.NOBODY, 0, failed = false, hasMember = false))
@@ -244,7 +244,7 @@ class P2pAdmissionTest {
         // and a fresh decision may be taken for the next customer
         assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.heldPlan(
             P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.Owner.BUYER,
-            P2pAdmission.ATTEMPT_OWN_MS + 1, false, hasMember = false, fresh = P2pAdmission.Plan.WAIT))
+            P2pAdmission.ASSOCIATION_TIMEOUT_MS + 1, false, hasMember = false, fresh = P2pAdmission.Plan.WAIT))
         // an empty group is ready to invite the next one
         assertTrue(P2pAdmission.mayInvite(P2pAdmission.Plan.SELLER_INVITE, buyerInSight, true, alone.hasMember, Long.MAX_VALUE))
     }
@@ -265,5 +265,78 @@ class P2pAdmissionTest {
         assertEquals("SELLER_INVITE", Wire.joinPlanName(p.plan))
         assertEquals("BUYER_CONNECT", Wire.joinPlanName(Wire.JOIN_PLAN_BUYER_CONNECT))
         assertEquals("WAIT", Wire.joinPlanName(Wire.JOIN_PLAN_WAIT))
+    }
+
+    // ---- v0.9.22: an accepted association owns the radio and its own clock ---------------------------
+
+    @Test
+    fun a_transient_formed_false_during_an_accepted_join_does_not_release_the_radio() {
+        val t0 = 1_000_000L
+        // 18:54:58.447 connect accepted
+        assertTrue(P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, t0, t0, hasMember = false, failed = false))
+        // 18:54:58.472 Android says formed=false in the middle of its own join choreography
+        assertTrue("that is not the end of the attempt",
+            P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, t0, t0 + 25, hasMember = false, failed = false))
+        // the same for an accepted invitation
+        assertTrue(P2pAdmission.associationPending(P2pAdmission.Owner.SELLER, t0, t0 + 25, hasMember = false, failed = false))
+
+        // it ends on membership, on an explicit refusal, or on its own clock. Nothing else.
+        assertFalse(P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, t0, t0 + 100, hasMember = true, failed = false))
+        assertFalse(P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, t0, t0 + 100, hasMember = false, failed = true))
+        assertFalse(P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, t0, t0 + P2pAdmission.ASSOCIATION_TIMEOUT_MS, false, false))
+        assertFalse("nothing in flight", P2pAdmission.associationPending(P2pAdmission.Owner.NOBODY, t0, t0, false, false))
+        assertFalse("never accepted", P2pAdmission.associationPending(P2pAdmission.Owner.BUYER, 0L, t0, false, false))
+    }
+
+    @Test
+    fun membership_turns_discovery_off_whatever_else_changed_in_the_same_observation() {
+        // a first join changes BOTH generations at once: group 0 -> 1 and membership 0 -> 1
+        val empty = owner(clients = 0)
+        val live = owner(clients = 1)
+        assertEquals(1, live.groupGeneration)
+        assertEquals(1, live.membershipGeneration)
+        assertTrue("both changed from nothing", live.groupGeneration != P2pDataPlane.NONE.groupGeneration &&
+            live.membershipGeneration != P2pDataPlane.NONE.membershipGeneration)
+        // whichever branch a log line lives in, THIS is the rule
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, live.hasMember))
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.BUY, live.hasMember))
+        assertTrue(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, empty.hasMember))
+    }
+
+    @Test
+    fun a_newly_chosen_association_gets_a_full_fresh_clock() {
+        val t0 = 5_000_000L
+        // the purchase has been searching for thirty seconds and the plan is chosen only now
+        val searched = 30_000L
+        assertEquals(P2pAdmission.Ladder.SEARCH, P2pAdmission.ladder(associationStartedAt = 0L, now = t0, searchedMs = searched))
+        // the association is accepted NOW: the search time no longer decides anything
+        assertEquals(P2pAdmission.Ladder.ASSOCIATING, P2pAdmission.ladder(t0, t0, searched))
+        assertEquals("a person is reading the Android popup",
+            P2pAdmission.Ladder.ASSOCIATING, P2pAdmission.ladder(t0, t0 + 20_000, searched + 20_000))
+        assertEquals(P2pAdmission.Ladder.ASSOCIATING,
+            P2pAdmission.ladder(t0, t0 + P2pAdmission.ASSOCIATION_TIMEOUT_MS - 1, 10 * searched))
+        // and only its own deadline ends it
+        assertEquals(P2pAdmission.Ladder.GIVE_UP,
+            P2pAdmission.ladder(t0, t0 + P2pAdmission.ASSOCIATION_TIMEOUT_MS, searched))
+        // with no association at all, the search clock still bounds the purchase
+        assertEquals(P2pAdmission.Ladder.GIVE_UP, P2pAdmission.ladder(0L, t0, P2pAdmission.SEARCH_GIVE_UP_MS))
+        assertTrue("a person needs time to read a dialog and tap Connect", P2pAdmission.ASSOCIATION_TIMEOUT_MS >= 30_000L)
+    }
+
+    @Test
+    fun the_run_that_failed_two_milliseconds_after_choosing_seller_invite_cannot_happen_again() {
+        // 19:10:36.476 JOIN PLAN = SELLER_INVITE, after ~30 s of searching
+        val t0 = 9_000_000L
+        val searched = 34_000L
+        val startedNow = t0
+        // 19:10:36.478, two milliseconds later
+        assertEquals(P2pAdmission.Ladder.ASSOCIATING, P2pAdmission.ladder(startedNow, t0 + 2, searched))
+        // and the provider is still allowed to be waiting for its guest at twenty seconds
+        assertTrue(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 20_000, failed = false, hasMember = false))
+        // an explicit Android refusal ends it at once, and a replan may follow
+        assertFalse(P2pAdmission.keepOwner(P2pAdmission.Owner.SELLER, 2, failed = true, hasMember = false))
+        assertEquals(P2pAdmission.Plan.BUYER_CONNECT, P2pAdmission.heldPlan(
+            P2pAdmission.Plan.SELLER_INVITE, P2pAdmission.Owner.SELLER, 2,
+            failed = true, hasMember = false, fresh = P2pAdmission.Plan.BUYER_CONNECT))
     }
 }

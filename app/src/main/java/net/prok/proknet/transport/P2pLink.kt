@@ -24,6 +24,7 @@ import java.net.Socket
 import java.util.concurrent.Executors
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.LinkIo
+import net.prok.proknet.core.P2pAdmission
 import net.prok.proknet.core.P2pDataPlane
 import net.prok.proknet.core.P2pEndpoint
 import net.prok.proknet.core.P2pPlan
@@ -106,6 +107,42 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private var watching = false
     private var watchTicks = 0
     private var dialSeq = 0
+    // ---- v0.9.22: one accepted association at a time, with its own clock ---------------------------
+
+    @Volatile private var associationOwner = P2pAdmission.Owner.NOBODY
+    @Volatile private var associationAt = 0L
+    @Volatile private var associationFailed = false
+
+    /**
+     * An accepted `connect()` or `invite()` is in flight on this phone. While
+     * this is true the radio belongs to that attempt: no peer discovery, and
+     * a transient `groupFormed = false` from Android changes nothing.
+     */
+    val associationPending: Boolean
+        get() = P2pAdmission.associationPending(associationOwner, associationAt, System.currentTimeMillis(), plane.hasMember, associationFailed)
+
+    /** When the association in flight was accepted, for the log and the node's clock. */
+    val associationStartedAt: Long get() = associationAt
+
+    private fun beginAssociation(owner: P2pAdmission.Owner, why: String) {
+        associationOwner = owner
+        associationAt = System.currentTimeMillis()
+        associationFailed = false
+        stopDiscovery("an association is in flight (" + why + ")")
+        DiagLog.i(tag, "ASSOCIATION started, owner " + owner + ", clock starts NOW: " + why +
+            " (up to " + (P2pAdmission.ASSOCIATION_TIMEOUT_MS / 1000) + "s, a person may have to tap Connect)")
+        changed()
+    }
+
+    private fun endAssociation(why: String, failed: Boolean) {
+        if (associationOwner == P2pAdmission.Owner.NOBODY && associationAt == 0L) return
+        associationFailed = failed
+        associationOwner = P2pAdmission.Owner.NOBODY
+        associationAt = 0L
+        DiagLog.i(tag, "ASSOCIATION ended (" + why + ")")
+        changed()
+    }
+
     /** v0.9.19: a named group needs a passphrase; it is per run and never leaves this phone except to its own customer. */
     private val passphrase: String = "prok" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
     /** One dial ladder per target per data plane generation. */
@@ -405,13 +442,14 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 override fun onSuccess() {
                     lastJoin = "connect accepted for " + address + ", waiting for the group"
                     DiagLog.i(tag, lastJoin)
-                    // v0.9.20: an association is in flight on THIS phone; scanning now only gets in its way
-                    stopDiscovery("this phone is joining a group")
-                    changed(); onResult?.invoke(true, "accepted")
+                    beginAssociation(P2pAdmission.Owner.BUYER, "this phone is joining the provider group")
+                    onResult?.invoke(true, "accepted")
                 }
                 override fun onFailure(reason: Int) {
                     lastJoin = "connect refused for " + address + ": " + reasonName(reason)
-                    DiagLog.w(tag, lastJoin); changed(); onResult?.invoke(false, reasonName(reason))
+                    DiagLog.w(tag, lastJoin)
+                    endAssociation("Android refused the join: " + reasonName(reason), failed = true)
+                    onResult?.invoke(false, reasonName(reason))
                 }
             })
         } catch (e: SecurityException) { lastError = "permission: " + e.message; fail(lastError); onResult?.invoke(false, lastError); return lastError }
@@ -521,6 +559,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         DiagLog.i(tag, "connection: formed=" + formed + " role=" + life.role + " groupOwner=" + go +
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
         if (!formed) {
+            // v0.9.22: Android reports groupFormed=false in the middle of its own join choreography.
+            // While an accepted association is in flight that is not the end of anything.
+            if (associationPending) {
+                DiagLog.i(tag, "connection says formed=false while an association is in flight: holding the radio for it")
+                changed(); return
+            }
             radio.release("the group is gone")
             if (life.want != P2pPlan.Want.NONE) keepDiscovering("the group is gone, this phone can look for peers again")
             changed(); return
@@ -554,6 +598,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
      */
     private fun keepDiscovering(why: String) {
         if (discovering) return
+        // v0.9.22: an accepted connect() or invite() owns the radio until it forms membership, is
+        // refused, or runs out of time. Android's own mid-join `formed=false` is none of those.
+        if (associationPending) {
+            DiagLog.i(tag, "not starting discovery: an association is in flight (" + why + ")")
+            return
+        }
         if (!P2pPlan.discoveryWanted(life.want, plane.hasMember)) {
             DiagLog.i(tag, "not starting discovery: " + (if (plane.hasMember) "this link already has a peer on it" else "nothing to admit") + " (" + why + ")")
             return
@@ -630,10 +680,13 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 override fun onSuccess() {
                     lastInvite = "invitation to " + name + " accepted by Android, waiting for it to join"
                     DiagLog.i(tag, lastInvite)
-                    stopDiscovery("this phone is inviting a guest")
-                    changed()
+                    beginAssociation(P2pAdmission.Owner.SELLER, "this phone invited " + name)
                 }
-                override fun onFailure(reason: Int) { lastInvite = "invitation to " + name + " REFUSED: " + reasonName(reason); DiagLog.e(tag, lastInvite); changed() }
+                override fun onFailure(reason: Int) {
+                    lastInvite = "invitation to " + name + " REFUSED: " + reasonName(reason)
+                    DiagLog.e(tag, lastInvite)
+                    endAssociation("Android refused the invitation: " + reasonName(reason), failed = true)
+                }
             })
             null
         } catch (e: SecurityException) { lastInvite = "permission: " + e.message; DiagLog.e(tag, lastInvite); lastInvite }
@@ -659,6 +712,14 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         val o = binding.observe(life.role, h)
         val before = plane
         val now = P2pDataPlane.advance(before, o, clientCount, life.groupFormed)
+        // v0.9.22: a post-condition, not a branch. On a first join the group generation AND the
+        // membership generation both change in the same observation, and in v0.9.21 the group branch
+        // won and the membership branch, which held this line, was skipped. Discovery then ran for
+        // sixteen seconds INTO the data-path window.
+        if (now.hasMember) {
+            stopDiscovery("somebody is on this link: the radio stays on the group channel")
+            endAssociation("membership formed", failed = false)
+        }
         if (now == before) { if (netHandle == null) netHandle = h; return }
         plane = now
         netHandle = h
@@ -671,9 +732,6 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 dialled.clear()
             }
             now.membershipGeneration != before.membershipGeneration -> {
-                // v0.9.15: admission is over. A single radio that scans the social channels is not on
-                // the group channel, and that is what six timed out SYNs in BOTH directions look like.
-                stopDiscovery("somebody has joined: the radio must stay on the group channel")
                 DiagLog.i(tag, "DATA PLANE generation " + now.generationText() + " created (client membership established, seen on " + why + ")")
                 DiagLog.i(tag, "   " + now.describe())
                 val old = listener
@@ -690,6 +748,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private fun dropPlane(why: String) {
+        endAssociation(why, failed = true)
         radio.release(why)
         closeListener(why)
         if (plane != P2pDataPlane.NONE) DiagLog.i(tag, "DATA PLANE dropped: " + why)
@@ -1070,6 +1129,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("data plane: ").append(plane.describe()).append("\n")
         sb.append("data plane usable: ").append(plane.usable).append("\n")
         sb.append("listener: ").append(listener?.describe() ?: "none").append("\n")
+        sb.append("association in flight: ").append(if (associationPending) associationOwner.toString() +
+            " for " + ((System.currentTimeMillis() - associationAt) / 1000) + "s" else "none").append("\n")
         sb.append("link probe: ").append(P2pPlan.linkProofText(linkProof)).append("\n")
         sb.append("group channel: ").append(if (groupFrequency > 0) ShareCheck.describe(groupFrequency) else "unknown")
             .append(" | this phone's Wi-Fi: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")

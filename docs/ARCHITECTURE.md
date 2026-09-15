@@ -746,6 +746,79 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## An accepted association owns the radio and its own clock (v0.9.22)
+
+Two lifecycle bugs, both visible in the v0.9.21 runs, and the first one
+contaminated the 2.4 GHz experiment.
+
+### Discovery restarted inside an accepted join
+
+```
+18:54:58.447  connect accepted
+18:54:58.447  DISCOVERY off
+18:54:58.470  stopPeerDiscovery refused: BUSY
+18:54:58.472  connection formed=false
+18:54:58.474  starting peer discovery again        <- wrong
+18:55:04      group formed, LINK PROBE starts
+18:55:15      LINK PROBE verdict: no packets
+18:55:20      DISCOVERY off
+```
+
+Android emits `groupFormed = false` in the middle of its own join
+choreography. v0.9.21 read that as "the attempt is dead, look again", so
+scanning ran for sixteen seconds INTO the data-path window, which is exactly
+the condition the v0.9.15 rule exists to prevent.
+
+There is now one truth, and `keepDiscovering` refuses while it holds:
+
+```
+associationPending = owner != NOBODY && accepted && !hasMember && !failed
+                     && (now - acceptedAt) < ASSOCIATION_TIMEOUT_MS
+```
+
+An attempt ends when membership forms, when Android refuses it, or when its
+own clock runs out. A transient callback is none of those.
+
+**And stopping discovery is now a post-condition of membership, not a
+branch.** On a first join the group generation and the membership generation
+change in the same observation; the group branch won, and the line that
+stopped discovery lived in the membership branch. It is now unconditional:
+
+```
+advance the plane
+if (now.hasMember) { stop discovery; the association is over }
+then, independently: group change, membership change, endpoint, listener
+```
+
+### Choosing a plan is not starting an attempt
+
+```
+19:10:36.476  JOIN PLAN = SELLER_INVITE
+19:10:36.478  the provider could see this phone, but the invitation did not complete
+```
+
+Two milliseconds. The purchase had been searching for thirty seconds, and the
+deadline it was judged against had expired before the attempt existed.
+Meanwhile Android had put a confirmation dialog on both phones and the user
+was reading it.
+
+So the clocks are separated:
+
+```
+search        from the start of the purchase, SEARCH_GIVE_UP_MS (60 s)
+association   from the moment Android ACCEPTED a connect() or an invite(),
+              ASSOCIATION_TIMEOUT_MS (40 s), long enough for a person to
+              read a popup and tap Connect
+```
+
+`P2pAdmission.ladder(associationStartedAt, now, searchedMs)` returns SEARCH,
+ASSOCIATING or GIVE_UP, and once an association has been accepted the search
+time decides nothing at all. Both plans use the same semantics: the buyer
+starts its clock when its `connect()` is accepted, and when the provider
+announces SELLER_INVITE, because the provider invites in the same breath.
+
+A refusal from Android ends the attempt immediately and a replan may follow.
+
 ## A group is a room, membership is admission (v0.9.21)
 
 v0.9.20 made the right decision and then did nothing with it:
