@@ -1,95 +1,106 @@
-# CLAUDE_REPORT - ProkNet v0.9.18 "never guess who you are talking to"
+# CLAUDE_REPORT - ProkNet v0.9.19 "the band is the last lever"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 157/157 automated tests pass, released. The v0.9.16 questions
-are STILL unanswered on hardware. Home Wi-Fi resale is NOT claimed.**
+Status: **built, 159/159 automated tests pass, released, not yet tested on phones.
+Home Wi-Fi resale is NOT claimed.**
 
-## 1. What the run showed
+## 1. The measurement, with everything else in place
 
-v0.9.17 fixed the screen: the purchase ran, the provider answered
-GROUP_READY, and the buyer started joining. Then the ladder spent itself on a
-printer:
+The v0.9.18 run produced the probe verdict on the seller, with the Wi-Fi
+radio lock held:
 
 ```
-13:55:22.482  joining the provider group: attempt 1/4 to 72:cb:dd:b9:a1:da   (C1 Pro)
-13:55:22.505  connect accepted, waiting for the group
-13:55:25.852  Android was busy: trying to join again: attempt 2/4 to 72:cb:dd:b9:a1:da
-13:55:25.860  connect refused: BUSY (framework busy)
-13:55:33.860  Android was busy: trying to join again: attempt 3/4 to 14:cb:19:f5:f9:fc
-13:55:33.883  connect accepted for 14:cb:19:f5:f9:fc                         (HP DeskJet 2700)
-13:55:34.493  attempt 4/4 to 14:cb:19:f5:f9:fc
-13:55:37.867  could not join the provider Wi-Fi Direct group after 4 attempts
+15:32:18.114  LINK PROBE: a packet DID cross, U1 from 192.168.49.124, answering it twice
+15:32:19.702  ... U2      15:32:21.307  ... U3      15:32:22.923  ... U4      15:32:24.514 ... U5
+15:32:24.313  LINK PROBE verdict: packets arrive here but our answers do not get back
+              (sent 10, unicast replies 0, broadcast replies 0, probes answered by us 4)
 ```
 
-No group formed, so there is still no radio lock line, no group channel line
-and no probe verdict. Both faults are mine.
+Every probe the customer sent arrived. The provider answered each one twice,
+unicast and broadcast, and neither came back. The provider's own ten probes
+got nothing.
 
-## 2. Fault one: the provider was chosen by guessing
+Three things follow, and they are measurements, not opinions:
 
-`pickSellerPeer` matched the name the provider sent over BLE and, when that
-name was not in the peer list, fell back to "any peer that owns a group". At
-13:55:32 the provider had dropped out of the list for a few seconds and the
-only group owner left was `DIRECT-FB-HP DeskJet 2700 series`.
+1. **The Wi-Fi radio lock does not fix the downlink.** v0.9.16 is answered.
+2. **Broadcast does not cross either**, so the two phones failing to address
+   each other is ruled out.
+3. It is not the sockets, the binding, the listener lifecycle, the membership
+   handshake or discovery. Every one of those is correct and has been
+   measured as correct.
 
-That fallback existed for a provider too old to send its name. **It is gone.**
-A named provider that is not in the list means WAIT. A provider that sends no
-name at all also means WAIT. It is the same rule you set for
-`00:00:00:00:00:00`: this network does not guess who it is talking to.
+What is left is the radio itself. The provider's group follows its home Wi-Fi
+onto 5 GHz channel 48, so one radio serves a home network and a group on one
+channel, and only one direction survives.
 
-## 3. Fault two: an accepted join was overtaken by its own successor
+## 2. The last software lever: ask for the other band
 
-The next attempt was held off only when Android REFUSED. So an accepted
-`connect()` at 13:55:22.5 was followed by another at 13:55:25.8, and the
-framework answered BUSY to us, which then cascaded into attempts 3 and 4.
+`P2pPlan.groupBand(staFreqMhz)` asks for 2.4 GHz when this phone's own Wi-Fi
+is on 5 GHz, and lets Android choose otherwise. The group is created with
+`setGroupOperatingBand(GROUP_OWNER_BAND_2GHZ)`, which requires a named group,
+so it now carries a fixed name and a per-run passphrase.
 
-The hold is now applied BEFORE asking, `P2pPlan.JOIN_ACCEPTED_WAIT_MS` =
-15 s, and only a refusal shortens it to the busy backoff. Four attempts still
-fit inside the 60 s ladder.
+It is a request, not an assumption. If Android refuses it, the plain group is
+created instead and the log says which happened. `GROUP CHANNEL:` reports
+what was actually granted, so the experiment cannot silently not run.
 
-## 4. Diagnostics
+I chose this over the owner-invite association because the probe result says
+the fault is a direction, not an association: the client is addressable, the
+owner answers, and the answer dies in the air.
 
-Every attempt now names its target, `attempt 1/4 to "C1 Pro"
-(72:cb:dd:b9:a1:da)`, and the waiting line lists the addressable peers by
-name. A wrong target is visible at once instead of being a MAC address nobody
-recognises.
+## 3. The bug that made the last run produce nothing at all
 
-## 5. Tests (157)
+```
+15:33:00.079  not starting discovery: this link already has a peer on it
+16:14:17.991  (buyer) looking for it ... (0 seen, 0 with a real address): none addressable
+```
 
-The printer case verbatim: with the provider absent and the printer owning a
-group, the answer is null, not the printer; with the provider present it is
-the provider; with no name it is null. Plus the timing rule: an accepted join
-must outlast a busy backoff step, be long enough for a group to form, and
-still leave room for four attempts inside the give up time.
+v0.9.15 stops discovery when somebody joins. It never started it again when
+they left: the client count reached zero a few milliseconds after that
+decision was taken, so the provider sat holding a group, invisible, for forty
+minutes, through four buyer attempts.
 
-## 6. Build
+Discovery now comes back the moment the link has no peer on it, from the
+client count AND from the data plane, and `keepDiscovering` re-checks the
+rule instead of trusting the caller. This is why the last two runs showed
+"0 seen, none addressable" and gave up "after 0 attempts".
 
-Build 31, versionName 0.9.18, 1.29 MB,
-SHA256 `8211f96b3486087a013f01a1c987520d0e42f23e5d6adffed53c4c0ef3d324fc`.
+## 4. Tests (159)
+
+The band rule on 5 GHz, 2.4 GHz and no Wi-Fi, and that the group name is a
+legal Wi-Fi Direct name. The findability rule: a provider WITH a customer
+does not discover, and the same provider the moment the customer leaves does.
+
+## 5. Build
+
+Build 32, versionName 0.9.19, 1.29 MB,
+SHA256 `c513758557a5f0c9b6d656afea72f9f91766f6337d5e4234b99ad971336b7acc`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.18
-Commit `c2d90f4` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.19
+Commit `185082b` on `main`; this report on top.
 
-## 7. Still unanswered, third build running
+## 6. What the next run decides
 
-The three lines from v0.9.16 have never been produced by a phone, because
-each run has been stopped by a different fault above them. They are the whole
-point of the current work:
+`docs/TESTING.md` section 37.
 
-```
-RADIO LOCK held: ...
-GROUP CHANNEL: ... | this phone's Wi-Fi: ...
-LINK PROBE verdict: ...        (from BOTH phones)
-```
+- `GROUP CHANNEL:` says 2.4 GHz and the probe verdict becomes "the link
+  carries IP packets both ways": the transport is solved and the rest of
+  section 30 follows.
+- `GROUP CHANNEL:` says 2.4 GHz and the verdict is still one way: **the
+  software levers are finished.** These two phones cannot carry a Wi-Fi
+  Direct data path while the provider stays on its home Wi-Fi, and that is a
+  product decision, not a bug. The honest options then are a third phone as
+  the group owner, method A on a provider with mobile data, or a different
+  provider handset.
+- Android refuses the band: the phone will not take the request, and the same
+  conclusion applies with one fewer experiment available.
 
-What is known, and is not in doubt: the link was ONE WAY when it last got far
-enough to be measured. Everything the client sent reached the owner and
-nothing the owner sent reached the client.
+## 7. The claim rule
 
-## 8. The claim rule
-
-Unchanged, section 30. Home Wi-Fi resale is not claimed.
+Unchanged, section 30. Home Wi-Fi resale is not claimed, and I will not claim
+it on anything but the full hardware condition.
