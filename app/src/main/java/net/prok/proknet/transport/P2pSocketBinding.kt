@@ -93,18 +93,40 @@ class P2pSocketBinding(private val context: Context) {
         P2pEndpoint.Observed(role, h?.interfaceName ?: "", h?.localAddress ?: "", h?.identity ?: "")
 
     /**
-     * Bind an outgoing socket to the P2P network BEFORE it connects, so the
-     * dial cannot leave through the phone's other network. Returns whether
-     * the socket really belongs to the P2P network now.
+     * Tie an outgoing socket to the Wi-Fi Direct link BEFORE it connects, in
+     * a fixed order:
+     *
+     * 1. the Android network, when Android exposes one,
+     * 2. otherwise an explicit bind to the P2P local address, which is what
+     *    the OnePlus buyer needs: it reported `android network none` while
+     *    holding `p2p0 = 192.168.49.124`,
+     * 3. otherwise nothing, and the caller must refuse to dial. Default
+     *    routing is a guess, and a guess is what timed out six times.
      */
-    fun bind(socket: Socket, h: Handle?): Boolean {
-        val n = h?.network ?: return false
-        return try { n.bindSocket(socket); true } catch (e: Exception) { DiagLog.w(tag, "bindSocket: " + e); false }
+    fun bindOut(socket: Socket, h: Handle?): P2pEndpoint.Binding {
+        val n = h?.network
+        if (n != null) {
+            try { n.bindSocket(socket); return P2pEndpoint.Binding.ANDROID_NETWORK }
+            catch (e: Exception) { DiagLog.w(tag, "bindSocket refused (" + e + "), falling back to the local P2P address") }
+        }
+        val local = h?.localAddress ?: ""
+        if (local.isNotEmpty()) {
+            try {
+                socket.bind(java.net.InetSocketAddress(InetAddress.getByName(local), 0))
+                return P2pEndpoint.Binding.LOCAL_ADDRESS
+            } catch (e: Exception) { DiagLog.e(tag, "binding to the P2P local address " + local + " failed: " + e) }
+        }
+        return P2pEndpoint.Binding.NONE
     }
 
     /**
      * Open a server socket ON the P2P local address. Not `0.0.0.0`: the
      * listener has to belong to this endpoint, and be seen to.
+     *
+     * Android has no public way to bind a LISTENING socket to a network
+     * (`Network.bindSocket` takes a connected-style socket), which is why a
+     * provider that is also on its home Wi-Fi cannot rely on being dialled:
+     * it dials out as well, where the network CAN be bound.
      */
     fun listenOn(h: Handle, port: Int): ServerSocket {
         val ss = ServerSocket()

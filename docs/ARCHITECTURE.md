@@ -746,6 +746,100 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Membership is part of the transport (v0.9.14)
+
+v0.9.13 gave the socket an endpoint identity. The phone run then produced
+the most useful failure of the whole experiment:
+
+```
+seller  p2p-wlan0-26 = 192.168.49.1   GROUP_OWNER   network 158
+seller  listener 192.168.49.1:47742   generation 1  accepting true
+seller  CLIENT COUNT 0 -> 1           listener check says VALID
+buyer   p2p0 = 192.168.49.124         android network none
+buyer   socket bound to P2P network=false
+buyer   DIAL 1..6 -> 192.168.49.1:47742   all six timed out
+seller  TCP accepted                  never
+```
+
+Every field matched, our own validator said valid, and nothing was
+reachable. So "valid" was measuring the wrong thing.
+
+### What the v0.9.9 comparison says
+
+The 70 minute session that worked ran this same socket code. At commit
+`757a41d` the listener was created at group formation, on `0.0.0.0`, and the
+buyer dialled with a plain unbound socket. Both runs create the listener
+BEFORE any client exists, both keep discovery alive, both dial from the
+client on `onConnectionInfo`. The only differences are:
+
+- **who associates.** In v0.9.9 the OWNER called `connect()` to invite the
+  guest. Since v0.9.12 the CLIENT joins by itself, because the owner's peer
+  list anonymises the buyer. That is the one behavioural change between a
+  data path that carried 34 MB and one that carries nothing.
+- v0.9.13 narrowed the listener from every interface to the P2P address,
+  which is strictly more correct and cannot explain a lost SYN.
+
+So the lesson from the old success is not "bind harder". It is that a
+listener which existed before the client joined is not evidence of anything,
+and that the data path must not depend on which side happened to start the
+association.
+
+### The lifecycle
+
+```
+group formed -> endpoint exists -> client membership established
+             -> a data plane generation becomes usable
+             -> listener and dial belong to THAT generation
+```
+
+`core/P2pDataPlane.kt` (pure) carries two counters. `groupGeneration`
+changes when the group or its endpoint changes. `membershipGeneration`
+changes when this phone gains a live peer: an owner whose client count
+reached one, or a client that joined. A listener from group 4 / membership 0
+is not the listener of group 4 / membership 1, and `validate` says
+`STALE_MEMBERSHIP` by name. Nothing is usable, and no socket is opened,
+before `usable` is true.
+
+### Both phones dial
+
+Android can bind an OUTGOING socket to a network (`Network.bindSocket`) and
+offers no public way to bind a LISTENING one. The provider is the phone that
+also holds a home Wi-Fi network, so it is exactly the phone whose listening
+socket cannot be tied to Wi-Fi Direct. It therefore does not depend on being
+dialled:
+
+```
+buyer joins -> buyer is a member at once, arms its own listener
+buyer -> seller (BLE):  P2P_MEMBER  192.168.49.124:47742
+seller observes clients 0 -> 1, membership generation 1
+seller arms the listener FOR THAT membership
+seller -> buyer (BLE):  TRANSPORT_READY  192.168.49.1:47742  membership 1
+buyer dials the seller          seller dials the buyer
+first authenticated socket wins, the link state machine closes the loser
+```
+
+`GROUP_READY` now means only "you may join my group". `TRANSPORT_READY`
+means "you are joined and my listener is armed for your membership". A buyer
+that hears nothing still dials by itself after a bounded 8 s, which also
+covers the developer lab where there is no BLE channel.
+
+### Every socket says how it is bound
+
+```
+android network exists -> Network.bindSocket(socket)      binding ANDROID_NETWORK
+else a P2P address     -> socket.bind(192.168.49.124, 0)  binding LOCAL_ADDRESS
+else                   -> refuse to open the socket       binding NONE
+```
+
+The OnePlus buyer reported `android network none` while holding
+`p2p0 = 192.168.49.124`, and then dialled unbound, which is a guess about
+routing. A guess is what timed out six times, so an unbindable socket is now
+a transport error with a message, never a dial.
+
+The provider upstream is untouched by all of this: only the local transport
+socket is tied to Wi-Fi Direct, and a `p2p...` interface stays a LOCAL link
+that can never be an upstream.
+
 ## A socket belongs to an endpoint (v0.9.13)
 
 v0.9.12 proved the topology on real phones, and nothing moved:

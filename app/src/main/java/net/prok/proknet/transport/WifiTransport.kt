@@ -255,6 +255,8 @@ class WifiTransport(
                 }
                 is Wire.Control.P2pRequest -> DiagLog.i(tag, "P2P invitation request from prok-" + peerShort + " is handled by the node, not by this transport")
                 is Wire.Control.P2pStatus -> DiagLog.i(tag, "P2P group status from prok-" + peerShort + " is handled by the node, not by this transport")
+                is Wire.Control.P2pMember -> DiagLog.i(tag, "P2P MEMBER control: handled by the node, not by this transport")
+                is Wire.Control.P2pTransport -> DiagLog.i(tag, "P2P TRANSPORT control: handled by the node, not by this transport")
                 is Wire.Control.WifiCancel -> {
                     if (fsm.peer == peerShort && !fsm.isIdle) {
                         DiagLog.w(tag, "prok-" + peerShort + " cancelled the link: " + Wire.cancelName(c.reason) + (if (c.detail.isNotEmpty()) " - ITS OWN ERROR: " + c.detail else " (no detail: it runs an older build)"))

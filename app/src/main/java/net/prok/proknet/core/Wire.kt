@@ -53,6 +53,18 @@ object Wire {
     const val P2P_REBUILDING = 2
     const val P2P_NOT_AVAILABLE = 3
 
+    /**
+     * v0.9.14: buyer -> seller, "I am IN your group, at this P2P address, and I am listening there".
+     * The owner cannot learn a client address from Android (the client list carries MAC addresses
+     * only, and /proc/net is closed to apps), so the member tells it over the BLE control channel.
+     */
+    const val OP_P2P_MEMBER = 6
+    /**
+     * v0.9.14: seller -> buyer, "my listener is armed FOR THIS membership, here is where to dial".
+     * GROUP_READY only ever meant "you may join"; this means "you are joined and the data plane is up".
+     */
+    const val OP_P2P_TRANSPORT = 7
+
     fun p2pStatusName(code: Int) = when (code) {
         P2P_READY -> "GROUP_READY"; P2P_REBUILDING -> "REBUILDING_GROUP"; P2P_NOT_AVAILABLE -> "NOT_AVAILABLE"; else -> "status " + code
     }
@@ -100,6 +112,13 @@ object Wire {
          * cause (which Android error the hotspot returned) without anybody opening the other phone.
          */
         class WifiCancel(val reason: Int = CANCEL_GENERIC, val detail: String = "") : Control()
+        /** v0.9.14: buyer -> seller, the buyer's own P2P address and the port it listens on. */
+        class P2pMember(val address: String, val port: Int) : Control()
+        /**
+         * v0.9.14: seller -> buyer, its P2P address, the port, and the membership generation the
+         * listener was armed for. A buyer only dials a transport that says it is ready for ITS join.
+         */
+        class P2pTransport(val membership: Int, val address: String, val port: Int) : Control()
     }
 
     /**
@@ -121,6 +140,19 @@ object Wire {
     fun p2pRequest(deviceName: String): ByteArray {
         val n = deviceName.take(64).toByteArray(Charsets.UTF_8)
         return ByteBuffer.allocate(1 + n.size).put(OP_P2P_REQUEST.toByte()).put(n).array()
+    }
+
+    /** v0.9.14: "I am in your group at [address], listening on [port]". */
+    fun p2pMember(address: String, port: Int): ByteArray {
+        val a = address.take(64).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(4 + a.size).put(OP_P2P_MEMBER.toByte()).put(a.size.toByte()).put(a).putShort(port.toShort()).array()
+    }
+
+    /** v0.9.14: "my listener is armed for membership [membership] at [address]:[port]". */
+    fun p2pTransport(membership: Int, address: String, port: Int): ByteArray {
+        val a = address.take(64).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(5 + a.size).put(OP_P2P_TRANSPORT.toByte()).put(membership.coerceIn(0, 255).toByte())
+            .put(a.size.toByte()).put(a).putShort(port.toShort()).array()
     }
 
     fun p2pStatus(code: Int, deviceName: String): ByteArray {
@@ -153,6 +185,19 @@ object Wire {
                 OP_P2P_STATUS -> {
                     val code = if (b.remaining() >= 1) b.get().toInt() and 0xFF else P2P_NOT_AVAILABLE
                     Control.P2pStatus(code, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
+                }
+                OP_P2P_MEMBER -> {
+                    val n = b.get().toInt() and 0xFF
+                    val a = String(ByteArray(n).also { b.get(it) }, Charsets.UTF_8)
+                    val port = if (b.remaining() >= 2) b.short.toInt() and 0xFFFF else 0
+                    if (a.isEmpty()) null else Control.P2pMember(a, port)
+                }
+                OP_P2P_TRANSPORT -> {
+                    val g = b.get().toInt() and 0xFF
+                    val n = b.get().toInt() and 0xFF
+                    val a = String(ByteArray(n).also { b.get(it) }, Charsets.UTF_8)
+                    val port = if (b.remaining() >= 2) b.short.toInt() and 0xFFFF else 0
+                    if (a.isEmpty()) null else Control.P2pTransport(g, a, port)
                 }
                 OP_P2P_REQUEST -> Control.P2pRequest(if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
                 OP_WIFI_CANCEL -> {

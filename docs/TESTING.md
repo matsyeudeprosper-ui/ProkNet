@@ -1039,3 +1039,65 @@ still show the Freebox as its Internet, and COPY DIAG on the seller must show
 - One `DIAL` line from the buyer, with the bound state.
 - Whether TCP was accepted, and how long after the join.
 - If it failed: the French sentence, the time it took, and both P2P DIAG dumps.
+
+## 32. v0.9.14 the data plane, read on both phones
+
+Setup is section 30, unchanged, and section 30 is still the claim rule.
+
+**SELLER, when the buyer joins.** The three lines that matter now:
+
+```
+CLIENT COUNT 0 -> 1
+DATA PLANE generation 1.1 created (client membership established, seen on the client count changed)
+   group generation 1, membership generation 1, role GROUP_OWNER,
+   interface p2p-wlan0-XX, local 192.168.49.1, network NNN, clients 1
+   old listener: group generation 1, membership generation 0 -> stale for live client membership
+LISTENER rebuilding for live membership: the listener was built before this client membership existed
+LISTENER actual: 192.168.49.1:47742 | ... | on the P2P local address=true
+LISTENER accept loop started for generation 1.1 (token 2) on 192.168.49.1:47742
+```
+
+Then the handshake and the outgoing dial:
+
+```
+P2P MEMBER: prok-XXXX is in my group at 192.168.49.124:47742
+answering TRANSPORT_READY: 192.168.49.1:47742 for membership generation 1
+TRANSPORT dial to 192.168.49.124:47742 for generation 1.1
+DIAL 1/6: 192.168.49.1 -> 192.168.49.124:47742 | p2p interface p2p-wlan0-XX |
+          android network NNN | binding ANDROID_NETWORK
+```
+
+**BUYER.**
+
+```
+WI-FI DIRECT GROUP FORMED: role CLIENT ... group generation 1, membership generation 1
+telling prok-XXXX that I am in its group at 192.168.49.124:47742
+TRANSPORT_READY from prok-XXXX: 192.168.49.1:47742 for membership generation 1
+DIAL 1/6: 192.168.49.124 -> 192.168.49.1:47742 | p2p interface p2p0 |
+          android network none | binding LOCAL_ADDRESS 192.168.49.124
+```
+
+`binding NONE` must never appear. If it does, the phone knew neither a P2P
+network nor a P2P address, and the socket was refused on purpose.
+
+**Either side may win.** The session is good whether the log says
+`TCP accepted ... membership generation 1` on the seller or
+`TCP connected ... binding ANDROID_NETWORK` on the seller. Both are the same
+authenticated ProkNet link. Write down WHICH ONE won, because that is the
+answer to the question this version was built to ask.
+
+Then, unchanged: signed handshake, contract, VPN, INTERNET OK, Chrome.
+
+**The bounded failure** still applies: with a formed group and no transport
+after 45 s, the buyer stops with
+"Connexion locale créée, mais le fournisseur ne répond pas." and the seller
+keeps sharing.
+
+### Checklist for the v0.9.14 report
+
+- The seller block above, verbatim, especially the `old listener: ... -> stale` line.
+- Which side produced the socket, and how long after `CLIENT COUNT 0 -> 1`.
+- The `binding ...` word from both phones.
+- Seller Wi-Fi before, during and after. Provider upstream must stay the Freebox.
+- If it still fails: both COPY P2P DIAG dumps, which now print the data plane,
+  the listener and the verdict.

@@ -155,6 +155,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         }
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); onP2pGroupChanged() } }
         override fun staDescription(): String = wifi.currentWifi()?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: ""
+        override fun onDataPlane(plane: net.prok.proknet.core.P2pDataPlane.Plane) { main.post { onP2pDataPlane(plane) } }
     })
 
     /**
@@ -180,6 +181,78 @@ class ProkNetNode(private val context: Context) : TransportListener {
             p2pFallbackActive = false
             startP2pFallback("a buyer is asking and the group was gone")
         }
+    }
+
+    // ---- v0.9.14: the transport handshake, once the client is really a member ---------------------
+
+    /** The customer that told us its P2P address, and the membership generation we armed for it. */
+    @Volatile private var p2pMemberAddress = ""
+    @Volatile private var p2pMemberPeer = ""
+    /** Buyer side: the membership generation we have already announced, so we announce it once. */
+    @Volatile private var p2pAnnounced = 0
+
+    /**
+     * v0.9.14: the data plane moved on this phone. GROUP_READY only ever
+     * meant "you may join"; this is where "you are joined and the transport
+     * is up" is decided, on both sides.
+     */
+    private fun onP2pDataPlane(plane: net.prok.proknet.core.P2pDataPlane.Plane) {
+        DiagLog.i(tag, "DATA PLANE " + plane.generationText() + ": " + plane.describe() + " | usable " + plane.usable)
+        if (!plane.usable) return
+        // SELLER: the customer may have announced itself before Android reported the client count, or
+        // the other way round. Whichever came second, the transport is armed and announced here.
+        if (gateway.providing && plane.role == P2pPlan.Role.GROUP_OWNER && p2pMemberAddress.isNotEmpty()) {
+            p2p.armTransport("the data plane became usable")
+            val peer = p2pMemberPeer
+            if (peer.isNotEmpty()) {
+                DiagLog.i(tag, "announcing TRANSPORT_READY to prok-" + peer + ": " + plane.localAddress + ":" + P2pPlan.PORT +
+                    " for membership generation " + plane.membershipGeneration)
+                sendControl(peer, Wire.p2pTransport(plane.membershipGeneration, plane.localAddress, P2pPlan.PORT)) {}
+            }
+            p2p.dialPeer(p2pMemberAddress, P2pPlan.PORT, "the data plane became usable and I know where the customer is")
+        }
+        if (buyViaP2p && plane.role == P2pPlan.Role.CLIENT) {
+            // tell the provider where we are: it cannot learn a client address from Android
+            val peer = buyerWanted ?: return
+            if (p2pAnnounced == plane.membershipGeneration) return
+            p2pAnnounced = plane.membershipGeneration
+            DiagLog.i(tag, "telling prok-" + peer + " that I am in its group at " + plane.localAddress + ":" + P2pPlan.PORT)
+            sendControl(peer, Wire.p2pMember(plane.localAddress, P2pPlan.PORT)) { ok ->
+                if (!ok) DiagLog.w(tag, "the membership message could not be delivered over BLE")
+            }
+        }
+    }
+
+    /**
+     * Seller: the customer says it has joined our group, and where it is.
+     * We arm the listener FOR THIS membership, tell it so, and dial it
+     * ourselves as well: Android lets us bind an outgoing socket to the
+     * Wi-Fi Direct network, and gives no way to bind a listening one, so the
+     * provider must not depend on being dialled.
+     */
+    private fun onP2pMember(peerShort: String, c: Wire.Control.P2pMember) {
+        if (!gateway.providing) { DiagLog.w(tag, "prok-" + peerShort + " announced a membership but this phone is not sharing"); return }
+        p2pMemberAddress = c.address
+        p2pMemberPeer = peerShort
+        DiagLog.i(tag, "P2P MEMBER: prok-" + peerShort + " is in my group at " + c.address + ":" + c.port)
+        p2p.armTransport("the customer announced its membership")
+        val plane = p2p.plane
+        if (!plane.usable) { DiagLog.w(tag, "the data plane is not usable yet (" + plane.describe() + "), not announcing the transport"); return }
+        DiagLog.i(tag, "answering TRANSPORT_READY: " + plane.localAddress + ":" + P2pPlan.PORT + " for membership generation " + plane.membershipGeneration)
+        sendControl(peerShort, Wire.p2pTransport(plane.membershipGeneration, plane.localAddress, P2pPlan.PORT)) {}
+        p2p.dialPeer(c.address, c.port, "the customer announced its membership")
+    }
+
+    /**
+     * Buyer: the provider says its listener is armed for OUR membership.
+     * That is the moment to dial, instead of dialling blindly six times.
+     */
+    private fun onP2pTransport(peerShort: String, c: Wire.Control.P2pTransport) {
+        if (!buyViaP2p || buyerWanted != peerShort) return
+        DiagLog.i(tag, "TRANSPORT_READY from prok-" + peerShort + ": " + c.address + ":" + c.port +
+            " for membership generation " + c.membership)
+        val err = p2p.dialPeer(c.address, c.port, "the provider announced its transport")
+        if (err != null) DiagLog.w(tag, "cannot dial the provider yet: " + err)
     }
 
     private fun invitePeerByName(peerShort: String, deviceName: String, attempt: Int) {
@@ -253,6 +326,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pWaitStart = System.currentTimeMillis()
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
+        p2pAnnounced = 0
         val err = p2p.startBuyer()
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
@@ -300,7 +374,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val sinceGroup = if (p2pGroupFormedAt == 0L) 0L else System.currentTimeMillis() - p2pGroupFormedAt
         if (P2pPlan.transportStep(p2p.groupFormed, wifi.linkedPeer != null, sinceGroup) == P2pPlan.TransportStep.FAIL_NO_TRANSPORT) {
             DiagLog.e(tag, "the Wi-Fi Direct group is formed but no ProkNet transport came up in " + (sinceGroup / 1000) +
-                "s | my endpoint: " + (p2p.endpoint?.describe() ?: "none"))
+                "s | my data plane: " + p2p.plane.describe() + " | listener " + net.prok.proknet.core.P2pDataPlane.verdictText(p2p.listenerVerdict()))
             // the sentence the customer reads is built in French by ProductState.lostHint
             failBuy(P2pPlan.TRANSPORT_FAIL_REASON, P2pPlan.TRANSPORT_FAIL_REASON)
             return
@@ -353,7 +427,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (p2p.groupFormed) {
             p2pGroupFormedAt = System.currentTimeMillis()
             DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo +
-                " | endpoint " + (p2p.endpoint?.describe() ?: "not readable yet"))
+                " | " + p2p.plane.describe())
         } else {
             p2pGroupFormedAt = 0L
             DiagLog.w(tag, "Wi-Fi Direct group gone (" + p2p.phase + ")")
@@ -583,6 +657,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.postDelayed({ if (gateway.providing) checkSharing("sharing switched on") }, 1200)
         } else {
             gateway.stop()
+            p2pMemberAddress = ""; p2pMemberPeer = ""
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
         }
         refreshAdvert(); pushStatus()
@@ -1036,6 +1111,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // transport, which is idle on this path and dropped it in silence. The phone test shows
             // the seller answering every single request and the buyer never reacting.
             c is Wire.Control.P2pStatus -> onP2pStatus(peerShort, c)
+            c is Wire.Control.P2pMember -> onP2pMember(peerShort, c)
+            c is Wire.Control.P2pTransport -> onP2pTransport(peerShort, c)
             c is Wire.Control.WifiCancel && buyViaP2p && buyerWanted == peerShort -> onP2pRefused(peerShort, c)
             c is Wire.Control.WifiRequest -> wifi.onControl(peerShort, body)
             upWants -> wifiUp.onControl(peerShort, body)
@@ -1059,7 +1136,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
         if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | hotspot refused on this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
         if (p2pFallbackActive) sb.append(" | sharing by Wi-Fi Direct: ").append(p2p.phase).append(" clients ").append(p2p.clientCount)
-            .append(" | listener ").append(net.prok.proknet.core.P2pEndpoint.verdictText(p2p.listenerVerdict()))
+            .append(" | listener ").append(net.prok.proknet.core.P2pDataPlane.verdictText(p2p.listenerVerdict()))
         if (relayOn) sb.append(" | RELAY on")
         if (tunnel.state != "DISCONNECTED" || buyerWanted != null) sb.append(" | BUY: ").append(tunnel.state)
         sb.append(" | ").append(q)
