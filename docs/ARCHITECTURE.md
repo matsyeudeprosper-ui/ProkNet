@@ -746,6 +746,62 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The radio lock is ruled out, and the band is the last lever (v0.9.19)
+
+The v0.9.18 run finally produced the measurement with everything else in
+place. The seller, with the Wi-Fi radio lock held:
+
+```
+15:32:18.114  LINK PROBE: a packet DID cross, U1 from 192.168.49.124, answering it twice
+15:32:19.702  ... U2      15:32:21.307  ... U3      15:32:22.923  ... U4
+15:32:24.313  LINK PROBE verdict: packets arrive here but our answers do not get back
+              (sent 10, unicast replies 0, broadcast replies 0, probes answered by us 4)
+```
+
+Every one of the customer's probes arrived. The provider answered each one
+twice, once unicast and once to the group broadcast address, and **neither
+form came back**. The provider's own ten probes, five unicast and five
+broadcast, got nothing.
+
+So:
+
+- the Wi-Fi radio lock does not fix the downlink,
+- broadcast does not cross either, which rules out the two phones being
+  unable to address each other,
+- it is not the sockets, the binding, the listener, the membership or
+  discovery. All of those are now correct and measured.
+
+What is left is the radio. The provider's group follows its home Wi-Fi onto
+5 GHz channel 48, so one radio is serving a home network and a group on a
+single channel, and only one direction survives it.
+
+### Ask for the other band
+
+`P2pPlan.groupBand(staFreqMhz)` returns 2.4 GHz when this phone's own Wi-Fi
+is on 5 GHz, and lets Android choose otherwise. The group is then created
+with `setGroupOperatingBand(GROUP_OWNER_BAND_2GHZ)`, which needs a named
+group, so the group carries a fixed name and a per-run passphrase.
+
+It is a request, not an assumption. If Android refuses, the plain group is
+created instead and the log says which happened; `GROUP CHANNEL:` then
+reports what was actually granted.
+
+### A provider whose customer left has to be findable again
+
+The same run showed why nothing worked afterwards:
+
+```
+15:33:00.079  not starting discovery: this link already has a peer on it
+16:14:17.991  (buyer) looking for it ... (0 seen, 0 with a real address): none addressable
+```
+
+v0.9.15 stops discovery when somebody joins, which is right, and never
+started it again when they left. The client count reached zero a few
+milliseconds after that decision was taken, so the provider sat there,
+holding a group, invisible, for forty minutes. Discovery now comes back the
+moment the link has no peer on it, from both the client count and the data
+plane.
+
 ## Never guess who you are talking to (v0.9.18)
 
 The screen behaved, the purchase ran, and the join ladder spent itself on a

@@ -117,11 +117,26 @@ object P2pPlan {
      */
     fun discoveryWanted(want: Want, hasLiveMember: Boolean): Boolean = want != Want.NONE && !hasLiveMember
 
+    // ---- v0.9.19: which band to ask for ------------------------------------------------------------
+
+    /** 0 = let Android choose, 2 = ask for 2.4 GHz, 5 = ask for 5 GHz. */
+    fun groupBand(staFreqMhz: Int): Int = if (staFreqMhz >= 5_000) 2 else 0
+
+    fun groupBandText(band: Int, staFreqMhz: Int): String = when (band) {
+        2 -> "asking for a 2.4 GHz group: this phone's own Wi-Fi is on " + ShareCheck.describe(staFreqMhz) +
+            ", so a 5 GHz group would share one channel with it"
+        5 -> "asking for a 5 GHz group"
+        else -> "letting Android choose the group band"
+    }
+
     /**
      * The link probe: a UDP echo between the two P2P addresses, so a dead
      * link is MEASURED instead of guessed at. It proves whether any IP packet
      * crosses the Wi-Fi Direct link, in which direction, and how fast.
      */
+    /** v0.9.19: a Wi-Fi Direct network name must start with DIRECT-. */
+    const val GROUP_NAME = "DIRECT-prok"
+
     const val PROBE_PORT = 47743
     const val PROBE_COUNT = 5
     const val PROBE_GAP_MS = 400L

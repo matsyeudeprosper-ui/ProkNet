@@ -1252,3 +1252,46 @@ That is correct behaviour now: it waits instead of dialling one of them.
 There must also be **no second attempt within 15 seconds of an accepted
 join**. `connect accepted` followed by another attempt three seconds later is
 the v0.9.18 bug coming back.
+
+## 37. v0.9.19 the band, and being findable again
+
+**First, the thing that blocked the last run.** After a customer leaves, the
+provider must log:
+
+```
+CLIENT COUNT 1 -> 0
+keeping Wi-Fi Direct discovery alive: the customer left the group
+starting peer discovery from a clean state
+```
+
+and the buyer must then see it again. A provider that holds a group and is
+not discoverable is the v0.9.19 bug coming back. Test it directly: connect,
+let it fail, then try a second time from the same two phones without
+restarting anything.
+
+**Second, the band.** On the seller, when sharing starts:
+
+```
+creating a fresh Wi-Fi Direct group (attempt 1/3): asking for a 2.4 GHz group:
+this phone's own Wi-Fi is on 5 GHz ch 48 (5240 MHz), so a 5 GHz group would
+share one channel with it
+createGroup accepted (2.4 GHz requested), waiting for the group to form
+GROUP CHANNEL: 2.4 GHz ch 6 (2437 MHz) | this phone's Wi-Fi: ? 5 GHz ch 48 (5240 MHz)
+```
+
+The `GROUP CHANNEL` line is the one that matters. If it still says 5 GHz
+ch 48, Android did not honour the request and the experiment did not run.
+
+If the log says "the 2.4 GHz group was refused ... creating a default group
+instead", copy that line: the phone will not take a band request at all.
+
+**Then the probe verdict, from BOTH phones**, exactly as in section 34. That
+is still the result of the run.
+
+### Checklist for the v0.9.19 report
+
+- The `CLIENT COUNT 1 -> 0` and discovery lines after a failed attempt, and
+  whether a SECOND attempt then finds the provider.
+- `GROUP CHANNEL:` from the seller. Same band as the home Wi-Fi or not?
+- `LINK PROBE verdict:` from both phones.
+- Whether the seller kept the Freebox throughout.

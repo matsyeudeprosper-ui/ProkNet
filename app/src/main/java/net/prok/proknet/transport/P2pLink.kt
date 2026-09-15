@@ -57,6 +57,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         fun onChanged()
         /** The Wi-Fi network this phone is on right now, "" when none: the point of the whole experiment. */
         fun staDescription(): String
+        /** v0.9.19: the frequency of this phone's own Wi-Fi, 0 when it is on none. */
+        fun staFrequency(): Int = 0
         /** v0.9.14: the data plane changed (a group, a membership, an endpoint). */
         fun onDataPlane(plane: P2pDataPlane.Plane) {}
     }
@@ -104,6 +106,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private var watching = false
     private var watchTicks = 0
     private var dialSeq = 0
+    /** v0.9.19: a named group needs a passphrase; it is per run and never leaves this phone except to its own customer. */
+    private val passphrase: String = "prok" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
     /** One dial ladder per target per data plane generation. */
     private val dialled = HashSet<String>()
     private val ENDPOINT_WATCH_TICKS = 6
@@ -311,21 +315,57 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
      * a design. A seller whose group never came up advertised the Wi-Fi Direct way in and refused
      * every buyer, which is exactly what the phone test showed.
      */
-    private fun createGroup(attempt: Int = 1) {
+    /**
+     * v0.9.19: ask for a 2.4 GHz group when this phone's own Wi-Fi is on
+     * 5 GHz.
+     *
+     * The measurement says the data path is one way: everything the customer
+     * sends arrives, and nothing the provider sends comes back, unicast and
+     * broadcast alike, with the Wi-Fi radio lock held. The provider's group
+     * follows its home Wi-Fi onto 5 GHz channel 48, so one radio is serving
+     * both on one channel. A group on the other band makes the phone use
+     * real dual band concurrency instead, which is a different path through
+     * the driver.
+     *
+     * It is a request, not an assumption: if Android refuses the band, the
+     * plain group is created instead and the log says which one happened.
+     * `GROUP CHANNEL:` then reports what was actually granted.
+     */
+    private fun createGroup(attempt: Int = 1, withBand: Boolean = true) {
         val m = manager; val c = channel
         if (m == null || c == null) { fail("no p2p channel"); return }
-        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group (attempt " + attempt + "/" + CREATE_ATTEMPTS + ")")
+        val sta = try { hooks.staFrequency() } catch (e: Exception) { 0 }
+        val band = P2pPlan.groupBand(sta)
+        val useBand = withBand && band == 2 && Build.VERSION.SDK_INT >= 29
+        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group (attempt " + attempt + "/" + CREATE_ATTEMPTS + "): " +
+            (if (useBand) P2pPlan.groupBandText(band, sta) else P2pPlan.groupBandText(0, sta)))
+        val listener = object : WifiP2pManager.ActionListener {
+            override fun onSuccess() { DiagLog.i(tag, "createGroup accepted (" + (if (useBand) "2.4 GHz requested" else "default band") + "), waiting for the group to form"); refreshAll() }
+            override fun onFailure(reason: Int) {
+                if (useBand) {
+                    DiagLog.w(tag, "the 2.4 GHz group was refused (" + reasonName(reason) + "): creating a default group instead")
+                    main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt, withBand = false) }
+                } else if (attempt < CREATE_ATTEMPTS) {
+                    DiagLog.w(tag, "createGroup refused (" + reasonName(reason) + "), retrying in 3s")
+                    main.postDelayed({ if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }, 3_000)
+                } else fail("createGroup failed after " + attempt + " attempts: " + reasonName(reason))
+            }
+        }
         try {
-            m.createGroup(c, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { DiagLog.i(tag, "createGroup accepted, waiting for the group to form"); refreshAll() }
-                override fun onFailure(reason: Int) {
-                    if (attempt < CREATE_ATTEMPTS) {
-                        DiagLog.w(tag, "createGroup refused (" + reasonName(reason) + "), retrying in 3s")
-                        main.postDelayed({ if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }, 3_000)
-                    } else fail("createGroup failed after " + attempt + " attempts: " + reasonName(reason))
-                }
-            })
+            if (useBand) {
+                val cfg = WifiP2pConfig.Builder()
+                    .setNetworkName(P2pPlan.GROUP_NAME)
+                    .setPassphrase(passphrase)
+                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
+                    .build()
+                m.createGroup(c, cfg, listener)
+            } else m.createGroup(c, listener)
         } catch (e: SecurityException) { fail("permission: " + e.message) }
+        catch (e: Exception) {
+            DiagLog.w(tag, "the band request could not be built (" + e + "): creating a default group instead")
+            if (useBand) main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt, withBand = false) }
+            else fail("createGroup: " + LinkIo.describe(e))
+        }
     }
 
     private fun discover() {
@@ -446,6 +486,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         ifaceInfo = interfaces()
         DiagLog.i(tag, "group: " + info + " | interfaces: " + ifaceInfo)
         if (before != clientCount) onClientCountChanged(before, clientCount)
+        // v0.9.19: the customer left, so this phone has to be findable again. Without this the seller
+        // stopped discovering when its first customer joined and was never seen again: the phone run
+        // showed the buyer reporting "0 seen, none addressable" for forty minutes afterwards.
+        if (!plane.hasMember && life.want != P2pPlan.Want.NONE) keepDiscovering("no customer on this link: this phone must be findable")
         changed()
     }
 
@@ -462,6 +506,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (life.role != P2pPlan.Role.GROUP_OWNER) return
         observePlane("the client count changed")
         if (before == 0 && now >= 1) armTransport("a client joined the group")
+        if (before > 0 && now == 0) keepDiscovering("the customer left the group")
     }
 
     private fun onConnectionInfo(info: WifiP2pInfo?) {
@@ -619,7 +664,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 if (old != null) DiagLog.i(tag, "   old listener: group generation " + old.plane.groupGeneration +
                     ", membership generation " + old.plane.membershipGeneration + " -> stale for live client membership")
             }
-            else -> DiagLog.i(tag, "DATA PLANE " + now.generationText() + ": clients " + before.clientCount + " -> " + now.clientCount + " (" + why + ")")
+            else -> {
+                DiagLog.i(tag, "DATA PLANE " + now.generationText() + ": clients " + before.clientCount + " -> " + now.clientCount + " (" + why + ")")
+                if (before.hasMember && !now.hasMember) keepDiscovering("the link has no peer on it any more")
+            }
         }
         hooks.onDataPlane(now)
         changed()

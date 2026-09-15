@@ -51,7 +51,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.15 | The radio: peer discovery stops the moment somebody joins, because scanning takes a single-radio phone off the group channel, and a UDP link probe measures whether any IP packet crosses the link at all | phone test: the probe MEASURED the fault. The link is ONE WAY, client to owner only |
 | v0.9.16 | One way link: the radio is held awake with a Wi-Fi lock while a group exists, the group channel is logged next to the home Wi-Fi channel, and the probe now separates unicast from broadcast in both directions | phone test blocked: the screen said "Connexion perdue" instantly, so the build was never exercised |
 | v0.9.17 | A purchase is judged by the transport it actually uses, and starts from a clean screen: no failure from an earlier attempt can end the next one before it begins | phone test: the screen behaved, and the join ladder then dialled a printer |
-| v0.9.18 | Only the provider that named itself is ever dialled, and an accepted join is waited for instead of being overtaken by its own successor | built, 157 JVM tests pass |
+| v0.9.18 | Only the provider that named itself is ever dialled, and an accepted join is waited for instead of being overtaken by its own successor | phone test: the probe confirmed the one way link with the radio lock held, and the seller then stopped being findable |
+| v0.9.19 | A provider whose customer left is findable again, and a provider on a 5 GHz home Wi-Fi asks for a 2.4 GHz group instead of sharing one channel with it | built, 159 JVM tests pass |
 
 ### v0.1 - what it does
 

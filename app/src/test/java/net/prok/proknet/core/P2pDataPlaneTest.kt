@@ -287,4 +287,35 @@ class P2pDataPlaneTest {
         assertEquals("", P2pPlan.broadcastOf(""))
         assertEquals("", P2pPlan.broadcastOf("nonsense"))
     }
+
+    // ---- v0.9.19: the band, and being findable again -------------------------------------------------
+
+    @Test
+    fun a_five_gigahertz_home_wifi_asks_for_a_two_point_four_group() {
+        // the provider on the Freebox at 5 GHz ch 48: a 5 GHz group would share that one channel
+        assertEquals(2, P2pPlan.groupBand(5_240))
+        assertEquals(2, P2pPlan.groupBand(5_180))
+        // on 2.4 GHz, or on no Wi-Fi at all, Android chooses
+        assertEquals(0, P2pPlan.groupBand(2_437))
+        assertEquals(0, P2pPlan.groupBand(0))
+        assertTrue(P2pPlan.groupBandText(2, 5_240).contains("2.4 GHz"))
+        assertTrue(P2pPlan.groupBandText(0, 0).isNotEmpty())
+        assertTrue("a Wi-Fi Direct network name must start with DIRECT-", P2pPlan.GROUP_NAME.startsWith("DIRECT-"))
+    }
+
+    @Test
+    fun a_provider_whose_customer_left_must_be_findable_again() {
+        // the customer is in the group: no discovery, the radio stays on the group channel
+        val live = P2pDataPlane.advance(
+            P2pDataPlane.advance(P2pDataPlane.NONE, ownerSeen(), 0, true), ownerSeen(), clientCount = 1, groupFormed = true)
+        assertTrue(live.hasMember)
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, live.hasMember))
+
+        // the customer leaves: the provider still holds its group, and MUST be discoverable again.
+        // The phone run showed the opposite: the seller stopped discovering when its first customer
+        // joined and was never seen again, and the buyer reported "0 seen, none addressable".
+        val alone = P2pDataPlane.advance(live, ownerSeen(), clientCount = 0, groupFormed = true)
+        assertFalse(alone.hasMember)
+        assertTrue(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, alone.hasMember))
+    }
 }

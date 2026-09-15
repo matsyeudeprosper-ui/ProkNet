@@ -155,6 +155,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         }
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); onP2pGroupChanged() } }
         override fun staDescription(): String = wifi.currentWifi()?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: ""
+        override fun staFrequency(): Int = wifi.currentWifi()?.freqMhz ?: 0
         override fun onDataPlane(plane: net.prok.proknet.core.P2pDataPlane.Plane) { main.post { onP2pDataPlane(plane) } }
     })
 
