@@ -358,8 +358,8 @@ class P2pPlanTest {
         assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "C1 Pro"))
         // its name came over BLE, so a rough match is enough
         assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "c1 pro"))
-        // no name from an older build: fall back to the phone that owns a group
-        assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "", setOf("aa:bb:cc:00:11:22")))
+        // v0.9.18: no name means WAIT. The old fallback to "any peer that owns a group" dialled a
+        // printer on the phones, so this network never guesses who it is talking to.
         assertNull(P2pPlan.pickSellerPeer(sellerPeers, ""))
         assertNull(P2pPlan.pickSellerPeer(emptyList(), "C1 Pro"))
     }
@@ -414,5 +414,42 @@ class P2pPlanTest {
         assertEquals("GROUP_READY", Wire.p2pStatusName(Wire.P2P_READY))
         assertEquals("REBUILDING_GROUP", Wire.p2pStatusName(Wire.P2P_REBUILDING))
         assertEquals("NOT_AVAILABLE", Wire.p2pStatusName(Wire.P2P_NOT_AVAILABLE))
+    }
+
+    // ---- v0.9.18: the buyer dialled a printer ---------------------------------------------------------
+
+    @Test
+    fun a_named_provider_that_is_not_in_the_list_means_wait_never_somebody_else() {
+        // the phone run, verbatim: the provider dropped out for a few seconds and these were left
+        val withoutSeller = listOf(
+            P2pPlan.PeerRef("DIRECT-FB-HP DeskJet 2700 series", "14:cb:19:f5:f9:fc"),
+            P2pPlan.PeerRef("Hisense VIDAA TV", "d6:f9:21:c3:41:a8"),
+        )
+        assertNull("never dial a printer because it owns a group",
+            P2pPlan.pickSellerPeer(withoutSeller, "C1 Pro"))
+
+        // the provider is back: dial it, and nothing else
+        val withSeller = withoutSeller + P2pPlan.PeerRef("C1 Pro", "72:cb:dd:b9:a1:da")
+        assertEquals("72:cb:dd:b9:a1:da", P2pPlan.pickSellerPeer(withSeller, "C1 Pro"))
+
+        // no name means WAIT. This network never guesses who it is talking to.
+        assertNull(P2pPlan.pickSellerPeer(withoutSeller, ""))
+        assertNull(P2pPlan.pickSellerPeer(withoutSeller, "   "))
+        assertNull(P2pPlan.pickSellerPeer(withSeller, ""))
+
+        // and the log can name what it is dialling
+        assertEquals("C1 Pro", P2pPlan.peerName(withSeller, "72:cb:dd:b9:a1:da"))
+        assertEquals("aa:bb:cc:dd:ee:ff", P2pPlan.peerName(withSeller, "aa:bb:cc:dd:ee:ff"))
+    }
+
+    @Test
+    fun an_accepted_join_is_waited_for_not_overtaken() {
+        // the phone run: connect accepted at 13:55:22.5, another one fired at 13:55:25.8, and Android
+        // answered BUSY to our own successor. An accepted join needs room to produce a group.
+        assertTrue("an accepted join must outlast a busy backoff step", P2pPlan.JOIN_ACCEPTED_WAIT_MS > P2pPlan.busyDelayMs(1))
+        assertTrue("and be long enough for a group to form", P2pPlan.JOIN_ACCEPTED_WAIT_MS >= 10_000L)
+        // four attempts still have to fit inside the ladder
+        assertTrue("the ladder must still fit in the give up time",
+            P2pPlan.JOIN_ACCEPTED_WAIT_MS * (P2pPlan.CONNECT_ATTEMPTS - 1) < P2pPlan.JOIN_GIVE_UP_MS)
     }
 }

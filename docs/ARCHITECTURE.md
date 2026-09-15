@@ -746,6 +746,44 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Never guess who you are talking to (v0.9.18)
+
+The screen behaved, the purchase ran, and the join ladder spent itself on a
+printer:
+
+```
+13:55:22.482  joining the provider group: attempt 1/4 to 72:cb:dd:b9:a1:da   (C1 Pro)
+13:55:22.505  connect accepted, waiting for the group
+13:55:25.852  Android was busy: trying to join again: attempt 2/4 to 72:cb:dd:b9:a1:da
+13:55:25.860  connect refused: BUSY (framework busy)
+13:55:33.860  Android was busy: trying to join again: attempt 3/4 to 14:cb:19:f5:f9:fc
+13:55:33.883  connect accepted for 14:cb:19:f5:f9:fc                         (HP DeskJet 2700)
+13:55:34.493  attempt 4/4 to 14:cb:19:f5:f9:fc
+13:55:37.867  could not join the provider Wi-Fi Direct group after 4 attempts
+```
+
+Two faults, both ours.
+
+**The provider was chosen by guessing.** `pickSellerPeer` matched the name
+the provider sent over BLE, and when that name was not in the peer list it
+fell back to "any peer that owns a group". At 13:55:32 the provider had
+dropped out of the list for a few seconds, and the only group owner left was
+the printer. The fallback existed for a provider too old to send its name.
+It is gone. A provider that is not in the list means WAIT, which is the same
+rule as refusing to infer a buyer from `00:00:00:00:00:00`: **this network
+does not guess who it is talking to.**
+
+**An accepted join was overtaken by its own successor.** The next attempt was
+held off only when Android REFUSED, so an accepted `connect()` was followed
+three seconds later by another one, and the framework answered BUSY to us.
+Now the next attempt is held off BEFORE asking, for
+`P2pPlan.JOIN_ACCEPTED_WAIT_MS` (15 s), and only a refusal shortens that to
+the busy backoff. An accepted join is waited for.
+
+The log also names what it dials, `attempt 1/4 to "C1 Pro"
+(72:cb:dd:b9:a1:da)`, and lists the addressable peers by name, so a wrong
+target is visible at once instead of being a MAC address nobody recognises.
+
 ## A purchase starts from a clean screen (v0.9.17)
 
 The v0.9.16 build was never exercised, because the screen ended every

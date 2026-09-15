@@ -433,18 +433,42 @@ object P2pPlan {
      * The buyer picks the seller out of ITS OWN peer list: by the name the seller sent over BLE,
      * else by the fact that it owns a group. Anonymised entries are never candidates.
      */
-    fun pickSellerPeer(peers: List<PeerRef>, sellerName: String, groupOwners: Set<String> = emptySet()): String? {
-        val real = peers.filter { !anonymous(it.address) }
-        if (real.isEmpty()) return null
-        matchPeer(real, sellerName)?.let { return it }
-        real.firstOrNull { it.address in groupOwners }?.let { return it.address }
-        return null
-    }
+    /**
+     * The provider's address in THIS phone's peer list, or null.
+     *
+     * v0.9.18: **only the provider that named itself over BLE.** There used
+     * to be a fallback to "any peer that owns a group", for a provider too
+     * old to send its name. The phone run showed what that costs: the
+     * provider dropped out of the peer list for a few seconds and the
+     * fallback dialled `DIRECT-FB-HP DeskJet 2700 series`, twice, burning
+     * the ladder on a printer.
+     *
+     * A provider that is not in the list means WAIT. It is the same rule as
+     * refusing to infer a buyer from `00:00:00:00:00:00`: this network does
+     * not guess who it is talking to.
+     */
+    fun pickSellerPeer(peers: List<PeerRef>, sellerName: String): String? =
+        matchPeer(peers.filter { !anonymous(it.address) }, sellerName)
+
+    /** The name to show for an address, so a wrong target is obvious in the log. */
+    fun peerName(peers: List<PeerRef>, address: String): String =
+        peers.firstOrNull { it.address == address }?.name?.ifEmpty { address } ?: address
 
     /** What the buyer does next, once it knows the seller's answer. */
     enum class JoinStep { ASK_STATUS, WAIT_PEER, CONNECT, RETRY_BUSY, WAIT_REBUILD, FAIL_NOT_AVAILABLE, GIVE_UP, DONE }
 
     const val CONNECT_ATTEMPTS = 4
+
+    /**
+     * v0.9.18: how long an ACCEPTED `connect()` is given to produce a group
+     * before another one is issued.
+     *
+     * The phone run re-dialled three seconds after Android had accepted the
+     * first join, which made the framework answer BUSY to its own successor
+     * and burned the whole ladder. Only a REFUSED connect uses the busy
+     * backoff; an accepted one is simply waited for.
+     */
+    const val JOIN_ACCEPTED_WAIT_MS = 15_000L
     const val JOIN_GIVE_UP_MS = 60_000L
 
     /** Conservative, state aware: 3 s, 6 s, 12 s, 24 s. Never a rapid loop. */

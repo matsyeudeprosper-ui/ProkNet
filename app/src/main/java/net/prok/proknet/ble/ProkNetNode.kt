@@ -379,7 +379,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             failBuy(P2pPlan.TRANSPORT_FAIL_REASON, P2pPlan.TRANSPORT_FAIL_REASON)
             return
         }
-        val sellerAddr = P2pPlan.pickSellerPeer(p2p.realPeers(), p2pSellerName, p2p.groupOwnerAddresses())
+        val sellerAddr = P2pPlan.pickSellerPeer(p2p.realPeers(), p2pSellerName)
         val step = P2pPlan.joinStep(p2pStatus, sellerAddr != null, p2pConnectAttempts, p2pReachableMs, p2p.groupFormed)
         when (step) {
             P2pPlan.JoinStep.DONE -> {}
@@ -388,15 +388,22 @@ class ProkNetNode(private val context: Context) : TransportListener {
             P2pPlan.JoinStep.WAIT_PEER -> {
                 if (p2pReachableMs % 12_000L < 4_000L)
                     DiagLog.i(tag, P2pPlan.joinStepText(step) + " (" + p2p.peers.size + " seen, " + p2p.realPeers().size + " with a real address" +
-                        (if (p2pSellerName.isNotEmpty()) ", looking for \"" + p2pSellerName + "\"" else "") + ")")
+                        (if (p2pSellerName.isNotEmpty()) ", looking for \"" + p2pSellerName + "\"" else "") + "): " +
+                        (if (p2p.realPeers().isEmpty()) "none addressable" else p2p.realPeers().joinToString("; ") { it.name.ifEmpty { "?" } }))
             }
             P2pPlan.JoinStep.CONNECT, P2pPlan.JoinStep.RETRY_BUSY -> {
                 val now = System.currentTimeMillis()
                 if (now >= p2pNextConnectAt && sellerAddr != null) {
                     p2pConnectAttempts++
-                    DiagLog.i(tag, P2pPlan.joinStepText(step) + ": attempt " + p2pConnectAttempts + "/" + P2pPlan.CONNECT_ATTEMPTS + " to " + sellerAddr)
+                    // v0.9.18: hold the next attempt off BEFORE asking, so an accepted join is never
+                    // overtaken by its own successor three seconds later, which is what made Android
+                    // answer BUSY to us and burn the whole ladder
+                    p2pNextConnectAt = now + P2pPlan.JOIN_ACCEPTED_WAIT_MS
+                    DiagLog.i(tag, P2pPlan.joinStepText(step) + ": attempt " + p2pConnectAttempts + "/" + P2pPlan.CONNECT_ATTEMPTS +
+                        " to \"" + P2pPlan.peerName(p2p.realPeers(), sellerAddr) + "\" (" + sellerAddr + ")")
                     p2p.connectTo(sellerAddr) { ok, why ->
-                        if (!ok) {
+                        if (ok) DiagLog.i(tag, "join accepted: waiting up to " + (P2pPlan.JOIN_ACCEPTED_WAIT_MS / 1000) + "s for the group to form")
+                        else {
                             val wait = P2pPlan.busyDelayMs(p2pConnectAttempts)
                             p2pNextConnectAt = System.currentTimeMillis() + wait
                             DiagLog.w(tag, "join refused (" + why + "), next attempt in " + (wait / 1000) + "s")

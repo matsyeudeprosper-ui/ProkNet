@@ -1224,3 +1224,31 @@ Then run section 34 **without pressing STOP**. The attempt ends by itself
 after about 45 seconds with
 "Connexion locale créée, mais le fournisseur ne répond pas." if no transport
 comes up, and the log lines from section 34 are only written while it runs.
+
+## 36. v0.9.18 the buyer must dial the provider and nothing else
+
+One line to check while running section 34.
+
+Every join attempt now names its target:
+
+```
+joining the provider group: attempt 1/4 to "C1 Pro" (72:cb:dd:b9:a1:da)
+join accepted: waiting up to 15s for the group to form
+```
+
+The name in quotes must be the provider. If any attempt names a printer, a
+television or anything else, that is a bug and the run should be reported
+with those lines.
+
+While the provider is missing from the list, the log says what it CAN see:
+
+```
+the provider group is ready: looking for it in this phone's Wi-Fi Direct list
+(2 seen, 2 with a real address, looking for "C1 Pro"): DIRECT-FB-HP DeskJet 2700 series; Hisense VIDAA TV
+```
+
+That is correct behaviour now: it waits instead of dialling one of them.
+
+There must also be **no second attempt within 15 seconds of an accepted
+join**. `connect accepted` followed by another attempt three seconds later is
+the v0.9.18 bug coming back.
