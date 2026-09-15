@@ -336,4 +336,83 @@ class P2pPlanTest {
         assertTrue(hint, hint.isNotEmpty())
         assertFalse(hint, hint.contains("Rapprochez"))
     }
+
+    // ---- v0.9.12: the buyer joins by itself --------------------------------------------------------
+
+    private val sellerPeers = listOf(
+        P2pPlan.PeerRef("C1 Pro", "aa:bb:cc:00:11:22"),
+        P2pPlan.PeerRef("Some TV", "aa:bb:cc:00:11:44"),
+    )
+
+    @Test
+    fun the_owner_peer_list_anonymises_the_buyer_but_the_buyer_still_joins() {
+        // exactly what the phone showed on the SELLER: the buyer is 00:00:00:00:00:00 there
+        val ownerSees = listOf(P2pPlan.PeerRef("", "00:00:00:00:00:00"), P2pPlan.PeerRef("", "02:00:00:00:00:00"))
+        assertTrue(P2pPlan.anonymous("00:00:00:00:00:00"))
+        assertTrue(P2pPlan.anonymous("02:00:00:00:00:00"))
+        assertTrue(P2pPlan.anonymous(null))
+        assertFalse(P2pPlan.anonymous("aa:bb:cc:00:11:22"))
+        assertNull("the owner must never try to join an anonymised peer", P2pPlan.pickSellerPeer(ownerSees, "OnePlus Nord CE 2 Lite 5G"))
+
+        // and on the BUYER the seller is named, with a real address: that is the side that acts
+        assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "C1 Pro"))
+        // its name came over BLE, so a rough match is enough
+        assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "c1 pro"))
+        // no name from an older build: fall back to the phone that owns a group
+        assertEquals("aa:bb:cc:00:11:22", P2pPlan.pickSellerPeer(sellerPeers, "", setOf("aa:bb:cc:00:11:22")))
+        assertNull(P2pPlan.pickSellerPeer(sellerPeers, ""))
+        assertNull(P2pPlan.pickSellerPeer(emptyList(), "C1 Pro"))
+    }
+
+    @Test
+    fun the_seller_answers_with_a_state_and_the_buyer_acts_on_it() {
+        assertEquals(P2pPlan.GroupStatus.READY, P2pPlan.groupStatus(sharingByP2p = true, groupFormed = true, isOwner = true))
+        assertEquals(P2pPlan.GroupStatus.REBUILDING, P2pPlan.groupStatus(true, groupFormed = false, isOwner = false))
+        assertEquals(P2pPlan.GroupStatus.REBUILDING, P2pPlan.groupStatus(true, groupFormed = true, isOwner = false))
+        assertEquals(P2pPlan.GroupStatus.NOT_AVAILABLE, P2pPlan.groupStatus(false, false, false))
+
+        // GROUP_READY and the seller is in our list: connect, once
+        assertEquals(P2pPlan.JoinStep.CONNECT, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, sellerPeerFound = true, connectAttempts = 0, elapsedMs = 5_000, groupFormed = false))
+        // ready but not discovered yet: wait for it, do not ask again and again
+        assertEquals(P2pPlan.JoinStep.WAIT_PEER, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, false, 0, 5_000, false))
+        // rebuilding: wait, it will come
+        assertEquals(P2pPlan.JoinStep.WAIT_REBUILD, P2pPlan.joinStep(P2pPlan.GroupStatus.REBUILDING, false, 0, 5_000, false))
+        // no answer yet: ask
+        assertEquals(P2pPlan.JoinStep.ASK_STATUS, P2pPlan.joinStep(null, false, 0, 1_000, false))
+        // not sharing that way: fail at once, no 60 s of waiting
+        assertEquals(P2pPlan.JoinStep.FAIL_NOT_AVAILABLE, P2pPlan.joinStep(P2pPlan.GroupStatus.NOT_AVAILABLE, true, 0, 1_000, false))
+        // in the group: nothing left to do
+        assertEquals(P2pPlan.JoinStep.DONE, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, true, 2, 50_000, groupFormed = true))
+    }
+
+    @Test
+    fun a_busy_framework_is_retried_slowly_and_then_given_up_on() {
+        assertEquals(P2pPlan.JoinStep.RETRY_BUSY, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, true, 1, 10_000, false))
+        assertEquals(P2pPlan.JoinStep.RETRY_BUSY, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, true, P2pPlan.CONNECT_ATTEMPTS - 1, 20_000, false))
+        assertEquals(P2pPlan.JoinStep.GIVE_UP, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, true, P2pPlan.CONNECT_ATTEMPTS, 20_000, false))
+        assertEquals(P2pPlan.JoinStep.GIVE_UP, P2pPlan.joinStep(P2pPlan.GroupStatus.READY, true, 1, P2pPlan.JOIN_GIVE_UP_MS, false))
+        // conservative and growing, never a rapid loop
+        assertEquals(3_000L, P2pPlan.busyDelayMs(1))
+        assertEquals(6_000L, P2pPlan.busyDelayMs(2))
+        assertEquals(12_000L, P2pPlan.busyDelayMs(3))
+        assertEquals(24_000L, P2pPlan.busyDelayMs(4))
+        assertEquals(24_000L, P2pPlan.busyDelayMs(9))
+        for (j in P2pPlan.JoinStep.values()) assertTrue(P2pPlan.joinStepText(j).isNotEmpty())
+    }
+
+    @Test
+    fun a_second_purchase_starts_from_a_clean_slate() {
+        // after a session the ladder starts again with no memory of the last one
+        assertEquals(P2pPlan.JoinStep.ASK_STATUS, P2pPlan.joinStep(null, sellerPeerFound = true, connectAttempts = 0, elapsedMs = 0, groupFormed = false))
+        // and the status message survives the wire, with the seller's own name
+        val body = Wire.p2pStatus(Wire.P2P_READY, "C1 Pro")
+        val back = Wire.parseControl(body) as Wire.Control.P2pStatus
+        assertEquals(Wire.P2P_READY, back.code)
+        assertEquals("C1 Pro", back.deviceName)
+        assertEquals("", (Wire.parseControl(Wire.p2pStatus(Wire.P2P_REBUILDING, "")) as Wire.Control.P2pStatus).deviceName)
+        assertEquals(Wire.P2P_NOT_AVAILABLE, (Wire.parseControl(byteArrayOf(Wire.OP_P2P_STATUS.toByte())) as Wire.Control.P2pStatus).code)
+        assertEquals("GROUP_READY", Wire.p2pStatusName(Wire.P2P_READY))
+        assertEquals("REBUILDING_GROUP", Wire.p2pStatusName(Wire.P2P_REBUILDING))
+        assertEquals("NOT_AVAILABLE", Wire.p2pStatusName(Wire.P2P_NOT_AVAILABLE))
+    }
 }

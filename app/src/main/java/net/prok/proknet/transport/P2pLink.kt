@@ -97,6 +97,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     /** The last invitation this phone sent, and what Android answered. */
     @Volatile var lastInvite: String = ""
         private set
+    /** v0.9.12: the last join THIS phone attempted, and what Android answered. */
+    @Volatile var lastJoin: String = ""
+        private set
 
     class Peer(val name: String, val address: String, val status: String, val isGroupOwner: Boolean) {
         fun describe(): String = name + "  " + address + "  " + status + (if (isGroupOwner) "  [group owner]" else "")
@@ -282,24 +285,45 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         } catch (e: SecurityException) { fail("permission: " + e.message) }
     }
 
-    /** Buyer: join the group of [address] (its P2P MAC from the peer list). */
-    fun connectTo(address: String): String? {
+    /**
+     * Buyer: join the group of [address] (the seller's REAL P2P address, taken from THIS phone's own
+     * peer list). v0.9.12 makes this the main admission path, because the owner's peer list
+     * anonymises the buyer (`00:00:00:00:00:00`) on the phones under test.
+     *
+     * [onResult] reports what Android answered, so the caller can back off on BUSY instead of
+     * looping.
+     */
+    fun connectTo(address: String, onResult: ((Boolean, String) -> Unit)? = null): String? {
+        if (P2pPlan.anonymous(address)) { val e = "refusing to join an anonymised peer (" + address + ")"; DiagLog.w(tag, e); onResult?.invoke(false, e); return e }
         val m = manager; val c = channel
-        if (m == null || c == null) { if (!ensureChannel()) return lastError }
+        if (m == null || c == null) { if (!ensureChannel()) { onResult?.invoke(false, lastError); return lastError } }
         val cfg = WifiP2pConfig().apply {
             deviceAddress = address
             wps.setup = WpsInfo.PBC
-            groupOwnerIntent = 0        // we would rather be the client; Android may still decide otherwise
+            groupOwnerIntent = 0        // we want to be the client of an existing group
         }
-        DiagLog.i(tag, "joining " + address)
+        lastJoin = "buyer connect() requested to " + address
+        DiagLog.i(tag, lastJoin)
+        changed()
         try {
             manager?.connect(channel, cfg, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { DiagLog.i(tag, "connect accepted for " + address) }
-                override fun onFailure(reason: Int) { fail("connect failed: " + reasonName(reason)) }
+                override fun onSuccess() {
+                    lastJoin = "connect accepted for " + address + ", waiting for the group"
+                    DiagLog.i(tag, lastJoin); changed(); onResult?.invoke(true, "accepted")
+                }
+                override fun onFailure(reason: Int) {
+                    lastJoin = "connect refused for " + address + ": " + reasonName(reason)
+                    DiagLog.w(tag, lastJoin); changed(); onResult?.invoke(false, reasonName(reason))
+                }
             })
-        } catch (e: SecurityException) { lastError = "permission: " + e.message; fail(lastError); return lastError }
+        } catch (e: SecurityException) { lastError = "permission: " + e.message; fail(lastError); onResult?.invoke(false, lastError); return lastError }
         return null
     }
+
+    /** Peers this phone can really address (the anonymised ones are useless). */
+    fun realPeers(): List<P2pPlan.PeerRef> = peers.filter { !P2pPlan.anonymous(it.address) }.map { P2pPlan.PeerRef(it.name, it.address) }
+
+    fun groupOwnerAddresses(): Set<String> = peers.filter { it.isGroupOwner && !P2pPlan.anonymous(it.address) }.map { it.address }.toSet()
 
     private fun fail(why: String) {
         lastError = why
@@ -509,6 +533,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("this phone on Wi-Fi Direct: \"").append(myDeviceName.ifEmpty { "?" }).append("\"\n")
         sb.append("clients joined the group: ").append(clientCount).append("\n")
         sb.append("last invitation: ").append(lastInvite.ifEmpty { "none" }).append("\n")
+        sb.append("last join attempt: ").append(lastJoin.ifEmpty { "none" }).append("\n")
+        sb.append("peers I can really address: ").append(if (realPeers().isEmpty()) "none" else realPeers().joinToString("; ") { it.name + " " + it.address })
+            .append(" (anonymised: ").append(peers.count { P2pPlan.anonymous(it.address) }).append(")\n")
         sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")
         sb.append("my Wi-Fi network NOW: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")

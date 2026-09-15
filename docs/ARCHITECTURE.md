@@ -746,6 +746,49 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The buyer joins by itself (v0.9.12)
+
+The next run had everything healthy on both sides and a real group on the
+seller, and still nobody joined:
+
+```
+seller: sharing by Wi-Fi Direct: GROUP OWNER clients 0
+seller Wi-Fi Direct peer list: 00:00:00:00:00:00  available
+seller BLE at the same moment:  prok-0f7d57b3  rssi -38
+```
+
+Android anonymises the buyer in the OWNER's peer list on these phones, so
+owner-side identification cannot be the main path, and inferring the buyer
+from `00:00:00:00:00:00` would be guessing. The buyer, on the other hand,
+sees the seller correctly with its real P2P address.
+
+So the roles are swapped again, and this time in the direction the phones
+actually support:
+
+```
+seller creates the group and advertises the way in ONLY while groupFormed
+buyer picks the offer in the normal app
+buyer -> seller (BLE): is your group ready? (+ the buyer's own P2P name)
+seller -> buyer (BLE): GROUP_READY | REBUILDING_GROUP | NOT_AVAILABLE,
+                       with the SELLER's own Wi-Fi Direct name
+buyer finds that name in ITS OWN peer list, with a real address
+buyer calls connect() -> joins the existing group -> seller clients = 1
+socket, signed authentication, tunnel, VPN, accounting: unchanged
+```
+
+- `P2pPlan.groupStatus(sharing, groupFormed, isOwner)` produces the answer;
+  `Wire.OP_P2P_STATUS` carries it with the seller's name.
+- `P2pPlan.anonymous(address)` refuses `00:00:00:00:00:00`,
+  `02:00:00:00:00:00` and empty addresses everywhere, and
+  `pickSellerPeer(peers, name, groupOwners)` matches the seller by name,
+  falling back to "the peer that owns a group" for an older seller build.
+- `P2pPlan.joinStep(...)` -> ASK_STATUS, WAIT_PEER, CONNECT, RETRY_BUSY,
+  WAIT_REBUILD, FAIL_NOT_AVAILABLE, GIVE_UP, DONE. A busy framework is
+  retried at 3, 6, 12 and 24 s, four attempts, and a minute ends it with a
+  readable French sentence.
+- Owner-side inviting is kept in the Wi-Fi Direct Lab as a manual fallback;
+  nothing in the normal path depends on it.
+
 ## The refusal has to be heard (v0.9.11)
 
 The next run had a perfectly healthy radio (`adv on since 608s`, 1587 scan

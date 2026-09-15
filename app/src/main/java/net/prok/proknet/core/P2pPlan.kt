@@ -282,6 +282,79 @@ object P2pPlan {
         return null
     }
 
+    // ---- the buyer joins by itself (v0.9.12) ------------------------------------------------------
+
+    /**
+     * Phone evidence: the seller owns a real group (GROUP OWNER, clients 0) and BLE sees the buyer
+     * perfectly (prok-0f7d57b3, rssi -38), but in the OWNER's Wi-Fi Direct peer list the buyer is
+     * `00:00:00:00:00:00 available`. Android anonymises it there, so owner-side name matching
+     * cannot be the main path.
+     *
+     * The buyer, however, sees the seller correctly WITH its real P2P address. So the buyer asks
+     * over BLE whether the group is ready, and then joins by itself.
+     */
+    enum class GroupStatus { READY, REBUILDING, NOT_AVAILABLE }
+
+    fun groupStatus(sharingByP2p: Boolean, groupFormed: Boolean, isOwner: Boolean): GroupStatus = when {
+        groupFormed && isOwner -> GroupStatus.READY
+        sharingByP2p -> GroupStatus.REBUILDING
+        else -> GroupStatus.NOT_AVAILABLE
+    }
+
+    /** Android hides a peer behind one of these when it will not name it. Never try to join one. */
+    fun anonymous(address: String?): Boolean {
+        val a = (address ?: "").trim().lowercase()
+        return a.isEmpty() || a == "00:00:00:00:00:00" || a == "02:00:00:00:00:00" || a == "ff:ff:ff:ff:ff:ff"
+    }
+
+    /**
+     * The buyer picks the seller out of ITS OWN peer list: by the name the seller sent over BLE,
+     * else by the fact that it owns a group. Anonymised entries are never candidates.
+     */
+    fun pickSellerPeer(peers: List<PeerRef>, sellerName: String, groupOwners: Set<String> = emptySet()): String? {
+        val real = peers.filter { !anonymous(it.address) }
+        if (real.isEmpty()) return null
+        matchPeer(real, sellerName)?.let { return it }
+        real.firstOrNull { it.address in groupOwners }?.let { return it.address }
+        return null
+    }
+
+    /** What the buyer does next, once it knows the seller's answer. */
+    enum class JoinStep { ASK_STATUS, WAIT_PEER, CONNECT, RETRY_BUSY, WAIT_REBUILD, FAIL_NOT_AVAILABLE, GIVE_UP, DONE }
+
+    const val CONNECT_ATTEMPTS = 4
+    const val JOIN_GIVE_UP_MS = 60_000L
+
+    /** Conservative, state aware: 3 s, 6 s, 12 s, 24 s. Never a rapid loop. */
+    fun busyDelayMs(attempt: Int): Long {
+        var ms = 3_000L
+        repeat(minOf(maxOf(attempt - 1, 0), 3)) { ms *= 2 }
+        return ms
+    }
+
+    fun joinStep(status: GroupStatus?, sellerPeerFound: Boolean, connectAttempts: Int, elapsedMs: Long, groupFormed: Boolean): JoinStep = when {
+        groupFormed -> JoinStep.DONE
+        status == GroupStatus.NOT_AVAILABLE -> JoinStep.FAIL_NOT_AVAILABLE
+        elapsedMs >= JOIN_GIVE_UP_MS -> JoinStep.GIVE_UP
+        status == null -> JoinStep.ASK_STATUS
+        status == GroupStatus.REBUILDING -> JoinStep.WAIT_REBUILD
+        !sellerPeerFound -> JoinStep.WAIT_PEER
+        connectAttempts == 0 -> JoinStep.CONNECT
+        connectAttempts < CONNECT_ATTEMPTS -> JoinStep.RETRY_BUSY
+        else -> JoinStep.GIVE_UP
+    }
+
+    fun joinStepText(s: JoinStep): String = when (s) {
+        JoinStep.ASK_STATUS -> "asking the provider whether its group is ready"
+        JoinStep.WAIT_PEER -> "the provider group is ready: looking for it in this phone's Wi-Fi Direct list"
+        JoinStep.CONNECT -> "joining the provider group"
+        JoinStep.RETRY_BUSY -> "Android was busy: trying to join again"
+        JoinStep.WAIT_REBUILD -> "the provider is rebuilding its group"
+        JoinStep.FAIL_NOT_AVAILABLE -> "the provider is not sharing by Wi-Fi Direct"
+        JoinStep.GIVE_UP -> "could not join the provider Wi-Fi Direct group"
+        JoinStep.DONE -> "in the group"
+    }
+
     /** Which transport a developer test asked for. Method A stays the default everywhere else. */
     enum class Method { HOTSPOT, WIFI_DIRECT }
 

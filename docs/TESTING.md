@@ -940,3 +940,42 @@ Both phones on 0.9.11. Same setup as section 27.
 - How many invitation requests per minute in the log?
 - Did the seller rebuild its group when asked?
 - Did the normal flow finally connect?
+
+## 30. v0.9.12 the home Wi-Fi resale proof
+
+This is the exact condition that decides it. Nothing less counts.
+
+Setup, checked before starting:
+- SELLER: **mobile data OFF**, connected to the Freebox Wi-Fi.
+- BUYER: **mobile data OFF**, **not connected to the Freebox** (Wi-Fi on,
+  no network joined, or joined to nothing usable).
+- Both phones on 0.9.12, Prok running, Location on.
+
+Run, from the normal screens only:
+1. SELLER: PARTAGER INTERNET at 5 CFA. The card says the direct link trial
+   is active. The log must show WI-FI DIRECT GROUP FORMED with role
+   GROUP_OWNER before the offer claims that way in.
+2. BUYER: OBTENIR INTERNET, the seller's offer, SE CONNECTER.
+   The log should read, in order: "asking ... whether its Wi-Fi Direct
+   group is ready", "answered GROUP_READY, its Wi-Fi Direct name is ...",
+   "joining the provider group: attempt 1/4", "connect accepted",
+   "WI-FI DIRECT GROUP FORMED: role CLIENT", a socket line to
+   192.168.49.1:47742, then the signed handshake and the contract.
+3. Accept the VPN prompt. Wait for Connecte.
+4. Open Chrome on the buyer and load two or three sites.
+5. Check on the SELLER: still connected to the Freebox, clients 1, a
+   customer on its card with the data going up.
+
+Then COPY P2P DIAG on both phones.
+
+**Claim rule:** home Wi-Fi resale is solved only if, in that run, the seller
+never left the Freebox, the buyer had no mobile data and no Freebox
+connection of its own, and Chrome loaded pages. Anything else is a partial
+result and must be reported as one.
+
+### Checklist for the v0.9.12 report
+
+- The five log lines from step 2, as they appeared.
+- Seller clients count and its Wi-Fi network before and during.
+- Buyer role, group owner address, socket line, VPN, INTERNET OK.
+- Did Chrome load? Data and cost on both phones.

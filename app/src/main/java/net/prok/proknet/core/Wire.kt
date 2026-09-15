@@ -45,8 +45,17 @@ object Wire {
     const val OP_WIFI_REQUEST = 1
     const val OP_WIFI_OFFER = 2
     const val OP_WIFI_CANCEL = 3
-    /** v0.9.9: "invite me into your Wi-Fi Direct group", carrying this phone's P2P device name. */
+    /** v0.9.9: the buyer asks about the seller's Wi-Fi Direct group (its own P2P name is attached). */
     const val OP_P2P_REQUEST = 4
+    /** v0.9.12: the seller answers with the state of its group and its OWN P2P device name. */
+    const val OP_P2P_STATUS = 5
+    const val P2P_READY = 1
+    const val P2P_REBUILDING = 2
+    const val P2P_NOT_AVAILABLE = 3
+
+    fun p2pStatusName(code: Int) = when (code) {
+        P2P_READY -> "GROUP_READY"; P2P_REBUILDING -> "REBUILDING_GROUP"; P2P_NOT_AVAILABLE -> "NOT_AVAILABLE"; else -> "status " + code
+    }
 
     /** Hotspot security as reported by the host (v0.5.1). */
     const val SEC_UNKNOWN = 0
@@ -77,8 +86,14 @@ object Wire {
     sealed class Control {
         class WifiRequest(val port: Int) : Control()
         class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
-        /** v0.9.9: buyer -> seller, "invite me into your group"; [deviceName] is this phone's P2P name. */
+        /** v0.9.9: buyer -> seller, "is your group ready?"; [deviceName] is this phone's P2P name. */
         class P2pRequest(val deviceName: String) : Control()
+        /**
+         * v0.9.12: seller -> buyer. [code] is P2P_READY / P2P_REBUILDING / P2P_NOT_AVAILABLE and
+         * [deviceName] is the SELLER's own Wi-Fi Direct name, so the buyer can find it in its OWN
+         * peer list and join by itself. The owner never has to identify the buyer.
+         */
+        class P2pStatus(val code: Int, val deviceName: String) : Control()
         /**
          * [reason] is CANCEL_*; a v0.5..v0.9.3 peer sends no byte at all, which reads as CANCEL_GENERIC.
          * v0.9.5: [detail] is the host's own error text, so the waiting phone can show and log the REAL
@@ -108,6 +123,11 @@ object Wire {
         return ByteBuffer.allocate(1 + n.size).put(OP_P2P_REQUEST.toByte()).put(n).array()
     }
 
+    fun p2pStatus(code: Int, deviceName: String): ByteArray {
+        val n = deviceName.take(64).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(2 + n.size).put(OP_P2P_STATUS.toByte()).put(code.toByte()).put(n).array()
+    }
+
     fun wifiCancel(reason: Int = CANCEL_GENERIC, detail: String = ""): ByteArray {
         val d = detail.take(CANCEL_DETAIL_MAX).toByteArray(Charsets.UTF_8)
         return ByteBuffer.allocate(2 + d.size).put(OP_WIFI_CANCEL.toByte()).put(reason.toByte()).put(d).array()
@@ -130,6 +150,10 @@ object Wire {
             val b = ByteBuffer.wrap(body)
             when (b.get().toInt() and 0xFF) {
                 OP_WIFI_REQUEST -> Control.WifiRequest(b.short.toInt() and 0xFFFF)
+                OP_P2P_STATUS -> {
+                    val code = if (b.remaining() >= 1) b.get().toInt() and 0xFF else P2P_NOT_AVAILABLE
+                    Control.P2pStatus(code, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
+                }
                 OP_P2P_REQUEST -> Control.P2pRequest(if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
                 OP_WIFI_CANCEL -> {
                     val r = if (b.remaining() >= 1) b.get().toInt() and 0xFF else CANCEL_GENERIC

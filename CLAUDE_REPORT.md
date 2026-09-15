@@ -1,88 +1,96 @@
-# CLAUDE_REPORT - ProkNet v0.9.11 "the refusal has to be heard"
+# CLAUDE_REPORT - ProkNet v0.9.12 "the buyer joins by itself"
 
-Date: 2026-09-14
+Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 139/139 automated tests pass, released, not yet retested on phones**
+Status: **built, 143/143 automated tests pass, released, not yet retested on phones.
+Home Wi-Fi resale is NOT claimed.**
 
-## 1. What the diagnostic showed
+## 1. What the run showed
 
-The radio was fine this time: `ble health: healthy`, advertising up for
-608 s, 1587 scan results, last one 0 s ago, no GATT timeouts, no
-recoveries. The seller was visible with its offer the whole time. So
-v0.9.10 did its job and is not the problem.
-
-The failure is in the log, repeated six times in twenty seconds:
+Both radios healthy, the offer visible, and a real group on the seller:
 
 ```
-05:15:26 asking prok-24e480e6 to invite "OnePlus Nord CE 2 Lite 5G"
-05:15:28 frame 1/1 -> DELIVERED (RECEIPT accepted)
-05:15:29 CONTROL from prok-24e480e6 over ble (50 bytes, signature verified)
-05:15:30 asking the provider again
+seller: sharing by Wi-Fi Direct: GROUP OWNER clients 0
+seller Wi-Fi Direct peer list:  00:00:00:00:00:00  available
+seller BLE at the same moment:  prok-0f7d57b3  rssi -38
 ```
 
-The seller answered **every single request**, and the buyer did nothing
-with the answer, until the 45 s ladder gave up and the screen fell back to
-the offer list with nothing shown.
+Android anonymises the buyer in the OWNER's peer list on these phones. So
+the v0.9.9 design, where the owner identifies the buyer by name and invites
+it, cannot work here, and guessing from `00:00:00:00:00:00` would be
+guessing.
 
-## 2. Three faults, all ours
+The buyer sees the seller correctly, with its real P2P address. That is the
+side that can act.
 
-**a. The answer was dropped.** A WIFI_CANCEL goes to the hotspot transport,
-whose state machine is idle on this path, so it was discarded in silence.
-The node now routes a cancel to the Wi-Fi Direct buyer when that is what is
-waiting; the attempt ends immediately with the provider's own words.
+## 2. The new choreography
 
-**b. The seller advertised a door it did not have.** `p2pFallbackActive`
-was set the moment sharing started, before the group existed, so the advert
-claimed the direct way in while the group was still coming up (or had
-failed). The 50 byte answer is exactly "the provider has no Wi-Fi Direct
-group right now". Now `P2pPlan.advertiseP2p(sharing, groupFormed)` gates
-the advert on a real group, the advert is refreshed whenever the group
-appears or disappears, and `createGroup` retries three times because the
-framework answers BUSY right after a cleanup (the buyer's own cleanup in
-this very log shows two BUSY answers).
+```
+seller creates the group; the offer claims this way in ONLY while it exists
+buyer picks the offer in the normal app
+buyer -> seller (BLE): is your group ready? (+ the buyer's own P2P name)
+seller -> buyer (BLE): GROUP_READY | REBUILDING_GROUP | NOT_AVAILABLE
+                       carrying the SELLER's own Wi-Fi Direct name
+buyer finds that name in ITS OWN peer list (real address, never anonymised)
+buyer calls connect() -> joins -> seller clients = 1
+socket, signed authentication, tunnel, VPN, accounting: unchanged
+```
 
-**c. A seller asked for what it advertised now rebuilds it.**
-`P2pPlan.admission(sharingByP2p, groupFormed, isOwner)` -> INVITE,
-REBUILD_GROUP, REFUSE. Only a phone that is not sharing that way refuses; a
-phone whose group died recreates it and the buyer's next ladder step
-succeeds.
+- `Wire.OP_P2P_STATUS` with `P2P_READY / P2P_REBUILDING / P2P_NOT_AVAILABLE`
+  and the seller's name; `P2pPlan.groupStatus(...)` decides it.
+- `P2pPlan.anonymous(address)` rejects `00:00:00:00:00:00`,
+  `02:00:00:00:00:00` and empty everywhere, including inside
+  `P2pLink.connectTo`, which refuses to dial one.
+- `P2pPlan.pickSellerPeer(peers, sellerName, groupOwners)` matches by the
+  name that came over BLE, and falls back to "the peer that owns a group"
+  when an older seller sends no name.
+- `P2pPlan.joinStep(...)` -> ASK_STATUS / WAIT_PEER / CONNECT / RETRY_BUSY /
+  WAIT_REBUILD / FAIL_NOT_AVAILABLE / GIVE_UP / DONE. BUSY is retried at 3,
+  6, 12 and 24 s, four attempts; NOT_AVAILABLE fails instantly; a minute
+  ends it with a French sentence. One BLE request per ten seconds, as in
+  v0.9.11.
+- Owner-side inviting survives only as a manual button in the Wi-Fi Direct
+  Lab. The normal path never needs it.
 
-## 3. Two smaller ones from the same log
+## 3. Diagnostics
 
-- The buyer asked once per 4 s tick instead of once per ladder step. Now
-  one request per 10 s (`P2pPlan.ASK_EVERY_MS`).
-- `stopInternet()` clears `lastBuyError`, and every failure path set the
-  message BEFORE calling it, so the reason was wiped every time. That is
-  precisely "searches forever then goes back to the offer page". All
-  failures now go through one `failBuy(logReason, userError)` that stops
-  first and keeps the reason, so the card shows a real sentence.
+The log now names each step: the group forming on either side with role and
+client count, "answered GROUP_READY, its Wi-Fi Direct name is ...", the
+peers this phone can really address versus how many are anonymised, "buyer
+connect() requested", accepted or refused with Android's reason and the next
+delay, the socket line, the signed handshake, the contract, VPN and
+INTERNET OK. COPY P2P DIAG carries the last join attempt and the real peer
+list.
 
-## 4. Tests (139, +3)
+## 4. Tests (143, +4)
 
-`P2pPlanTest`: a seller never advertises the direct way in without a live
-group; an admission request is answered honestly in all five combinations;
-and the ask interval is at least ten seconds while a refusal produces a
-readable French sentence that does not tell the user to walk.
+The owner's list anonymises the buyer and the buyer still finds the seller;
+the three seller answers and what the buyer does with each; BUSY retried
+with a growing bounded delay then given up; a second purchase starting from
+a clean slate; and the status message surviving the wire with the seller's
+name. Nothing anywhere may act on `00:00:00:00:00:00`.
 
 ## 5. Build
 
-Build 24, versionName 0.9.11, 1.25 MB,
-SHA256 `1bb936eff4f440459d12f735e267ac33a73148441321a19ccb4475e9fb14b3cc`.
+Build 25, versionName 0.9.12, 1.25 MB,
+SHA256 `54cc42c5d61e43c4fb5c61c2f4216f10bc89965ea1fd191fabf8a74d2adeb1e4`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.11
-Commit `84080634b4428bf3ed499a19ecae868c3e035716` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.12
+Commit `CODE_COMMIT` on `main`; this report on top.
 
 ## 6. Preserved
 
-The v0.9.9 Internet path, the v0.9.10 BLE healing, method A, the tunnel,
-the VPN and the marketplace are untouched.
+v0.9.10 BLE healing, the authenticated socket, the tunnel, the VPN, the
+accounting, the marketplace, the normal screens, and method A for
+mobile-data sellers: all untouched.
 
-## 7. Retest
+## 7. The claim rule
 
-`docs/TESTING.md` section 29 first (one request per ten seconds, a refusal
-that stops the attempt with a sentence, a group that rebuilds itself), then
-section 27 for the flow that decides home Wi-Fi resale.
+`docs/TESTING.md` section 30 sets the exact condition, and I will not call
+home Wi-Fi resale solved before it passes: seller mobile data OFF and on the
+Freebox throughout, buyer mobile data OFF and not on the Freebox, the buyer
+reaching INTERNET OK and Chrome loading pages.
