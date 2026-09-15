@@ -1,135 +1,134 @@
-# CLAUDE_REPORT - ProkNet v0.9.22 "an accepted association owns the radio and its own clock"
+# CLAUDE_REPORT - ProkNet v0.9.23 "the clean answer, and the reversed topology"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 176/176 automated tests pass, released, not yet tested on phones.
-Home Wi-Fi resale is NOT claimed. The 2.4 GHz result is NOT decided: run A was
-contaminated and run B never formed a group.**
+Status: **built, 181/181 automated tests pass, released, not yet tested on phones.
+Home Wi-Fi resale is NOT claimed.**
 
-## 1. Run A: the group formed on 2.4 GHz, and the window was contaminated
+## 1. The 2.4 GHz question is answered, and the answer is no
 
-```
-18:54:58.447  connect accepted
-18:54:58.447  DISCOVERY off
-18:54:58.470  stopPeerDiscovery refused: BUSY
-18:54:58.472  connection formed=false
-18:54:58.474  starting peer discovery again
-18:55:04      group formed, LINK PROBE starts
-18:55:15      LINK PROBE verdict: no packets crossed
-18:55:20      DISCOVERY off
-```
-
-Sixteen seconds of scanning inside the data-path window. You are right that
-this is not a clean verdict on the band, and I am not treating it as one.
-
-Two faults of mine produced it:
-
-- Android emits `groupFormed = false` in the middle of its own join
-  choreography, and v0.9.21 read that as "the attempt is dead, look again".
-- On a first join the group generation AND the membership generation change
-  in the same observation. The group branch won, and the line that stops
-  discovery lived in the membership branch, so it never ran. That is why the
-  stop finally came sixteen seconds later, from a different callback.
-
-## 2. Run B: the attempt was killed two milliseconds after it was chosen
+v0.9.22 produced the first uncontaminated run:
 
 ```
-19:10:36.476  JOIN PLAN = SELLER_INVITE
-19:10:36.478  the provider could see this phone, but the invitation did not complete
+19:38:15.047  formed=true role=CLIENT groupOwner=192.168.49.1
+19:38:15.059  DISCOVERY off
+19:38:15.072  GROUP CHANNEL: 2.4 GHz ch 6 (2437 MHz)
+19:38:31.109  LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+              (sent 10, unicast replies 0, broadcast replies 0, probes answered by us 0)
 ```
 
-The purchase had been searching for about thirty seconds, and the deadline it
-was judged against had already expired before the attempt existed. Android
-had a confirmation dialog open on both phones while ProkNet tore it down.
+Both v0.9.22 lifecycle fixes worked: a fresh association clock, no discovery
+after membership, a real group, and the 2.4 GHz request granted. So the
+result counts: **forcing the group to 2.4 GHz does not fix the
+provider-as-group-owner topology on these two phones.**
 
-## 3. The fixes
+Every layer above it passed in the same run: BLE control, symmetric
+admission, the Android confirmation, the association, the membership
+exchange, TRANSPORT_READY. Only the IP path failed.
 
-**One truth keeps the radio.** `P2pAdmission.associationPending(owner,
-startedAt, now, hasMember, failed)`, centralised in `P2pLink` and checked by
-`keepDiscovering` itself, so every caller in the node obeys it without
-knowing about it. An attempt ends on membership, on an explicit Android
-refusal, or on its own clock. A transient `formed=false` is none of those and
-no longer releases the radio lock either.
-
-**Stopping discovery is a post-condition of membership.** In `observePlane`,
-before any branch and before the unchanged-plane early return:
+## 2. The state bug you found
 
 ```
-if (now.hasMember) { stopDiscovery(...); endAssociation("membership formed") }
+19:38:31  association in flight for 16s
+19:38:55  the provider could see this phone, but the invitation did not complete
 ```
 
-Whatever else changed in the same callback, a link with a peer on it has no
-discovery.
+False, and my bug. `ladder(...)` did not know membership had happened, so the
+association clock started before the join eventually expired and killed a
+session that was already past admission.
 
-**Two clocks, and choosing a plan starts neither.**
+`ladder(associationStartedAt, now, searchedMs, hasMember)` now returns
+MEMBER_JOINED as soon as a client is on the link, forever. The node clears
+the admission clock at that moment and logs `MEMBER JOINED: admission is
+over, the transport now has 45s`. From there only the transport deadline can
+end the session.
+
+## 3. Failures are filed by stage
 
 ```
-SEARCH_GIVE_UP_MS       60 s   from the start of the purchase, until an
-                               association is accepted
-ASSOCIATION_TIMEOUT_MS  40 s   from the moment Android ACCEPTED a connect()
-                               or an invite(): long enough for a person to
-                               read a dialog and tap Connect
+SEARCH_FAIL       neither phone could address the other
+ASSOCIATION_FAIL  an invitation or a join did not complete
+TRANSPORT_FAIL    the group exists and no IP packet crosses it
+TUNNEL_FAIL / INTERNET_FAIL
 ```
 
-`P2pAdmission.ladder(associationStartedAt, now, searchedMs)` -> SEARCH,
-ASSOCIATING, GIVE_UP. Once an association is accepted the search time decides
-nothing. The buyer starts its clock when its `connect()` is accepted, and
-when the provider announces SELLER_INVITE, because the provider invites in
-the same breath. A refusal ends the attempt at once and a replan follows.
+`P2pAdmission.stageOf(reason)` files every ending, the log prints `PURCHASE
+FAILED at stage ...`, and the French sentence matches. The v0.9.22 run was a
+TRANSPORT_FAIL, so the screen now says the direct link was created and the
+network link between the two phones does not answer, instead of blaming an
+invitation that had succeeded.
 
-The same constant now governs how long a plan is held and how long before an
-unanswered invitation may be repeated, so nothing can interrupt a dialog a
-person is reading.
+## 4. The evidence survives cleanup
 
-## 4. Preserved
+`core/P2pReport.kt`: one record per phone, written as the attempt happens,
+replaced only when the next test starts. Time, topology, role, group channel,
+home channel, peer, association, membership, when discovery stopped, both IP
+addresses, the four UDP counters, TCP accepted and connected, verdict and
+failure stage. It prints at the end of the Wi-Fi Direct diagnostic. That is
+how the seller's probe counters for the 19:38 run will not be lost again.
 
-Symmetric admission, the no-guessing rule, BUYER_CONNECT preferred when both
-see, SELLER_INVITE as the other path, membership semantics, the 2.4 GHz group
-request, the radio lock, data plane generations, the binding hierarchy, the
-UDP probe, TRANSPORT_READY, crypto, the tunnel, the VPN, the accounting,
-method A, the bounded consumer failure. None of them changed.
+## 5. The reversed topology
 
-## 5. Tests (176, +4)
+```
+SELLER_GROUP_OWNER   production, unchanged
+BUYER_GROUP_OWNER    the customer owns the group, the provider joins it as a
+                     client and keeps its Freebox connection
+```
 
-A transient `formed=false` after an accepted connect, and after an accepted
-invite, leaves the association pending; membership, refusal and the timeout
-each end it. Both generations changing in one observation still leaves
-discovery off. A plan chosen after thirty seconds of searching gets a full
-fresh association clock, and the exact run B sequence cannot fail two
-milliseconds later any more. An explicit refusal ends the attempt at once and
-allows a replan.
+- `P2pLink.startGroupOwner(providing)` / `startGuest(providing)` separate the
+  Wi-Fi Direct role from the ProkNet role. The provider is still the
+  authenticated host whichever phone created the group.
+- The admission plan is named by Wi-Fi Direct role, so one rule serves both
+  arrangements: `GUEST_CONNECT`, `OWNER_INVITE`, `WAIT`. The group owner is
+  always the phone that decides, and the guest is always the one that
+  reports what it can see.
+- The customer announces the topology over BLE (`OP_P2P_TOPOLOGY`) when the
+  purchase starts; the provider obeys, drops its own group and joins as a
+  client, logging that it is staying on the Freebox while it does.
+- The toggle is in the Wi-Fi Direct Lab, on the buyer. Production is
+  untouched and still defaults to SELLER_GROUP_OWNER.
 
-## 6. Build
+I have not assumed this will work. It is an experiment with its own
+diagnostics, and a failure is still an answer.
 
-Build 35, versionName 0.9.22, 1.30 MB,
-SHA256 `3774b26ad12f59d82e7331686b26d2202b95c26019d5ed89008ebd7bb54cf09c`.
+## 6. Preserved
+
+Crypto, the signed handshake, the marketplace, the accounting, the tunnel,
+the VPN, BLE identity and control, the no-guessing rule, the transport
+abstraction, the data plane generations, the binding hierarchy, the UDP
+probe, the radio lock, the 2.4 GHz request and the v0.9.22 discovery rule.
+Only the Wi-Fi Direct role beneath them can change now.
+
+## 7. Tests (181, +5)
+
+Membership makes the ladder MEMBER_JOINED forever, including at the exact
+moment v0.9.22 died. Every failure reason maps to its stage, and the French
+for a transport failure no longer mentions an invitation. Who owns the group
+is not who sells. The plan rule is identical in both topologies. The saved
+record survives and is replaced only by a new test.
+
+## 8. Build
+
+Build 36, versionName 0.9.23, 1.31 MB,
+SHA256 `a6ac34837acf458deddf40d7b12ca6cdf68ef0daa350c37e5cc91445ba5026b5`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.22
-Commit `a842f93` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.23
+Commit `1b170b7` on `main`; this report on top.
 
-## 7. The one clean run
+## 9. The next hardware test
 
-`docs/TESTING.md` section 40. In order, and the third line is the one that
-makes the verdict trustworthy:
+`docs/TESTING.md` section 41. Turn the topology toggle on in the Wi-Fi Direct
+Lab on the BUYER only, then buy from the normal screen. The question is
+whether the OUKITEL can be a Wi-Fi Direct CLIENT while it stays on the
+Freebox, when it cannot be a usable group owner.
 
-```
-JOIN PLAN = ...                 (the same on both phones)
-ASSOCIATION started, clock starts NOW
-no "starting peer discovery" between that line and the group forming
-CLIENT COUNT 0 -> 1
-DISCOVERY off                   (immediately, not fifteen seconds later)
-GROUP CHANNEL: 2.4 GHz ...
-LINK PROBE verdict: ...         (from BOTH phones)
-```
+Copy the LAST P2P TEST RESULT block from both phones whatever happens.
 
-If Android shows a confirmation dialog, tap CONNECT: the attempt waits for
-you now.
+## 10. The claim rule
 
-## 8. The claim rule
-
-Unchanged, section 30. Home Wi-Fi resale is not claimed, and the 2.4 GHz
-question stays open until one uncontaminated run answers it.
+Unchanged, section 30. Home Wi-Fi resale is not claimed and will not be until
+the reversed topology is proven on hardware.
