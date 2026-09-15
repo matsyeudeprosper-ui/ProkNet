@@ -214,7 +214,10 @@ class P2pDataPlaneTest {
         // the window must outlast the readiness wait AND the dial ladder that follows it
         val dialWindow = P2pPlan.DIAL_ATTEMPTS * (P2pPlan.DIAL_TIMEOUT_MS + P2pPlan.DIAL_GAP_MS)
         assertTrue(P2pPlan.TRANSPORT_GIVE_UP_MS >= P2pDataPlane.READY_WAIT_MS + dialWindow)
-        assertEquals("Connexion locale créée, mais le fournisseur ne répond pas.", ProductState.lostHint(P2pPlan.TRANSPORT_FAIL_REASON))
+        // v0.9.23: the link, not the provider, is what did not answer. The v0.9.22 run proved the
+        // association completed and the IP path did not.
+        assertEquals("La connexion directe a été créée, mais le lien réseau entre les deux téléphones ne répond pas.",
+            ProductState.lostHint(P2pPlan.TRANSPORT_FAIL_REASON))
     }
 
     // ---- the two new control messages ----------------------------------------------------------------

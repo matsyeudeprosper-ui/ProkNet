@@ -117,6 +117,34 @@ object P2pPlan {
      */
     fun discoveryWanted(want: Want, hasLiveMember: Boolean): Boolean = want != Want.NONE && !hasLiveMember
 
+    /**
+     * v0.9.23: **who owns the Wi-Fi Direct group.**
+     *
+     * Production is SELLER_GROUP_OWNER: the provider creates the group and
+     * the customer joins it. Every clean measurement so far says that
+     * topology cannot carry IP on these two phones while the provider stays
+     * on its home Wi-Fi, on the default band AND forced to 2.4 GHz.
+     *
+     * BUYER_GROUP_OWNER is the controlled experiment: the customer owns the
+     * group and the provider joins it as a client while keeping its Freebox
+     * connection. Who owns the group does not change who sells the Internet.
+     */
+    enum class Topology { SELLER_GROUP_OWNER, BUYER_GROUP_OWNER }
+
+    fun topologyName(t: Topology): String = when (t) {
+        Topology.SELLER_GROUP_OWNER -> "SELLER_GROUP_OWNER"
+        Topology.BUYER_GROUP_OWNER -> "BUYER_GROUP_OWNER"
+    }
+
+    fun topologyText(t: Topology): String = when (t) {
+        Topology.SELLER_GROUP_OWNER -> "the provider owns the Wi-Fi Direct group and the customer joins it"
+        Topology.BUYER_GROUP_OWNER -> "the customer owns the Wi-Fi Direct group and the provider joins it, keeping its home Wi-Fi"
+    }
+
+    /** Does THIS phone own the group, given the topology and whether it sells? */
+    fun ownsGroup(t: Topology, providing: Boolean): Boolean =
+        if (t == Topology.SELLER_GROUP_OWNER) providing else !providing
+
     // ---- v0.9.19: which band to ask for ------------------------------------------------------------
 
     /** 0 = let Android choose, 2 = ask for 2.4 GHz, 5 = ask for 5 GHz. */

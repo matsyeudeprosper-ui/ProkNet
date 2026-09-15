@@ -1471,3 +1471,70 @@ LINK PROBE verdict: ...        (from BOTH phones)
 
 **Only a run with no discovery in the data window decides the 2.4 GHz
 question.**
+
+## 41. v0.9.23 the reversed topology experiment
+
+The question: **can the OUKITEL be a Wi-Fi Direct CLIENT of the buyer's group
+while staying on the Freebox, when it cannot be a usable group owner?**
+
+Setup is section 30, with mobile data off on both phones and the seller on
+the Freebox.
+
+**Turn the experiment on, on the BUYER only.** Wi-Fi Direct Lab, the button
+at the bottom:
+
+```
+TOPOLOGY: SELLER OWNS THE GROUP        <- tap it
+TOPOLOGY: BUYER OWNS THE GROUP (experiment)
+```
+
+The buyer tells the seller over BLE when the purchase starts, so nothing has
+to be set on the provider.
+
+Then buy from the normal screen. Expected, on the BUYER:
+
+```
+TOPOLOGY = BUYER_GROUP_OWNER: the customer owns the Wi-Fi Direct group and the
+provider joins it, keeping its home Wi-Fi
+WI-FI DIRECT GROUP FORMED: role GROUP_OWNER
+GROUP CHANNEL: ...
+admission: ... -> GUEST_CONNECT or OWNER_INVITE
+CLIENT COUNT 0 -> 1
+LINK PROBE verdict: ...
+```
+
+On the SELLER:
+
+```
+TOPOLOGY = BUYER_GROUP_OWNER (asked by prok-XXXX)
+REVERSED TOPOLOGY: dropping my own group and joining the customer group as a CLIENT,
+while staying on Freebox 5 GHz ch 48
+telling the customer what this phone can see: I can address "OnePlus..." at 1e:...
+JOIN PLAN = GUEST_CONNECT
+joining the customer group: "OnePlus Nord CE 2 Lite 5G" (1e:4f:f2:19:36:ce)
+WI-FI DIRECT GROUP FORMED: role CLIENT ... p2p0=192.168.49.x
+```
+
+**The three things to check on the seller at that moment**, all at once:
+
+- `wlan0 = 192.168.1.x` is still there, on the Freebox,
+- `p2p0 = 192.168.49.x` exists,
+- `provider: ... upstream Wi-Fi, validated` still says Wi-Fi.
+
+Then the probe verdict from BOTH phones, and only if IP works, the signed
+handshake, the contract, the VPN, INTERNET OK and Chrome.
+
+**Whatever happens, copy the LAST P2P TEST RESULT block from both phones.**
+It is at the end of the Wi-Fi Direct diagnostic and it survives cleanup:
+
+```
+--- LAST P2P TEST RESULT (kept after cleanup) ---
+time / topology / role / group channel / home Wi-Fi channel / peer
+association / membership / discovery stopped / local IP / peer IP
+UDP sent / received / replies sent / replies received
+TCP accepted / TCP connected / verdict / failure stage
+```
+
+This is an experiment, not a fix. It may fail, and a failure is still an
+answer: it would mean the OUKITEL cannot carry a Wi-Fi Direct data path in
+either role while it stays on its home Wi-Fi.

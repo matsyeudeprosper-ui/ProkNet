@@ -746,6 +746,92 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The clean 2.4 GHz answer, and the reversed topology (v0.9.23)
+
+v0.9.22 produced the first uncontaminated run of the whole experiment:
+
+```
+19:38:15.047  formed=true role=CLIENT groupOwner=192.168.49.1
+19:38:15.059  DISCOVERY off
+19:38:15.072  GROUP CHANNEL: 2.4 GHz ch 6 (2437 MHz)
+19:38:31.109  LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+              (sent 10, unicast replies 0, broadcast replies 0, probes answered by us 0)
+```
+
+Admission, the membership handshake over BLE and TRANSPORT_READY all worked.
+Discovery stopped the instant the group formed, so nothing was scanning
+during the data window this time. **Forcing the group to 2.4 GHz does not fix
+the provider-as-group-owner topology on these two phones.**
+
+### Membership ends admission, for good
+
+The same run then killed itself with a false reason:
+
+```
+19:38:31  association in flight for 16s
+19:38:55  the provider could see this phone, but the invitation did not complete
+```
+
+The invitation had completed sixteen seconds earlier. `ladder(...)` did not
+know that membership existed, so the association clock it had started before
+the join eventually expired. It now takes `hasMember` and returns
+MEMBER_JOINED forever once a client is on the link; the node clears the
+admission clock at that moment and only the transport deadline can end the
+session.
+
+### A failure belongs to a stage
+
+```
+SEARCH_FAIL       neither phone could address the other
+ASSOCIATION_FAIL  an invitation or a join did not complete
+TRANSPORT_FAIL    the group exists and no IP packet crosses it
+TUNNEL_FAIL / INTERNET_FAIL
+```
+
+`P2pAdmission.stageOf(reason)` files every ending, the log prints
+`PURCHASE FAILED at stage ...`, and the customer's French sentence matches:
+the v0.9.22 run was a TRANSPORT_FAIL, so the screen now says the direct link
+was created and the network link between the two phones does not answer.
+
+### The evidence survives cleanup
+
+`core/P2pReport.kt` keeps one record per phone of the last attempt: time,
+topology, role, group channel, home channel, peer, association, membership,
+when discovery stopped, both IP addresses, the four UDP counters, TCP
+accepted and connected, the verdict and the failure stage. Cleanup no longer
+erases the decisive numbers, which is how the seller's counters for the
+19:38 run were lost.
+
+### The reversed topology
+
+Every clean measurement so far has tested one arrangement: the provider owns
+the group while staying on its home Wi-Fi. `P2pPlan.Topology` adds the other
+one as a controlled experiment.
+
+```
+SELLER_GROUP_OWNER   production: the provider owns the group, the customer joins
+BUYER_GROUP_OWNER    experiment: the customer owns the group, the provider joins
+                     it as a client and keeps its Freebox connection
+```
+
+Who owns the group does not change who sells the Internet.
+`P2pLink.startGroupOwner(providing)` and `startGuest(providing)` separate the
+Wi-Fi Direct role from the ProkNet role, so the provider is still the
+authenticated host whichever side created the group.
+
+The admission plan is named by Wi-Fi Direct role now, so the same rule works
+either way round:
+
+```
+GUEST_CONNECT   the phone that does not own the group joins it
+OWNER_INVITE    the phone that owns the group invites the other in
+WAIT            neither can address the other yet
+```
+
+The customer announces the topology over BLE when the purchase starts, the
+provider obeys it, and the group owner is always the phone that decides the
+plan. The toggle lives in the Wi-Fi Direct Lab; production is unchanged.
+
 ## An accepted association owns the radio and its own clock (v0.9.22)
 
 Two lifecycle bugs, both visible in the v0.9.21 runs, and the first one

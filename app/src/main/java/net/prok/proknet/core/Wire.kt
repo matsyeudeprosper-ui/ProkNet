@@ -75,14 +75,32 @@ object Wire {
      */
     const val OP_P2P_VISIBILITY = 8
     const val OP_P2P_JOIN_PLAN = 9
-    const val JOIN_PLAN_BUYER_CONNECT = 1
-    const val JOIN_PLAN_SELLER_INVITE = 2
+    const val JOIN_PLAN_GUEST_CONNECT = 1
+    const val JOIN_PLAN_OWNER_INVITE = 2
     const val JOIN_PLAN_WAIT = 3
 
     fun joinPlanName(code: Int) = when (code) {
-        JOIN_PLAN_BUYER_CONNECT -> "BUYER_CONNECT"; JOIN_PLAN_SELLER_INVITE -> "SELLER_INVITE"
+        JOIN_PLAN_GUEST_CONNECT -> "GUEST_CONNECT"; JOIN_PLAN_OWNER_INVITE -> "OWNER_INVITE"
         JOIN_PLAN_WAIT -> "WAIT"; else -> "plan " + code
     }
+
+    /**
+     * v0.9.23: who owns the Wi-Fi Direct group for this session. The customer
+     * announces it when the purchase starts and the provider obeys, so a
+     * controlled experiment can put the group on either phone without either
+     * side guessing.
+     */
+    const val OP_P2P_TOPOLOGY = 10
+    const val TOPOLOGY_SELLER_GROUP_OWNER = 1
+    const val TOPOLOGY_BUYER_GROUP_OWNER = 2
+
+    fun topologyName(code: Int) = when (code) {
+        TOPOLOGY_SELLER_GROUP_OWNER -> "SELLER_GROUP_OWNER"
+        TOPOLOGY_BUYER_GROUP_OWNER -> "BUYER_GROUP_OWNER"; else -> "topology " + code
+    }
+
+    fun p2pTopology(code: Int): ByteArray =
+        ByteBuffer.allocate(2).put(OP_P2P_TOPOLOGY.toByte()).put(code.toByte()).array()
 
     fun p2pStatusName(code: Int) = when (code) {
         P2P_READY -> "GROUP_READY"; P2P_REBUILDING -> "REBUILDING_GROUP"; P2P_NOT_AVAILABLE -> "NOT_AVAILABLE"; else -> "status " + code
@@ -133,8 +151,10 @@ object Wire {
         class WifiCancel(val reason: Int = CANCEL_GENERIC, val detail: String = "") : Control()
         /** v0.9.20: buyer -> seller, whether it can address the provider, and its own P2P name. */
         class P2pVisibility(val canSee: Boolean, val deviceName: String) : Control()
-        /** v0.9.20: seller -> buyer, the admission plan both sides obey. */
+        /** v0.9.20: the group owner -> the guest, the admission plan both sides obey. */
         class P2pJoinPlan(val plan: Int) : Control()
+        /** v0.9.23: the customer -> the provider, who owns the Wi-Fi Direct group this session. */
+        class P2pTopology(val topology: Int) : Control()
         /** v0.9.14: buyer -> seller, the buyer's own P2P address and the port it listens on. */
         class P2pMember(val address: String, val port: Int) : Control()
         /**
@@ -224,6 +244,7 @@ object Wire {
                     Control.P2pVisibility(see, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
                 }
                 OP_P2P_JOIN_PLAN -> Control.P2pJoinPlan(if (b.remaining() >= 1) b.get().toInt() and 0xFF else JOIN_PLAN_WAIT)
+                OP_P2P_TOPOLOGY -> Control.P2pTopology(if (b.remaining() >= 1) b.get().toInt() and 0xFF else TOPOLOGY_SELLER_GROUP_OWNER)
                 OP_P2P_MEMBER -> {
                     val n = b.get().toInt() and 0xFF
                     val a = String(ByteArray(n).also { b.get(it) }, Charsets.UTF_8)

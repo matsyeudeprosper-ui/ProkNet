@@ -256,6 +256,7 @@ class WifiTransport(
                 is Wire.Control.P2pRequest -> DiagLog.i(tag, "P2P invitation request from prok-" + peerShort + " is handled by the node, not by this transport")
                 is Wire.Control.P2pStatus -> DiagLog.i(tag, "P2P group status from prok-" + peerShort + " is handled by the node, not by this transport")
                 is Wire.Control.P2pVisibility -> DiagLog.i(tag, "P2P VISIBILITY control: handled by the node, not by this transport")
+                is Wire.Control.P2pTopology -> DiagLog.i(tag, "P2P TOPOLOGY control: handled by the node, not by this transport")
                 is Wire.Control.P2pJoinPlan -> DiagLog.i(tag, "P2P JOIN PLAN control: handled by the node, not by this transport")
                 is Wire.Control.P2pMember -> DiagLog.i(tag, "P2P MEMBER control: handled by the node, not by this transport")
                 is Wire.Control.P2pTransport -> DiagLog.i(tag, "P2P TRANSPORT control: handled by the node, not by this transport")

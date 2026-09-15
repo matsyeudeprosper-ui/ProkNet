@@ -54,7 +54,14 @@ object P2pAdmission {
         return Sight(true, addr, P2pPlan.peerName(peers, addr))
     }
 
-    enum class Plan { BUYER_CONNECT, SELLER_INVITE, WAIT }
+    /**
+     * v0.9.23: the two sides are named by their WI-FI DIRECT role, not by who
+     * sells, because v0.9.23 can run the group either way round.
+     *
+     * GUEST_CONNECT: the phone that does not own the group joins it.
+     * OWNER_INVITE:  the phone that owns the group invites the other in.
+     */
+    enum class Plan { GUEST_CONNECT, OWNER_INVITE, WAIT }
 
     /**
      * The plan, from the two visibilities and nothing else.
@@ -62,30 +69,30 @@ object P2pAdmission {
      * When BOTH can see each other, BUYER_CONNECT wins: it is the path that
      * has actually formed groups on these phones.
      */
-    fun plan(buyerSeesSeller: Boolean, sellerSeesBuyer: Boolean): Plan = when {
-        buyerSeesSeller -> Plan.BUYER_CONNECT
-        sellerSeesBuyer -> Plan.SELLER_INVITE
+    fun plan(guestSeesOwner: Boolean, ownerSeesGuest: Boolean): Plan = when {
+        guestSeesOwner -> Plan.GUEST_CONNECT
+        ownerSeesGuest -> Plan.OWNER_INVITE
         else -> Plan.WAIT
     }
 
     fun planName(p: Plan): String = when (p) {
-        Plan.BUYER_CONNECT -> "BUYER_CONNECT"
-        Plan.SELLER_INVITE -> "SELLER_INVITE"
+        Plan.GUEST_CONNECT -> "GUEST_CONNECT"
+        Plan.OWNER_INVITE -> "OWNER_INVITE"
         Plan.WAIT -> "WAIT"
     }
 
     fun planText(p: Plan): String = when (p) {
-        Plan.BUYER_CONNECT -> "the customer can address the provider, so the customer joins"
-        Plan.SELLER_INVITE -> "only the provider can address the customer, so the provider invites"
+        Plan.GUEST_CONNECT -> "the guest can address the group owner, so the guest joins"
+        Plan.OWNER_INVITE -> "only the group owner can address the guest, so the owner invites"
         Plan.WAIT -> "neither phone can address the other yet: both keep looking"
     }
 
-    /** Who owns the single admission attempt in flight. */
-    enum class Owner { NOBODY, BUYER, SELLER }
+    /** Which side holds the single admission attempt in flight. */
+    enum class Owner { NOBODY, GUEST, OWNER }
 
     fun owner(p: Plan): Owner = when (p) {
-        Plan.BUYER_CONNECT -> Owner.BUYER
-        Plan.SELLER_INVITE -> Owner.SELLER
+        Plan.GUEST_CONNECT -> Owner.GUEST
+        Plan.OWNER_INVITE -> Owner.OWNER
         Plan.WAIT -> Owner.NOBODY
     }
 
@@ -161,15 +168,29 @@ object P2pAdmission {
     fun associationPending(owner: Owner, startedAt: Long, now: Long, hasMember: Boolean, failed: Boolean): Boolean =
         owner != Owner.NOBODY && startedAt > 0L && !hasMember && !failed && (now - startedAt) < ASSOCIATION_TIMEOUT_MS
 
-    /** Where a purchase is: still looking, associating, or out of time. */
-    enum class Ladder { SEARCH, ASSOCIATING, GIVE_UP }
+    /** Where a purchase is in the admission phase. */
+    enum class Ladder { SEARCH, ASSOCIATING, MEMBER_JOINED, GIVE_UP }
 
     /**
-     * Choosing a plan is not starting an attempt. Only an ACCEPTED
-     * association starts the association clock, and from that moment the
-     * search clock no longer decides anything.
+     * Choosing a plan is not starting an attempt, and **membership ends the
+     * admission phase completely.**
+     *
+     * v0.9.23. The v0.9.22 run joined the group at 19:38:15 and the ladder
+     * kept counting the association clock it had started before that:
+     *
+     * ```
+     * 19:38:15  formed=true role=CLIENT, DISCOVERY off, GROUP CHANNEL 2.4 GHz ch 6
+     * 19:38:31  association in flight for 16s
+     * 19:38:55  the provider could see this phone, but the invitation did not complete
+     * ```
+     *
+     * The invitation had completed perfectly. What failed was the IP
+     * transport, forty seconds later and one phase further on. Once
+     * `hasMember` is true this returns MEMBER_JOINED forever, the admission
+     * clock is cleared, and only the transport deadline can end the session.
      */
-    fun ladder(associationStartedAt: Long, now: Long, searchedMs: Long): Ladder = when {
+    fun ladder(associationStartedAt: Long, now: Long, searchedMs: Long, hasMember: Boolean): Ladder = when {
+        hasMember -> Ladder.MEMBER_JOINED
         associationStartedAt > 0L ->
             if (now - associationStartedAt >= ASSOCIATION_TIMEOUT_MS) Ladder.GIVE_UP else Ladder.ASSOCIATING
         searchedMs >= SEARCH_GIVE_UP_MS -> Ladder.GIVE_UP
@@ -194,9 +215,9 @@ object P2pAdmission {
      * competing attempt.
      */
     fun buyerStep(plan: Plan?, canSee: Boolean, reportedMsAgo: Long): BuyerStep = when {
-        plan == Plan.BUYER_CONNECT && canSee -> BuyerStep.CONNECT
+        plan == Plan.GUEST_CONNECT && canSee -> BuyerStep.CONNECT
         reportedMsAgo >= VISIBILITY_EVERY_MS -> BuyerStep.REPORT_VISIBILITY
-        plan == Plan.SELLER_INVITE -> BuyerStep.WAIT_FOR_INVITE
+        plan == Plan.OWNER_INVITE -> BuyerStep.WAIT_FOR_INVITE
         else -> BuyerStep.WAIT_DISCOVERY
     }
 
@@ -221,25 +242,48 @@ object P2pAdmission {
      * an invitation is still pending.
      */
     fun mayInvite(plan: Plan, sellerSight: Sight, ownsGroup: Boolean, hasMember: Boolean, invitedMsAgo: Long): Boolean =
-        plan == Plan.SELLER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ASSOCIATION_TIMEOUT_MS
+        plan == Plan.OWNER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ASSOCIATION_TIMEOUT_MS
 
     // ---- how a purchase ends, truthfully -------------------------------------------------------------
 
+    /**
+     * v0.9.23: the stage a session died in. Each one means something
+     * different to the customer and to whoever reads the log.
+     */
+    enum class FailStage { NONE, SEARCH, ASSOCIATION, TRANSPORT, TUNNEL, INTERNET }
+
     /** Neither phone could ever address the other. */
     const val BLIND_FAIL_REASON = "neither phone could address the other over Wi-Fi Direct"
-    /** The provider could see the customer, and its invitation did not complete. */
-    const val INVITE_FAIL_REASON = "the provider could see this phone, but the Wi-Fi Direct invitation did not complete"
-    /** The customer could see the provider, and its join did not complete. */
-    const val JOIN_FAIL_REASON = "the customer could see the provider, but the Wi-Fi Direct join did not complete"
+    /** The group owner could see the guest, and its invitation did not complete. */
+    const val INVITE_FAIL_REASON = "the group owner could see this phone, but the Wi-Fi Direct invitation did not complete"
+    /** The guest could see the owner, and its join did not complete. */
+    const val JOIN_FAIL_REASON = "the guest could see the group owner, but the Wi-Fi Direct join did not complete"
 
     /**
-     * v0.9.21: report the stage that actually failed. A planned attempt that
-     * did not complete must never be collapsed back into "neither could
-     * address the other", which was simply false in the last run.
+     * Report the stage that actually failed. A planned attempt that did not
+     * complete is never collapsed back into "neither could address the
+     * other", and an attempt that DID complete is never blamed at all: once
+     * membership exists the admission phase is over and cannot fail.
      */
     fun failReason(plan: Plan?, connectAttempts: Int): String = when {
-        plan == Plan.SELLER_INVITE -> INVITE_FAIL_REASON
-        plan == Plan.BUYER_CONNECT || connectAttempts > 0 -> JOIN_FAIL_REASON
+        plan == Plan.OWNER_INVITE -> INVITE_FAIL_REASON
+        plan == Plan.GUEST_CONNECT || connectAttempts > 0 -> JOIN_FAIL_REASON
         else -> BLIND_FAIL_REASON
+    }
+
+    /** Which stage a failure reason belongs to, for the log and the saved test record. */
+    fun stageOf(reason: String): FailStage = when {
+        reason.isEmpty() -> FailStage.NONE
+        reason == BLIND_FAIL_REASON -> FailStage.SEARCH
+        reason == INVITE_FAIL_REASON || reason == JOIN_FAIL_REASON -> FailStage.ASSOCIATION
+        reason.contains("transport", ignoreCase = true) || reason.contains("local link", ignoreCase = true) -> FailStage.TRANSPORT
+        reason.contains("tunnel", ignoreCase = true) -> FailStage.TUNNEL
+        reason.contains("internet", ignoreCase = true) -> FailStage.INTERNET
+        else -> FailStage.NONE
+    }
+
+    fun stageName(s: FailStage): String = when (s) {
+        FailStage.NONE -> "NONE"; FailStage.SEARCH -> "SEARCH_FAIL"; FailStage.ASSOCIATION -> "ASSOCIATION_FAIL"
+        FailStage.TRANSPORT -> "TRANSPORT_FAIL"; FailStage.TUNNEL -> "TUNNEL_FAIL"; FailStage.INTERNET -> "INTERNET_FAIL"
     }
 }

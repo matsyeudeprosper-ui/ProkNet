@@ -76,7 +76,7 @@ object ProductState {
             "Les deux t\u00e9l\u00e9phones ne se voient pas en Wi-Fi Direct. Rapprochez-les et r\u00e9essayez."
         // v0.9.13: the local Wi-Fi Direct link was built and the provider never answered on it
         any(lastError, "no transport answer", "local link formed") ->
-            "Connexion locale créée, mais le fournisseur ne répond pas."
+            "La connexion directe a été créée, mais le lien réseau entre les deux téléphones ne répond pas."
         // v0.9.3: the three ways the setup really fails, each with what to check
         any(lastError, "did not answer", "did not introduce", "no contract answer", "no SESSION_OK", "did not join") ->
             "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."

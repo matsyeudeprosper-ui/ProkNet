@@ -57,6 +57,16 @@ class P2pLabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnP2pDiag).setOnClickListener { copyDiag() }
         findViewById<Button>(R.id.btnP2pUse).setOnClickListener { useInternet() }
         findViewById<Button>(R.id.btnP2pNetTest).setOnClickListener { netTest() }
+        // v0.9.23: the controlled experiment. Who owns the Wi-Fi Direct group does not change who
+        // sells the Internet; it changes only which phone creates the group and which one joins it.
+        findViewById<Button>(R.id.btnP2pTopology).setOnClickListener {
+            val next = if (node.p2pTopology == net.prok.proknet.core.P2pPlan.Topology.SELLER_GROUP_OWNER)
+                net.prok.proknet.core.P2pPlan.Topology.BUYER_GROUP_OWNER
+            else net.prok.proknet.core.P2pPlan.Topology.SELLER_GROUP_OWNER
+            node.chooseP2pTopology(next)
+            toast(net.prok.proknet.core.P2pPlan.topologyText(next))
+            refresh()
+        }
         peersAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
         findViewById<ListView>(R.id.listP2pPeers).let { l ->
             l.adapter = peersAdapter
@@ -126,6 +136,9 @@ class P2pLabActivity : Activity(), ProkNetNode.Listener {
     // ---- display -------------------------------------------------------------------------------------
 
     private fun refresh() {
+        findViewById<Button>(R.id.btnP2pTopology).text =
+            if (node.p2pTopology == net.prok.proknet.core.P2pPlan.Topology.SELLER_GROUP_OWNER)
+                "TOPOLOGY: SELLER OWNS THE GROUP" else "TOPOLOGY: BUYER OWNS THE GROUP (experiment)"
         val p = node.p2p
         p2pPeers = p.peers
         peersAdapter.clear(); peersAdapter.addAll(p2pPeers.map { it.describe() })

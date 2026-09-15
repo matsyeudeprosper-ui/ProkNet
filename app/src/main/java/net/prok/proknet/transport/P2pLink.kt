@@ -128,6 +128,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         associationOwner = owner
         associationAt = System.currentTimeMillis()
         associationFailed = false
+        lastTest.association = "accepted, owner " + owner + " (" + why + ")"
         stopDiscovery("an association is in flight (" + why + ")")
         DiagLog.i(tag, "ASSOCIATION started, owner " + owner + ", clock starts NOW: " + why +
             " (up to " + (P2pAdmission.ASSOCIATION_TIMEOUT_MS / 1000) + "s, a person may have to tap Connect)")
@@ -139,6 +140,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         associationFailed = failed
         associationOwner = P2pAdmission.Owner.NOBODY
         associationAt = 0L
+        if (failed && lastTest.association.isNotEmpty()) lastTest.association = lastTest.association + " -> ended: " + why
         DiagLog.i(tag, "ASSOCIATION ended (" + why + ")")
         changed()
     }
@@ -159,8 +161,17 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     /** The address of the group owner, for a client. */
     val groupOwnerAddress: String get() = goAddress
 
-    /** This phone is the provider on this link: the ProkNet host, whichever side dialled. */
-    private val selling: Boolean get() = life.want == P2pPlan.Want.SELL
+    /**
+     * v0.9.23: this phone SELLS the Internet on this link. It is the ProkNet
+     * host whichever side dialled AND whichever side owns the Wi-Fi Direct
+     * group, which is the whole point of the reversed-topology experiment.
+     */
+    @Volatile var providesInternet: Boolean = false
+        private set
+    private val selling: Boolean get() = providesInternet
+
+    /** v0.9.23: the last attempt, kept after cleanup so the evidence survives. */
+    val lastTest = net.prok.proknet.core.P2pReport()
 
     // ---- what the lab screen reads: one source of truth ------------------------------------------
 
@@ -311,12 +322,31 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
 
     // ---- the three developer entry points ----------------------------------------------------------
 
+    /** Own the group: clean first, then create an autonomous one. The home Wi-Fi must survive it. */
+    fun startGroupOwner(providing: Boolean, topology: String = ""): String? {
+        providesInternet = providing
+        lastTest.begin(topology, providing)
+        lastTest.role = "GROUP_OWNER (creating)"
+        lastTest.homeChannel = hooks.staDescription()
+        return startSeller()
+    }
+
+    /** Join somebody else's group: clean first, then discover and wait for the admission plan. */
+    fun startGuest(providing: Boolean, topology: String = ""): String? {
+        providesInternet = providing
+        lastTest.begin(topology, providing)
+        lastTest.role = "CLIENT (looking)"
+        lastTest.homeChannel = hooks.staDescription()
+        return startBuyer()
+    }
+
     /** Seller: clean first, then become an autonomous group owner. The home Wi-Fi must survive it. */
     fun startSeller(): String? {
         if (!ensureChannel()) return lastError
         lastError = ""; linkAuthenticated = false
         staBefore = hooks.staDescription(); staAfter = staBefore
-        DiagLog.i(tag, "SELL TEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
+        if (!lastTest.ran || lastTest.role.isEmpty()) { lastTest.begin("SELLER_GROUP_OWNER", true); lastTest.role = "GROUP_OWNER (creating)"; providesInternet = true }
+        DiagLog.i(tag, "GROUP OWNER requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
         life.start(P2pPlan.Want.SELL)
         cleanup("before SELL") { createGroup() }
         return null
@@ -331,7 +361,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (!ensureChannel()) return lastError
         lastError = ""; linkAuthenticated = false
         staBefore = hooks.staDescription(); staAfter = staBefore
-        DiagLog.i(tag, "BUY TEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
+        if (!lastTest.ran || lastTest.role.isEmpty()) { lastTest.begin("SELLER_GROUP_OWNER", false); lastTest.role = "CLIENT (looking)"; providesInternet = false }
+        DiagLog.i(tag, "GUEST requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
         life.start(P2pPlan.Want.BUY)
         cleanup("before BUY") { keepDiscovering("guest waiting to be invited") }
         return null
@@ -442,7 +473,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 override fun onSuccess() {
                     lastJoin = "connect accepted for " + address + ", waiting for the group"
                     DiagLog.i(tag, lastJoin)
-                    beginAssociation(P2pAdmission.Owner.BUYER, "this phone is joining the provider group")
+                    beginAssociation(P2pAdmission.Owner.GUEST, "this phone is joining the provider group")
                     onResult?.invoke(true, "accepted")
                 }
                 override fun onFailure(reason: Int) {
@@ -519,6 +550,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (freq > 0 && freq != groupFrequency) {
             groupFrequency = freq
             DiagLog.i(tag, "GROUP CHANNEL: " + ShareCheck.describe(freq) + " | this phone's Wi-Fi: " + hooks.staDescription().ifEmpty { "none" })
+            lastTest.groupChannel = ShareCheck.describe(freq)
+            lastTest.homeChannel = hooks.staDescription()
         }
         val before = clientCount
         clientCount = g.clientList?.size ?: 0
@@ -680,7 +713,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 override fun onSuccess() {
                     lastInvite = "invitation to " + name + " accepted by Android, waiting for it to join"
                     DiagLog.i(tag, lastInvite)
-                    beginAssociation(P2pAdmission.Owner.SELLER, "this phone invited " + name)
+                    beginAssociation(P2pAdmission.Owner.OWNER, "this phone invited " + name)
                 }
                 override fun onFailure(reason: Int) {
                     lastInvite = "invitation to " + name + " REFUSED: " + reasonName(reason)
@@ -719,6 +752,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (now.hasMember) {
             stopDiscovery("somebody is on this link: the radio stays on the group channel")
             endAssociation("membership formed", failed = false)
+            if (lastTest.membership.isEmpty()) {
+                lastTest.membership = "joined at generation " + now.generationText()
+                lastTest.discoveryStopped = "immediately on membership"
+                lastTest.role = now.role.toString()
+                lastTest.localIp = now.localAddress
+            }
         }
         if (now == before) { if (netHandle == null) netHandle = h; return }
         plane = now
@@ -831,6 +870,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                     val body = String(pk.data, 0, pk.length, Charsets.US_ASCII)
                     if (body.startsWith("prok-r")) continue            // an answer, not a probe
                     probeEchoed++
+                    lastTest.udpReceived = probeEchoed
+                    lastTest.udpRepliesSent = probeEchoed * 2
                     DiagLog.i(tag, "LINK PROBE: a packet DID cross, " + body + " from " + (pk.address?.hostAddress ?: "?") + ", answering it twice")
                     // answer BOTH ways, so the other side can tell unicast from broadcast
                     val u = ("prok-r" + P2pPlan.PROBE_UNICAST + body).toByteArray(Charsets.US_ASCII)
@@ -916,6 +957,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             try { ds.close() } catch (_: Exception) {}
             val proof = P2pPlan.linkProof(sent, uni, bro, probeEchoed)
             linkProof = proof
+            lastTest.udpSent = sent
+            lastTest.udpRepliesReceived = uni + bro
+            lastTest.udpReceived = probeEchoed
+            lastTest.verdict = P2pPlan.linkProofText(proof)
             DiagLog.i(tag, "LINK PROBE verdict: " + P2pPlan.linkProofText(proof) +
                 " (sent " + sent + ", unicast replies " + uni + ", broadcast replies " + bro +
                 ", probes answered by us " + probeEchoed + (if (best >= 0) ", best " + best + " ms" else "") + ")")
@@ -952,6 +997,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 }
                 DiagLog.i(tag, "TCP accepted " + from + " on " + (s.localAddress?.hostAddress ?: "?") +
                     ", membership generation " + born.membershipGeneration)
+                lastTest.tcpAccepted = from
                 main.post {
                     if (token != acceptToken || !P2pDataPlane.acceptAllowed(born, plane)) {
                         DiagLog.w(tag, "dropping a socket from generation " + born.generationText() + ": the data plane is now " + plane.generationText())
@@ -1031,6 +1077,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (P2pPlan.anonymous(address) || address.isEmpty()) { DiagLog.w(tag, "not dialling a peer with no usable address"); return "no peer address" }
         val key = p.generationText() + "|" + address + ":" + port
         if (!dialled.add(key)) return null
+        lastTest.peerIp = address
         DiagLog.i(tag, "TRANSPORT dial to " + address + ":" + port + " for generation " + p.generationText() + " because " + why)
         probeLink(address)
         dial(address, port, p)
@@ -1076,6 +1123,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                     s.connect(InetSocketAddress(host, port), P2pPlan.DIAL_TIMEOUT_MS)
                     val info = "connected " + (s.localAddress?.hostAddress ?: "?") + " -> " + host + ":" + port +
                         " (binding " + P2pEndpoint.bindingText(b, h?.localAddress ?: "") + ", generation " + born.generationText() + ")"
+                    lastTest.tcpConnected = host + ":" + port
                     DiagLog.i(tag, "TCP " + info)
                     main.post {
                         if (seq != dialSeq) { try { s.close() } catch (_: Exception) {} }
@@ -1143,6 +1191,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("peers: ").append(if (peers.isEmpty()) "none" else peers.joinToString("; ") { it.describe() }).append("\n")
         sb.append("verdict: ").append(P2pPlan.verdictText(verdict())).append("\n")
         if (lastError.isNotEmpty()) sb.append("last error: ").append(lastError).append("\n")
+        sb.append(lastTest.describe())
         return sb.toString()
     }
 
