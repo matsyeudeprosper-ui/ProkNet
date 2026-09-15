@@ -1,121 +1,99 @@
-# CLAUDE_REPORT - ProkNet v0.9.16 "the link is one way"
+# CLAUDE_REPORT - ProkNet v0.9.17 "a purchase starts from a clean screen"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 154/154 automated tests pass, released, not yet tested on phones.
-Home Wi-Fi resale is NOT claimed. But the fault is now MEASURED, not guessed.**
+Status: **built, 155/155 automated tests pass, released. v0.9.16 has still NOT
+been exercised on the phones. Home Wi-Fi resale is NOT claimed.**
 
-## 1. The measurement
+## 1. What happened
 
-The v0.9.15 probe returned two different verdicts, one per phone, and the
-pair is the finding:
-
-```
-buyer  (client)  LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
-                 (sent 5, replies 0, probes answered by us 0)
-seller (owner)   LINK PROBE: a packet DID cross, 10 bytes from 192.168.49.124   x6
-seller (owner)   LINK PROBE verdict: packets arrive here but our answers do not get back
-                 (sent 5, replies 0, probes answered by us 3)
-```
-
-**Every packet the client sent arrived at the owner. Nothing the owner sent
-arrived at the client.** Not the UDP answers, not the owner's own probes, and
-not a TCP handshake in either dial direction. Uplink perfect, downlink dead.
-
-This closes the question the last four versions were circling. The buyer's
-SYN arrives at the owner, the owner's SYN-ACK never gets back, so the buyer
-times out and the owner's `accept()` never completes. That is exactly why
-`TCP accepted` was never printed while the listener was correct.
-
-The socket layer, the binding, the endpoint identity, the membership
-generations and the listener lifecycle are all correct, and the measurement
-proves it. The remaining fault is below them.
-
-## 2. Discovery, from the same run
-
-The v0.9.15 discovery rule worked exactly as specified:
+v0.9.16 was never tested, because the consumer screen ended every purchase
+before it began:
 
 ```
-seller 12:03:36.433  DISCOVERY off: somebody has joined: the radio must stay on the group channel
-seller 12:03:36.477  discovery stopped, the radio can stay on the group channel
-seller 12:03:36.594  not starting discovery: this link already has a peer on it
-buyer  12:03:57.909  DISCOVERY off: somebody has joined: the radio belongs to the data plane now
+13:28:44.291  UI: CONNECT pressed: prok-24e480e6 5 CFA/MB
+13:28:46.815  asking prok-24e480e6 whether its Wi-Fi Direct group is ready
+13:28:48.386  UI: Stop Internet pressed          <- the user, after "Connexion perdue"
 ```
 
-No discovery ran while the customer was in the group, and the link was still
-one way, so scanning was not the cause either. The rule stays: it is correct
-and it costs nothing. One thing it did prove is that the seller now sees the
-buyer by name and with a real address, `OnePlus Nord CE 2 Lite 5G
-1e:4f:f2:19:36:ce`, which the v0.9.11 run could not.
+Three attempts, three stops within four seconds each, and no group ever
+formed. So there is no radio lock line, no group channel line and no probe
+verdict from that run. The v0.9.16 questions are all still open.
 
-## 3. What this version does about it
+## 2. The cause, from the diagnostic
 
-A group owner has to buffer frames for a client whose radio is asleep and
-deliver them at the beacon. On a phone whose single radio is also serving a
-home Wi-Fi connection, that is a known place for downlink frames to die. The
-driver is not ours. The sleep is refusable.
+```
+wifi: DOWN / DOWN (initiator with prok-24e480e6) - could not reach the host
+      (10.168.138.1: ... EHOSTUNREACH (No route to host) ...) (retry allowed in 5s)
+```
 
-- **`transport/RadioLock.kt`**: `WIFI_MODE_FULL_HIGH_PERF` plus, on API 29+,
-  `WIFI_MODE_FULL_LOW_LATENCY`, held while a group exists on this phone, on
-  BOTH sides, released the moment it is gone. Holding a Wi-Fi lock during a
-  data transfer is what Wi-Fi Direct expects of an application anyway, and we
-  never did it. `RADIO LOCK held: ...` is printed, so a phone that refuses
-  both locks says so.
-- **The group channel is logged**: `GROUP CHANNEL: 5 GHz ch 48 (5240 MHz) |
-  this phone's Wi-Fi: 5 GHz ch 48 (5240 MHz)`. A group forced onto the home
-  Wi-Fi channel is now visible instead of assumed.
-- **The probe separates unicast from broadcast**, both directions. Each side
-  answers a probe twice, once to the sender and once to the group broadcast
-  address, and there is a fifth verdict: `only BROADCAST crosses: the two
-  phones cannot address each other directly`. A radio that drops everything
-  and two phones that cannot resolve each other need different answers, and
-  this tells them apart.
+That is the HOTSPOT transport (method A), holding a failure from an attempt
+minutes earlier, on the 10.168.138.x hotspot subnet. `ProductState.buyer`
+turns any phase beginning with `DOWN` into `LOST`, and the consumer screen
+read that transport even while the purchase was going over Wi-Fi Direct.
 
-## 4. What I did NOT do
+So the very first refresh after CONNECT said "Connexion perdue". The user did
+exactly the right thing and pressed stop.
 
-No sleeps, no forced reconnects, no blind sockets, no device conditions, and
-no change to discovery before a client joins, BLE admission, peer selection,
-group formation, the membership handshake, the binding hierarchy, crypto, the
-signed handshake, the tunnel, the VPN, the accounting, the marketplace,
-method A, or the bounded failure. The provider upstream is untouched.
+This is my bug and it is a product-level one: a failure from an old attempt
+must never end the next one.
 
-## 5. Tests (154)
+## 3. The fix
 
-The five link verdicts including the two the phones actually produced, the
-broadcast address of a group subnet, and everything from v0.9.15.
+- **`ProkNetNode.buyPhase()`** is now the single place that decides which
+  transport the screen reflects: the Wi-Fi Direct link during a Wi-Fi Direct
+  purchase, the hotspot transport otherwise.
+  **`P2pPlan.buyPhase(stage, groupFormed, planeUsable, linked)`** is the pure
+  mapping, so FINDING, JOINING, TCP and AUTH mean the same thing on both
+  paths and the French wording layer is unchanged.
+- **`buy()` clears the failure surface** before anything starts: the buyer
+  error, `TunnelClient.lastError`, and any leftover hotspot state when
+  nothing is linked.
+
+## 4. A second finding, worth recording
+
+The stale error itself is evidence. On the hotspot path the buyer had
+`10.168.138.61`, an address from the seller's own hotspot, and could not
+reach `10.168.138.1:47741`. That is the same shape as the Wi-Fi Direct
+result: the customer gets an address from the provider and then cannot get a
+connection back. I am not drawing a conclusion from one line in a diagnostic,
+but if the Wi-Fi Direct probe verdict comes back one way again, these two
+belong in the same sentence.
+
+## 5. Tests (155)
+
+The regression itself: a stale `DOWN ... could not reach the host
+(10.168.138.1)` makes the buyer LOST, and the same buyer on a Wi-Fi Direct
+purchase is FINDING, then CONNECTING as it joins, and only LOST when THIS
+attempt fails.
 
 ## 6. Build
 
-Build 29, versionName 0.9.16, 1.28 MB,
-SHA256 `775446712f18414ed520b29bbb6f91900e903557942c93125e4569e6048611d4`.
+Build 30, versionName 0.9.17, 1.29 MB,
+SHA256 `6d59476cf315989c4ec50a080329342f452499ba5423a7043727f91a9fb7cc18`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.16
-Commit `3087c2b` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.17
+Commit `2e34e76` on `main`; this report on top.
 
-## 7. If the lock does not change the downlink
+## 7. What the next run must produce
 
-Then the software levers above IP are finished, and there are two left, in
-this order:
+Install on BOTH phones, then run section 34 **without pressing STOP**: the
+attempt ends by itself after about 45 seconds. The three lines that are still
+unanswered since v0.9.16 are:
 
-1. **The association direction.** The only session that ever carried traffic,
-   v0.9.9 with 70 minutes and 34 MB, was the one where the OWNER called
-   `connect()` to invite the guest. Since v0.9.12 the client joins by itself.
-   The seller can now see the buyer by name again, so the owner invite is
-   available as a data-plane experiment, and it is the only known difference
-   between a link that carried traffic on these two phones and one that does
-   not.
-2. **The group band.** Android 10+ can ask for a group on a chosen band
-   (`setGroupOperatingBand`). The group currently follows the seller's home
-   Wi-Fi onto 5 GHz channel 48. A 2.4 GHz group would put the radio in dual
-   band concurrency instead of sharing one channel.
+```
+RADIO LOCK held: ...
+GROUP CHANNEL: ... | this phone's Wi-Fi: ...
+LINK PROBE verdict: ...        (from BOTH phones)
+```
 
-Both are one change each, and both should be tried one at a time, with the
-probe verdict as the measurement. I did not bundle them into this build
-because the Wi-Fi lock has to be ruled in or out on its own.
+If the verdict is one way again, the next levers are the ones listed in the
+v0.9.16 report: the owner invite association first, the 2.4 GHz group second,
+one at a time.
 
 ## 8. The claim rule
 
