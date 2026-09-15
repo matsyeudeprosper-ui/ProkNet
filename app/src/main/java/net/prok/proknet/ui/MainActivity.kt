@@ -145,7 +145,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     // ---- refresh (everything derives from the node through ProductState) -------------------------
 
-    private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.wifi.phase, node.wifi.linkedPeer != null && node.wifi.canReach(node.wifi.linkedPeer ?: ""),
+    private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.buyPhase(), node.wifi.linkedPeer != null && node.wifi.canReach(node.wifi.linkedPeer ?: ""),
         node.tunnel.state, ProkVpnService.running, buyError())
 
     /** Why the last attempt failed, until the user closes the card. The link layer's reason counts too. */
@@ -196,7 +196,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 money = getString(R.string.home_earned_now, ProductState.cfaShort(node.gateway.totalEarnedCentimes + Market.split(node.gateway.agreedCost(), node.feePct).sellerNet))
             }
             b.active || b == ProductState.Buyer.LOST -> {
-                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()).ifEmpty { getString(R.string.home_relay_subtitle) })
+                text(R.id.homeTitle, ProductState.buyerTitle(b)); text(R.id.homeSub, ProductState.buyerHint(b, node.buyPhase(), node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()).ifEmpty { getString(R.string.home_relay_subtitle) })
                 money = if (node.tunnel.session != null) getString(R.string.home_used_cost, ProductState.data(sessionBytes()), ProductState.cfaShort(node.tunnel.runningCost())) else ""
             }
             else -> {
@@ -231,7 +231,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }
             buyerVisible -> {
                 text(R.id.activeTitle, if (b == ProductState.Buyer.ONLINE) getString(R.string.connected) else ProductState.buyerTitle(b))
-                text(R.id.activeHint, ProductState.buyerHint(b, node.wifi.phase, node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()))
+                text(R.id.activeHint, ProductState.buyerHint(b, node.buyPhase(), node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()))
                 show(R.id.activeProgress, b.busy); show(R.id.activeStats, node.tunnel.session != null)
                 text(R.id.activeData, ProductState.data(sessionBytes())); text(R.id.activeCost, ProductState.cfaShort(node.tunnel.runningCost()))
                 val c = node.tunnel.contract; val sess = node.tunnel.session

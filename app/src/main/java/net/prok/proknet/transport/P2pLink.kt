@@ -124,6 +124,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     // ---- what the lab screen reads: one source of truth ------------------------------------------
 
     val phase: String get() = P2pPlan.stageName(life.stage)
+    val stage: P2pPlan.Stage get() = life.stage
     val role: P2pPlan.Role get() = life.role
     val groupFormed: Boolean get() = life.groupFormed
     val groupInfo: String get() = life.groupInfo

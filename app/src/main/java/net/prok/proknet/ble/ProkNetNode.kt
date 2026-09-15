@@ -676,7 +676,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         buyPrice = offer.pricePerMb
         buyerWanted = peer.shortId
         buyViaRelay = offer.viaRelay
-        lastBuyError = ""
+        clearLastFailure()
         DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
         if (wifi.canReach(peer.shortId)) return if (offer.viaRelay) awaitIntroduction(peer.shortId) else tunnel.start(buyPrice)
         if (offer.p2p) return startP2pBuy(peer.shortId)    // v0.9.9: this seller is reachable through its Wi-Fi Direct group
@@ -756,6 +756,26 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Diagnostic entry point kept from v0.6: same as BUY at the peer's advertised price (0 if it advertises none). */
     fun useInternet(peer: Peer): Boolean = if (peer.offer().selling) buy(peer) else {
         if (!isRunning || gateway.providing) false else { buyPrice = 0; buyerWanted = peer.shortId; if (wifi.canReach(peer.shortId)) tunnel.start(0) else requestWifi(peer) }
+    }
+
+    /**
+     * v0.9.17: the phase of the transport THIS purchase uses.
+     *
+     * A buyer on the Wi-Fi Direct path must never be judged by the hotspot
+     * transport's leftover state. That is what made the screen say
+     * "Connexion perdue" the moment SE CONNECTER was pressed, with nothing
+     * attempted: the hotspot transport still held `DOWN ... could not reach
+     * the host (10.168.138.1)` from an earlier attempt.
+     */
+    fun buyPhase(): String =
+        if (buyViaP2p) P2pPlan.buyPhase(p2p.stage, p2p.groupFormed, p2p.plane.usable, wifi.linkedPeer != null)
+        else wifi.phase
+
+    /** A new purchase starts from a clean screen: nothing from the last attempt may show. */
+    private fun clearLastFailure() {
+        lastBuyError = ""
+        tunnel.clearError()
+        if (wifi.linkedPeer == null) wifi.disconnect("a new purchase starts from a clean screen")
     }
 
     fun stopInternet(reason: String) {

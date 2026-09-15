@@ -49,7 +49,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.13 | The transport socket belongs to an endpoint: the seller listens ON the Wi-Fi Direct address with a generation, revalidates it when a client joins, a stale accept loop can never feed a newer group, and the buyer dials with its socket bound to the P2P network | phone test: every field matched, the listener was called valid, and six dials still timed out |
 | v0.9.14 | Client membership is part of the transport: a data plane generation only becomes usable when somebody has joined, the listener is armed for THAT membership, the provider announces TRANSPORT_READY and dials the customer as well, and every socket says how it is bound | phone test: both listeners armed, both sides dialled correctly bound, and every SYN in BOTH directions timed out |
 | v0.9.15 | The radio: peer discovery stops the moment somebody joins, because scanning takes a single-radio phone off the group channel, and a UDP link probe measures whether any IP packet crosses the link at all | phone test: the probe MEASURED the fault. The link is ONE WAY, client to owner only |
-| v0.9.16 | One way link: the radio is held awake with a Wi-Fi lock while a group exists, the group channel is logged next to the home Wi-Fi channel, and the probe now separates unicast from broadcast in both directions | built, 154 JVM tests pass |
+| v0.9.16 | One way link: the radio is held awake with a Wi-Fi lock while a group exists, the group channel is logged next to the home Wi-Fi channel, and the probe now separates unicast from broadcast in both directions | phone test blocked: the screen said "Connexion perdue" instantly, so the build was never exercised |
+| v0.9.17 | A purchase is judged by the transport it actually uses, and starts from a clean screen: no failure from an earlier attempt can end the next one before it begins | built, 155 JVM tests pass |
 
 ### v0.1 - what it does
 

@@ -137,4 +137,35 @@ class ProductStateTest {
         assertEquals("\u00c0 payer", ProductState.paymentWord(Market.ST_PENDING, true)); assertEquals("\u00c0 recevoir", ProductState.paymentWord(Market.ST_PENDING, false))
         assertEquals("Pay\u00e9", ProductState.paymentWord(Market.ST_SETTLED, true)); assertEquals("Contest\u00e9", ProductState.paymentWord(Market.ST_DISPUTED, false))
     }
+
+    // ---- v0.9.17: a new purchase starts from a clean screen -----------------------------------------
+
+    @Test
+    fun a_purchase_is_judged_by_the_transport_it_actually_uses() {
+        // the phone run: the hotspot transport still held this from an attempt minutes earlier,
+        // and the screen said "Connexion perdue" the instant SE CONNECTER was pressed
+        val stale = "DOWN (initiator with prok-24e480e6) - could not reach the host (10.168.138.1)"
+        assertEquals(ProductState.Buyer.LOST,
+            ProductState.buyer(wanted = true, wifiPhase = stale, wifiUp = false, tunnel = "DISCONNECTED", vpnUp = false, lastError = ""))
+
+        // a Wi-Fi Direct purchase reads the Wi-Fi Direct link instead, and starts by searching
+        val finding = P2pPlan.buyPhase(P2pPlan.Stage.DISCOVERING, groupFormed = false, planeUsable = false, linked = false)
+        assertEquals("FINDING", finding)
+        assertEquals(ProductState.Buyer.FINDING, ProductState.buyer(true, finding, false, "DISCONNECTED", false, ""))
+
+        // joined the group, then a usable data plane: connecting, not lost
+        val joined = P2pPlan.buyPhase(P2pPlan.Stage.CLIENT, groupFormed = true, planeUsable = false, linked = false)
+        assertEquals(ProductState.Buyer.CONNECTING, ProductState.buyer(true, joined, false, "DISCONNECTED", false, ""))
+        val usable = P2pPlan.buyPhase(P2pPlan.Stage.CLIENT, groupFormed = true, planeUsable = true, linked = false)
+        assertEquals(ProductState.Buyer.CONNECTING, ProductState.buyer(true, usable, false, "DISCONNECTED", false, ""))
+
+        // a real failure of THIS attempt still says so
+        val failed = P2pPlan.buyPhase(P2pPlan.Stage.FAILED, groupFormed = false, planeUsable = false, linked = false)
+        assertEquals(ProductState.Buyer.LOST, ProductState.buyer(true, failed, false, "DISCONNECTED", false, ""))
+
+        // and the signed link is the next step, never a loss
+        val linked = P2pPlan.buyPhase(P2pPlan.Stage.CLIENT, groupFormed = true, planeUsable = true, linked = true)
+        assertEquals("AUTH", linked)
+        assertEquals(ProductState.Buyer.SECURING, ProductState.buyer(true, linked, true, "DISCONNECTED", false, ""))
+    }
 }

@@ -55,6 +55,8 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
 
     @Volatile var state = "DISCONNECTED"; private set
     @Volatile var lastError = ""; private set
+    /** v0.9.17: a new purchase starts from a clean screen, not from the last one's failure. */
+    fun clearError() { lastError = "" }
     @Volatile var providerShort: String? = null; private set
     @Volatile var session: Tunnel.Accounting? = null; private set
     @Volatile var upstreamType = Tunnel.UP_NONE; private set

@@ -1206,3 +1206,21 @@ uplink only.
 - `GROUP CHANNEL:` from the seller, and the home Wi-Fi channel beside it.
 - `LINK PROBE verdict:` from BOTH phones, both lines.
 - Whether TCP connected. Seller Wi-Fi before, during and after.
+
+## 35. v0.9.17 the screen must not end a purchase before it starts
+
+Quick check, one minute, before section 34.
+
+1. On the buyer, make an attempt fail (press SE CONNECTER with the seller not
+   sharing, and let it end).
+2. Press SE CONNECTER again on a seller that IS sharing.
+
+The card must say "Recherche d'un fournisseur..." and stay there. It must NOT
+say "Connexion perdue" in the first seconds. If it does, copy the `wifi:` line
+from the diagnostic: it means a transport that is not in use is still being
+read.
+
+Then run section 34 **without pressing STOP**. The attempt ends by itself
+after about 45 seconds with
+"Connexion locale créée, mais le fournisseur ne répond pas." if no transport
+comes up, and the log lines from section 34 are only written while it runs.

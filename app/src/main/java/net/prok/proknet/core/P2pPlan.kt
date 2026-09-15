@@ -220,6 +220,25 @@ object P2pPlan {
 
     enum class Stage { IDLE, CLEANING, DISCOVERING, CREATING_GROUP, GROUP_OWNER, CLIENT, FAILED }
 
+    /**
+     * v0.9.17: the phase word the CONSUMER screen must read during a Wi-Fi
+     * Direct purchase.
+     *
+     * The phone run showed "Connexion perdue" the instant the user pressed
+     * SE CONNECTER, before anything had been tried. The screen was reading
+     * the hotspot transport, which was still sitting in `DOWN ... could not
+     * reach the host (10.168.138.1)` from an attempt minutes earlier, and
+     * `ProductState.buyer` turns any phase starting with DOWN into LOST.
+     * A purchase must be judged by the transport it actually uses.
+     */
+    fun buyPhase(stage: Stage, groupFormed: Boolean, planeUsable: Boolean, linked: Boolean): String = when {
+        linked -> "AUTH"
+        planeUsable -> "TCP"
+        groupFormed -> "JOINING the provider group"
+        stage == Stage.FAILED -> "DOWN (the direct link failed)"
+        else -> "FINDING"
+    }
+
     fun stageName(s: Stage): String = when (s) {
         Stage.IDLE -> "IDLE"; Stage.CLEANING -> "CLEANING"; Stage.DISCOVERING -> "DISCOVERING"
         Stage.CREATING_GROUP -> "CREATING GROUP"; Stage.GROUP_OWNER -> "GROUP OWNER"; Stage.CLIENT -> "CLIENT"; Stage.FAILED -> "FAILED"

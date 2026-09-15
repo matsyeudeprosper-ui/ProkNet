@@ -746,6 +746,43 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## A purchase starts from a clean screen (v0.9.17)
+
+The v0.9.16 build was never exercised, because the screen ended every
+purchase before it began:
+
+```
+13:28:44.291  UI: CONNECT pressed: prok-24e480e6 5 CFA/MB
+13:28:46.815  asking prok-24e480e6 whether its Wi-Fi Direct group is ready
+13:28:48.386  UI: Stop Internet pressed          <- the user, after "Connexion perdue"
+```
+
+Three attempts, three stops within four seconds, and the group never formed.
+The diagnostic says why:
+
+```
+wifi: DOWN / DOWN (initiator with prok-24e480e6) - could not reach the host
+      (10.168.138.1: ... EHOSTUNREACH ...) (retry allowed in 5s)
+```
+
+That is the HOTSPOT transport, holding a failure from an attempt minutes
+earlier. `ProductState.buyer` turns any phase beginning with `DOWN` into
+`LOST`, and the consumer screen was reading that transport even when the
+purchase was going over Wi-Fi Direct. So the first refresh after CONNECT said
+"Connexion perdue", every time.
+
+Two rules now:
+
+- **A purchase is judged by the transport it uses.** `ProkNetNode.buyPhase()`
+  is the single place that decides: the Wi-Fi Direct link during a Wi-Fi
+  Direct purchase, the hotspot transport otherwise.
+  `P2pPlan.buyPhase(stage, groupFormed, planeUsable, linked)` is the pure
+  mapping, so FINDING, JOINING, TCP and AUTH mean the same thing on both
+  paths.
+- **A purchase starts from a clean screen.** `buy()` clears the buyer error,
+  the tunnel error and any leftover hotspot failure before anything starts.
+  A failure from the last attempt can never end the next one.
+
 ## The link is one way (v0.9.16)
 
 The v0.9.15 probe did its job on the first run, and the two phones returned
