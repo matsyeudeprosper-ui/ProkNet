@@ -1,96 +1,134 @@
-# CLAUDE_REPORT - ProkNet v0.9.12 "the buyer joins by itself"
+# CLAUDE_REPORT - ProkNet v0.9.13 "a socket belongs to an endpoint"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 143/143 automated tests pass, released, not yet retested on phones.
+Status: **built, 150/150 automated tests pass, released, not yet tested on phones.
 Home Wi-Fi resale is NOT claimed.**
 
-## 1. What the run showed
+## 1. What v0.9.12 proved, and what it did not
 
-Both radios healthy, the offer visible, and a real group on the seller:
-
-```
-seller: sharing by Wi-Fi Direct: GROUP OWNER clients 0
-seller Wi-Fi Direct peer list:  00:00:00:00:00:00  available
-seller BLE at the same moment:  prok-0f7d57b3  rssi -38
-```
-
-Android anonymises the buyer in the OWNER's peer list on these phones. So
-the v0.9.9 design, where the owner identifies the buyer by name and invites
-it, cannot work here, and guessing from `00:00:00:00:00:00` would be
-guessing.
-
-The buyer sees the seller correctly, with its real P2P address. That is the
-side that can act.
-
-## 2. The new choreography
+The topology works. The seller kept its home Wi-Fi AND owned the group at the
+same time, and the buyer joined it:
 
 ```
-seller creates the group; the offer claims this way in ONLY while it exists
-buyer picks the offer in the normal app
-buyer -> seller (BLE): is your group ready? (+ the buyer's own P2P name)
-seller -> buyer (BLE): GROUP_READY | REBUILDING_GROUP | NOT_AVAILABLE
-                       carrying the SELLER's own Wi-Fi Direct name
-buyer finds that name in ITS OWN peer list (real address, never anonymised)
-buyer calls connect() -> joins -> seller clients = 1
-socket, signed authentication, tunnel, VPN, accounting: unchanged
+seller  wlan0 = 192.168.1.13           still on the Freebox
+seller  p2p-wlan0-25 = 192.168.49.1    GROUP_OWNER, clients 1
+buyer   p2p0 = 192.168.49.124          CLIENT, groupOwner 192.168.49.1
 ```
 
-- `Wire.OP_P2P_STATUS` with `P2P_READY / P2P_REBUILDING / P2P_NOT_AVAILABLE`
-  and the seller's name; `P2pPlan.groupStatus(...)` decides it.
-- `P2pPlan.anonymous(address)` rejects `00:00:00:00:00:00`,
-  `02:00:00:00:00:00` and empty everywhere, including inside
-  `P2pLink.connectTo`, which refuses to dial one.
-- `P2pPlan.pickSellerPeer(peers, sellerName, groupOwners)` matches by the
-  name that came over BLE, and falls back to "the peer that owns a group"
-  when an older seller sends no name.
-- `P2pPlan.joinStep(...)` -> ASK_STATUS / WAIT_PEER / CONNECT / RETRY_BUSY /
-  WAIT_REBUILD / FAIL_NOT_AVAILABLE / GIVE_UP / DONE. BUSY is retried at 3,
-  6, 12 and 24 s, four attempts; NOT_AVAILABLE fails instantly; a minute
-  ends it with a French sentence. One BLE request per ten seconds, as in
-  v0.9.11.
-- Owner-side inviting survives only as a manual button in the Wi-Fi Direct
-  Lab. The normal path never needs it.
+Then:
 
-## 3. Diagnostics
+```
+seller 09:08:43  group owner listening on :47742
+buyer  09:10:1x  192.168.49.124 -> 192.168.49.1:47742   x6, every one timed out
+seller           TCP accepted:         never logged
+```
 
-The log now names each step: the group forming on either side with role and
-client count, "answered GROUP_READY, its Wi-Fi Direct name is ...", the
-peers this phone can really address versus how many are anonymised, "buyer
-connect() requested", accepted or refused with Android's reason and the next
-delay, the socket line, the signed handshake, the contract, VPN and
-INTERNET OK. COPY P2P DIAG carries the last join attempt and the real peer
-list.
+Discovery, BLE admission, buyer-side peer selection and group formation are
+untouched in this version, exactly as instructed. The failure was the
+listener lifecycle and only that.
 
-## 4. Tests (143, +4)
+## 2. The cause
 
-The owner's list anonymises the buyer and the buyer still finds the seller;
-the three seller answers and what the buyer does with each; BUSY retried
-with a growing bounded delay then given up; a second purchase starting from
-a clean slate; and the status message surviving the wire with the seller's
-name. Nothing anywhere may act on `00:00:00:00:00:00`.
+`listen()` was called once, when the group formed, and did three wrong things
+at once:
 
-## 5. Build
+- it returned early on `server != null`, treating a server object as proof
+  that a usable server exists,
+- it bound to `InetSocketAddress(PORT)`, i.e. `0.0.0.0`, so the listener was
+  never tied to the Wi-Fi Direct endpoint at all,
+- it was never re-checked afterwards, although the buyer joined 90 seconds
+  later, into a group lifecycle the socket did not necessarily belong to.
 
-Build 25, versionName 0.9.12, 1.25 MB,
-SHA256 `54cc42c5d61e43c4fb5c61c2f4216f10bc89965ea1fd191fabf8a74d2adeb1e4`.
+## 3. The design
+
+Two new pieces, both small and separate from the Wi-Fi Direct lifecycle:
+
+- `core/P2pEndpoint.kt`, pure: `Endpoint(generation, role, interfaceName,
+  localAddress, networkIdentity)`, `Listener(generation, interfaceName,
+  boundAddress, port, networkIdentity, accepting)`, `adopt(current,
+  observed)` (a new generation ONLY on a material change), `validate(endpoint,
+  listener)` with a named verdict, `acceptAllowed(loopGeneration, endpoint)`.
+- `transport/P2pSocketBinding.kt`, Android: resolves the live P2P
+  `Network`/interface/address through `ConnectivityManager`, falling back to
+  the interface list; binds the buyer socket with `Network.bindSocket(...)`;
+  opens the seller listener ON the P2P address.
+
+`P2pLink` keeps the Wi-Fi Direct lifecycle and now:
+
+1. reads the endpoint on every connection change and adopts it,
+2. rebuilds the listener when the generation, role, interface, local address
+   or Android network changed, and **not** when nothing changed,
+3. revalidates on `clients 0 -> 1` and replaces the listener only if the
+   check fails, with the verdict printed,
+4. runs the accept loop under a generation AND a token: a loop from an older
+   lifecycle that returns with a connection has it refused and closed,
+5. dials from the buyer with the socket bound to the P2P network, re-reading
+   the endpoint at each of the six attempts.
+
+No sleeps, no forced reconnects, no blind socket creation, no device
+condition. The one timed piece is a bounded endpoint WATCH (6 x 2 s) that
+only re-reads the OS while the group is formed and the P2P address has not
+appeared yet; it creates nothing and stops the moment the listener is valid.
+
+## 4. The seller upstream is not touched
+
+Only the local ProkNet transport socket is bound to Wi-Fi Direct.
+`P2pSocketBinding` never changes the process-wide network, and `Gateway`
+chooses the upstream exactly as before, with `p2p...` still classed as a
+LOCAL link that can never be an upstream. LOCAL LINK = Wi-Fi Direct,
+UPSTREAM = the Freebox Wi-Fi. A test asserts both halves.
+
+## 5. Diagnostics
+
+Seller: role, generation, interface, local address, network; `LISTENER
+creating` (requested) and `LISTENER actual` with `bound to the P2P
+endpoint=true/false` and `network bound=true/false`; `LISTENER accept loop
+started for generation N (token N)`; `CLIENT COUNT 0 -> 1: listener check
+says ...`. Buyer: `DIAL n/6: source -> destination | p2p interface | android
+network | socket bound to P2P network=true`. COPY P2P DIAG now carries the
+endpoint, the listener and the verdict on both phones.
+
+## 6. No infinite spinner
+
+Once the group is formed the transport has 45 s, which is longer than the six
+dial attempts. After that the purchase fails with
+"Connexion locale créée, mais le fournisseur ne répond pas.", the BUY attempt
+is torn down cleanly, and the seller keeps sharing.
+
+## 7. Tests (150, +7)
+
+Real lifecycle, not helpers: the owner forms and listens long before a client
+exists and the listener is STILL valid 90 s later when one joins; endpoint A
+is invalidated and B created, and only B accepts; an accept loop from the old
+generation is refused; the buyer socket is on P2P, the seller listener is on
+P2P, and the provider upstream stays Wi-Fi; a second session after the first
+one ends builds a new generation; and the bounded failure produces the French
+sentence.
+
+## 8. Build
+
+Build 26, versionName 0.9.13, 1.34 MB,
+SHA256 `2309a767d75956efcffcb1344cc18456c0210beab94ed6d112588ea6bd5cc10f`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.12
-Commit `896d2ad830fd3354be42617aed87de6e7f2b78b3` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.13
+Commit `171828b` on `main`; this report on top.
 
-## 6. Preserved
+## 9. Preserved
 
-v0.9.10 BLE healing, the authenticated socket, the tunnel, the VPN, the
-accounting, the marketplace, the normal screens, and method A for
-mobile-data sellers: all untouched.
+BLE discovery and control, the seller GROUP_READY answer, buyer-side P2P peer
+selection, buyer `connect()`, group formation, crypto, the signed handshake,
+the tunnel, the VPN, the accounting, the marketplace, the BLE healing and
+method A: all untouched.
 
-## 7. The claim rule
+## 10. The claim rule
 
-`docs/TESTING.md` section 30 sets the exact condition, and I will not call
-home Wi-Fi resale solved before it passes: seller mobile data OFF and on the
-Freebox throughout, buyer mobile data OFF and not on the Freebox, the buyer
-reaching INTERNET OK and Chrome loading pages.
+Unchanged, `docs/TESTING.md` section 30, and I am not calling this solved:
+seller mobile data OFF and on the Freebox throughout, buyer mobile data OFF
+and not on the Freebox, TCP accepted, signed authentication, contract,
+tunnel, VPN, INTERNET OK, Chrome loading pages. Section 31 lists the new log
+lines to read while running it.
