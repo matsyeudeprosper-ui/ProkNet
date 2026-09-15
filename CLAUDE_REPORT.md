@@ -93,7 +93,7 @@ SHA256 `d142a5eb15e215edf4a80b20ff8e48e6bc111ca8ec87d6b9154aab863f1e3ffc`.
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.10
-Commit `CODE_COMMIT` on `main`; this report on top.
+Commit `440a791d3da25c978a221533e3562f14d7e0fa48` on `main`; this report on top.
 
 ## 8. Retest
 
