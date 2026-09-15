@@ -208,9 +208,27 @@ object P2pPlan {
 
     fun joinRole(iOwnAGroup: Boolean): Join = if (iOwnAGroup) Join.OWNER_INVITES else Join.GUEST_WAITS
 
+    /**
+     * v0.9.11: what a seller does with an admission request. It must never advertise the Wi-Fi
+     * Direct way in without a group, and when one is asked for anyway the honest answers are
+     * "rebuild it" (we do sell this way) or "no" (we do not).
+     */
+    enum class Admission { INVITE, REBUILD_GROUP, REFUSE }
+
+    fun admission(sharingByP2p: Boolean, groupFormed: Boolean, isOwner: Boolean): Admission = when {
+        groupFormed && isOwner -> Admission.INVITE
+        sharingByP2p -> Admission.REBUILD_GROUP
+        else -> Admission.REFUSE
+    }
+
+    /** The advert may only claim this way in while the group really exists. */
+    fun advertiseP2p(sharingByP2p: Boolean, groupFormed: Boolean): Boolean = sharingByP2p && groupFormed
+
     /** The guest never waits in silence: it asks again, then tries itself, then gives up with a reason. */
     enum class GuestStep { WAIT, ASK_AGAIN, TRY_MYSELF, GIVE_UP, PAUSED, UNREACHABLE }
 
+    /** v0.9.11: one request per ladder step. The phone test logged six in twenty seconds. */
+    const val ASK_EVERY_MS = 10_000L
     const val INVITE_ASK_AGAIN_MS = 12_000L
     const val INVITE_TRY_SELF_MS = 24_000L
     const val INVITE_GIVE_UP_MS = 45_000L

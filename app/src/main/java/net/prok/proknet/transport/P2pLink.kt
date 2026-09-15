@@ -54,6 +54,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private val tag = "P2P"
+    private val CREATE_ATTEMPTS = 3
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
     private val life = P2pPlan.Life()
@@ -247,14 +248,24 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         }
     }
 
-    private fun createGroup() {
+    /**
+     * v0.9.11: the framework answers BUSY right after a cleanup often enough that one attempt is not
+     * a design. A seller whose group never came up advertised the Wi-Fi Direct way in and refused
+     * every buyer, which is exactly what the phone test showed.
+     */
+    private fun createGroup(attempt: Int = 1) {
         val m = manager; val c = channel
         if (m == null || c == null) { fail("no p2p channel"); return }
-        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group")
+        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group (attempt " + attempt + "/" + CREATE_ATTEMPTS + ")")
         try {
             m.createGroup(c, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { DiagLog.i(tag, "createGroup accepted, waiting for the group to form"); refreshAll() }
-                override fun onFailure(reason: Int) { fail("createGroup failed: " + reasonName(reason)) }
+                override fun onFailure(reason: Int) {
+                    if (attempt < CREATE_ATTEMPTS) {
+                        DiagLog.w(tag, "createGroup refused (" + reasonName(reason) + "), retrying in 3s")
+                        main.postDelayed({ if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }, 3_000)
+                    } else fail("createGroup failed after " + attempt + " attempts: " + reasonName(reason))
+                }
             })
         } catch (e: SecurityException) { fail("permission: " + e.message) }
     }

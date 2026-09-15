@@ -300,4 +300,40 @@ class P2pPlanTest {
         assertTrue(Wire.cancelReasonText(Wire.CANCEL_P2P).contains("Wi-Fi Direct group"))
         assertTrue(ProductState.lostHint(Wire.cancelReasonText(Wire.CANCEL_P2P)).isNotEmpty())
     }
+
+    // ---- v0.9.11: the refusal loop the phone test caught -------------------------------------------
+
+    @Test
+    fun a_seller_never_advertises_a_way_in_it_cannot_honour() {
+        // the phone test: the seller advertised the Wi-Fi Direct way in while its group had not come
+        // up, so every buyer started a doomed admission and was refused six times in twenty seconds
+        assertFalse(P2pPlan.advertiseP2p(sharingByP2p = true, groupFormed = false))
+        assertTrue(P2pPlan.advertiseP2p(sharingByP2p = true, groupFormed = true))
+        assertFalse(P2pPlan.advertiseP2p(sharingByP2p = false, groupFormed = true))
+    }
+
+    @Test
+    fun an_admission_request_is_answered_honestly() {
+        // group up and we own it: invite, which is the v0.9.9 fix
+        assertEquals(P2pPlan.Admission.INVITE, P2pPlan.admission(sharingByP2p = true, groupFormed = true, isOwner = true))
+        // we sell this way but the group is gone: rebuild it instead of refusing a real customer
+        assertEquals(P2pPlan.Admission.REBUILD_GROUP, P2pPlan.admission(true, groupFormed = false, isOwner = false))
+        // the group exists but we are only a guest in it: still rebuild our own
+        assertEquals(P2pPlan.Admission.REBUILD_GROUP, P2pPlan.admission(true, groupFormed = true, isOwner = false))
+        // we do not sell this way at all: a clear no, once
+        assertEquals(P2pPlan.Admission.REFUSE, P2pPlan.admission(false, groupFormed = false, isOwner = false))
+        assertEquals(P2pPlan.Admission.REFUSE, P2pPlan.admission(false, groupFormed = true, isOwner = false))
+    }
+
+    @Test
+    fun the_buyer_asks_at_most_once_per_ladder_step() {
+        // the log showed one request every 4 s because the tick, not the ladder, drove the asking
+        assertTrue(P2pPlan.ASK_EVERY_MS >= 10_000L)
+        assertTrue(P2pPlan.ASK_EVERY_MS <= P2pPlan.INVITE_ASK_AGAIN_MS)
+        // and a refusal from the provider must be a real, readable reason on the buyer's screen
+        val refusal = Wire.cancelReasonText(Wire.CANCEL_P2P) + " [the provider is not sharing by Wi-Fi Direct]"
+        val hint = ProductState.lostHint(refusal)
+        assertTrue(hint, hint.isNotEmpty())
+        assertFalse(hint, hint.contains("Rapprochez"))
+    }
 }

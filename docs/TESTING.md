@@ -914,3 +914,29 @@ happened.
 - The recovery lines from the log, if any.
 - Did sharing stay on, and did the offer come back without touching it?
 - Any sign of a restart loop while idle.
+
+## 29. v0.9.11 no more silent refusals
+
+Both phones on 0.9.11. Same setup as section 27.
+
+1. SELLER on the Freebox, mobile data OFF: PARTAGER INTERNET.
+   Watch the log: the offer must only claim the direct way in once the log
+   says the group is formed. If createGroup is refused, it must retry
+   ("createGroup refused (BUSY), retrying in 3s").
+2. BUYER: OBTENIR INTERNET, pick the offer, SE CONNECTER.
+   Expected: ONE invitation request per ten seconds, not one per four
+   seconds.
+3. If the seller cannot admit the buyer, the buyer must STOP within a
+   couple of seconds and show a real sentence, never return to the offer
+   list in silence.
+4. If the seller's group had died, the log on the seller must say
+   "rebuilding it" and the next buyer request must succeed.
+5. Then the full flow of section 27: Connecte, Chrome loads, seller shows
+   the customer.
+
+### Checklist for the v0.9.11 report
+
+- Did the buyer stop on the first refusal, with which sentence?
+- How many invitation requests per minute in the log?
+- Did the seller rebuild its group when asked?
+- Did the normal flow finally connect?

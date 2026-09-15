@@ -746,6 +746,42 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The refusal has to be heard (v0.9.11)
+
+The next run had a perfectly healthy radio (`adv on since 608s`, 1587 scan
+results, no GATT timeouts, no recoveries) and still failed. The log shows
+the shape exactly: every four seconds the buyer asked to be invited, the
+request was DELIVERED, **the seller answered with a 50 byte control message**,
+and the buyer did nothing with it, six times, until the 45 s ladder gave up
+and the screen fell back to the offer list with no explanation.
+
+Three faults, all of them ours:
+
+1. **The answer was thrown away.** A WIFI_CANCEL is handed to the hotspot
+   transport, whose state machine is idle on the Wi-Fi Direct path, so it
+   dropped it in silence. The node now routes a cancel to the Wi-Fi Direct
+   buyer when that is what is waiting, and the attempt ends at once with the
+   provider's own words.
+2. **The seller advertised a way in it did not have.** `p2pFallbackActive`
+   was set as soon as sharing started, before the group existed, so buyers
+   were invited to a door that was not there.
+   `P2pPlan.advertiseP2p(sharing, groupFormed)` now gates the advert on the
+   group really being formed, and the advert is refreshed whenever the group
+   appears or disappears. `createGroup` also retries three times, because
+   the framework answers BUSY right after a cleanup.
+3. **A seller asked for something it advertised now rebuilds it.**
+   `P2pPlan.admission(sharingByP2p, groupFormed, isOwner)` -> INVITE,
+   REBUILD_GROUP or REFUSE. Only a phone that is not sharing that way says
+   no; a phone whose group died recreates it and the buyer's next ladder
+   step succeeds.
+
+Two smaller things from the same log: the buyer asked once per 4 s tick
+instead of once per ladder step (now one request per 10 s), and
+`stopInternet()` cleared `lastBuyError`, so every failure message was wiped
+before the screen could show it. That is why it "searched forever then went
+back to the offer page". Failures now go through one `failBuy(logReason,
+userError)` that stops first and keeps the reason.
+
 ## Self-healing BLE (v0.9.10)
 
 A 70 minute Internet session over Wi-Fi Direct ended with "connection

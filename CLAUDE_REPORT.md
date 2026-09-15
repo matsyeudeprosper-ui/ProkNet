@@ -1,111 +1,88 @@
-# CLAUDE_REPORT - ProkNet v0.9.10 "self-healing BLE"
+# CLAUDE_REPORT - ProkNet v0.9.11 "the refusal has to be heard"
 
 Date: 2026-09-14
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 136/136 automated tests pass, released, not yet retested on phones**
+Status: **built, 139/139 automated tests pass, released, not yet retested on phones**
 
-## 1. The good news first, and it is preserved
+## 1. What the diagnostic showed
 
-The v0.9.9 run did what the whole Wi-Fi Direct experiment was for: a buyer
-as CLIENT, a P2P socket 192.168.49.x -> 192.168.49.1:47742, the signed
-ProkNet authentication, a contract agreed, the seller upstream on Wi-Fi, VPN
-UP, INTERNET OK, traffic and checkpoints, for about 4185 s (70 minutes),
-4.2 MB up and 30.4 MB down. **Nothing in that path was changed.**
+The radio was fine this time: `ble health: healthy`, advertising up for
+608 s, 1587 scan results, last one 0 s ago, no GATT timeouts, no
+recoveries. The seller was visible with its offer the whole time. So
+v0.9.10 did its job and is not the problem.
 
-## 2. What broke after it
-
-The session closed with "connection closed: end of stream". With both
-phones side by side, ProkNet then showed 0 personnes, no offer, the known
-seller expired after 25 s, control messages all said "no transport", two
-GATT reconnects timed out after 20 s each, and the diagnostic still claimed
-`server ready, adv on, scan on`. Restarting the service did nothing because
-the node considered itself already running.
-
-So the reported state was not the real state.
-
-## 3. Real health, measured from the callbacks
-
-`BleScanner` and `BleAdvertiser` now record what actually happened: when
-advertising was confirmed and its last failure; whether the scan was
-accepted, its last failure, how many results have ever arrived and when the
-last one did. `BleTransport` adds consecutive GATT timeouts and the last
-success, plus how many recoveries have run and why.
-
-`core/BleHealth` (pure) turns that into a verdict: HEALTHY, NOT_RUNNING,
-BLUETOOTH_OFF, BUSY, COOLING_DOWN, ADVERTISING_STALE, SCAN_STALE,
-BOTH_STALE, GATT_WEDGED, and an action of NONE or RECOVER.
-
-Two things stop the cure from being worse than the disease:
-- silence is only a fault when company is expected (`expectPeers`: buying,
-  selling, or a phone seen within 15 minutes), so a phone alone in a field
-  is never restarted;
-- a live link or a group being formed is always BUSY: hands off.
-
-## 4. The recovery itself
-
-`BleTransport.recoverRadio(why)` stops and recreates ONLY the scanner and
-the advertiser, re-applying the advertised flags and price so a seller's
-offer goes straight back on the air. The GATT server is restarted only when
-it is itself not ready. The node, the identity, the queue and any live link
-are untouched. The log reads:
+The failure is in the log, repeated six times in twenty seconds:
 
 ```
-BLE health check: scan stale (no scan result for 41s, gatt timeouts 2, peers expected true)
-BLE radio recovery started: scan stale
-scan stopped / advertising stopped
-advertising restarted: true (flags 65, price 5)
-scan restarted: true
-BLE recovery complete (#1)
+05:15:26 asking prok-24e480e6 to invite "OnePlus Nord CE 2 Lite 5G"
+05:15:28 frame 1/1 -> DELIVERED (RECEIPT accepted)
+05:15:29 CONTROL from prok-24e480e6 over ble (50 bytes, signature verified)
+05:15:30 asking the provider again
 ```
 
-The watchdog runs every 10 s inside the foreground service. After a Wi-Fi
-or Wi-Fi Direct teardown it also runs 3 s later, and the stale window drops
-from 40 s to 15 s because the stack is the prime suspect then. Each
-recovery starts a cooldown: one minute, then double, capped at five.
+The seller answered **every single request**, and the buyer did nothing
+with the answer, until the 45 s ladder gave up and the screen fell back to
+the offer list with nothing shown.
 
-## 5. No more hammering a dead transport
+## 2. Three faults, all ours
 
-`P2pPlan.guestTick(controlAvailable, reachableMs, unreachableMs, ...)`
-returns PAUSED when the provider is not reachable over BLE, so the buyer
-stops sending invitation requests into nothing. The 45 s admission timeout
-only counts time when the control path was really available; 90 s out of
-range becomes its own failure, "the provider is no longer in range". The
-consumer screen just keeps saying "Recherche d un fournisseur...".
+**a. The answer was dropped.** A WIFI_CANCEL goes to the hotspot transport,
+whose state machine is idle on this path, so it was discarded in silence.
+The node now routes a cancel to the Wi-Fi Direct buyer when that is what is
+waiting; the attempt ends immediately with the provider's own words.
 
-## 6. Tests (136, +8)
+**b. The seller advertised a door it did not have.** `p2pFallbackActive`
+was set the moment sharing started, before the group existed, so the advert
+claimed the direct way in while the group was still coming up (or had
+failed). The 50 byte answer is exactly "the provider has no Wi-Fi Direct
+group right now". Now `P2pPlan.advertiseP2p(sharing, groupFormed)` gates
+the advert on a real group, the advert is refreshed whenever the group
+appears or disappears, and `createGroup` retries three times because the
+framework answers BUSY right after a cleanup (the buyer's own cleanup in
+this very log shows two BUSY answers).
 
-`BleHealthTest` (7): a working radio is left alone; a phone alone in a field
-is never restarted; a fresh start is given time to settle; the
-session-ended case recovers at 15 s while an ordinary quiet phone waits
-40 s; an expired peer still counts as expected company; two GATT timeouts
-with results still flowing is NOT wedged; advertising that never confirmed
-is a fault on its own; a live link is never interrupted; and the backoff
-grows and caps. `P2pPlanTest` (+1): the ladder pauses out of range, the
-admission clock only runs when reachable, and 90 s away is its own failure.
+**c. A seller asked for what it advertised now rebuilds it.**
+`P2pPlan.admission(sharingByP2p, groupFormed, isOwner)` -> INVITE,
+REBUILD_GROUP, REFUSE. Only a phone that is not sharing that way refuses; a
+phone whose group died recreates it and the buyer's next ladder step
+succeeds.
 
-## 7. Build
+## 3. Two smaller ones from the same log
 
-Build 23, versionName 0.9.10, 1.25 MB,
-SHA256 `d142a5eb15e215edf4a80b20ff8e48e6bc111ca8ec87d6b9154aab863f1e3ffc`.
+- The buyer asked once per 4 s tick instead of once per ladder step. Now
+  one request per 10 s (`P2pPlan.ASK_EVERY_MS`).
+- `stopInternet()` clears `lastBuyError`, and every failure path set the
+  message BEFORE calling it, so the reason was wiped every time. That is
+  precisely "searches forever then goes back to the offer page". All
+  failures now go through one `failBuy(logReason, userError)` that stops
+  first and keeps the reason, so the card shows a real sentence.
+
+## 4. Tests (139, +3)
+
+`P2pPlanTest`: a seller never advertises the direct way in without a live
+group; an admission request is answered honestly in all five combinations;
+and the ask interval is at least ten seconds while a refusal produces a
+readable French sentence that does not tell the user to walk.
+
+## 5. Build
+
+Build 24, versionName 0.9.11, 1.25 MB,
+SHA256 `1bb936eff4f440459d12f735e267ac33a73148441321a19ccb4475e9fb14b3cc`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.10
-Commit `440a791d3da25c978a221533e3562f14d7e0fa48` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.11
+Commit `CODE_COMMIT` on `main`; this report on top.
 
-## 8. Retest
+## 6. Preserved
 
-`docs/TESTING.md` section 28: run a real session, end it, then put the
-phones side by side and touch nothing for two minutes. They must find each
-other again by themselves, with sharing still on and the offer back,
-followed by a second purchase from the normal screens. Section 27 remains
-the Wi-Fi Direct verdict.
+The v0.9.9 Internet path, the v0.9.10 BLE healing, method A, the tunnel,
+the VPN and the marketplace are untouched.
 
-## 9. VPS
+## 7. Retest
 
-The build guard tripped again at 0.57 GB. I cleared the Windows Update
-download cache, which Mike approved at the start of the project: 5 GB
-recovered, 6.08 GB free now. The 14.2 GB pagefile is still the underlying
-cause and capping it needs an RDP session.
+`docs/TESTING.md` section 29 first (one request per ten seconds, a refusal
+that stops the attempt with a sentence, a group that rebuilds itself), then
+section 27 for the flow that decides home Wi-Fi resale.
