@@ -65,6 +65,25 @@ object Wire {
      */
     const val OP_P2P_TRANSPORT = 7
 
+    /**
+     * v0.9.20: the symmetric admission exchange.
+     *
+     * `OP_P2P_VISIBILITY` is the customer telling the provider whether it can
+     * address it in its OWN Wi-Fi Direct peer list, with its own P2P name so
+     * the provider can look for exactly that phone. `OP_P2P_JOIN_PLAN` is the
+     * provider's decision, which both sides then obey.
+     */
+    const val OP_P2P_VISIBILITY = 8
+    const val OP_P2P_JOIN_PLAN = 9
+    const val JOIN_PLAN_BUYER_CONNECT = 1
+    const val JOIN_PLAN_SELLER_INVITE = 2
+    const val JOIN_PLAN_WAIT = 3
+
+    fun joinPlanName(code: Int) = when (code) {
+        JOIN_PLAN_BUYER_CONNECT -> "BUYER_CONNECT"; JOIN_PLAN_SELLER_INVITE -> "SELLER_INVITE"
+        JOIN_PLAN_WAIT -> "WAIT"; else -> "plan " + code
+    }
+
     fun p2pStatusName(code: Int) = when (code) {
         P2P_READY -> "GROUP_READY"; P2P_REBUILDING -> "REBUILDING_GROUP"; P2P_NOT_AVAILABLE -> "NOT_AVAILABLE"; else -> "status " + code
     }
@@ -112,6 +131,10 @@ object Wire {
          * cause (which Android error the hotspot returned) without anybody opening the other phone.
          */
         class WifiCancel(val reason: Int = CANCEL_GENERIC, val detail: String = "") : Control()
+        /** v0.9.20: buyer -> seller, whether it can address the provider, and its own P2P name. */
+        class P2pVisibility(val canSee: Boolean, val deviceName: String) : Control()
+        /** v0.9.20: seller -> buyer, the admission plan both sides obey. */
+        class P2pJoinPlan(val plan: Int) : Control()
         /** v0.9.14: buyer -> seller, the buyer's own P2P address and the port it listens on. */
         class P2pMember(val address: String, val port: Int) : Control()
         /**
@@ -141,6 +164,16 @@ object Wire {
         val n = deviceName.take(64).toByteArray(Charsets.UTF_8)
         return ByteBuffer.allocate(1 + n.size).put(OP_P2P_REQUEST.toByte()).put(n).array()
     }
+
+    /** v0.9.20: "I can / cannot address you, and my own Wi-Fi Direct name is this". */
+    fun p2pVisibility(canSee: Boolean, deviceName: String): ByteArray {
+        val n = deviceName.take(64).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(2 + n.size).put(OP_P2P_VISIBILITY.toByte()).put((if (canSee) 1 else 0).toByte()).put(n).array()
+    }
+
+    /** v0.9.20: "this is the plan: BUYER_CONNECT, SELLER_INVITE or WAIT". */
+    fun p2pJoinPlan(plan: Int): ByteArray =
+        ByteBuffer.allocate(2).put(OP_P2P_JOIN_PLAN.toByte()).put(plan.toByte()).array()
 
     /** v0.9.14: "I am in your group at [address], listening on [port]". */
     fun p2pMember(address: String, port: Int): ByteArray {
@@ -186,6 +219,11 @@ object Wire {
                     val code = if (b.remaining() >= 1) b.get().toInt() and 0xFF else P2P_NOT_AVAILABLE
                     Control.P2pStatus(code, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
                 }
+                OP_P2P_VISIBILITY -> {
+                    val see = if (b.remaining() >= 1) b.get().toInt() != 0 else false
+                    Control.P2pVisibility(see, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "")
+                }
+                OP_P2P_JOIN_PLAN -> Control.P2pJoinPlan(if (b.remaining() >= 1) b.get().toInt() and 0xFF else JOIN_PLAN_WAIT)
                 OP_P2P_MEMBER -> {
                     val n = b.get().toInt() and 0xFF
                     val a = String(ByteArray(n).also { b.get(it) }, Charsets.UTF_8)

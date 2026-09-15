@@ -746,6 +746,62 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Admission is symmetric (v0.9.20)
+
+Two real runs, two opposite failures:
+
+```
+CASE A (v0.9.11)  the buyer saw the seller; the OWNER's peer list showed the
+                  buyer as 00:00:00:00:00:00 and could not identify it
+CASE B (v0.9.19)  the seller saw "OnePlus Nord CE 2 Lite 5G" at
+                  1e:4f:f2:19:36:ce, status available;
+                  the buyer saw 0 peers, 0 real addresses, 0 join attempts
+```
+
+Every design so far has assumed one particular side can address the other.
+Android does not guarantee that in either direction, so admission has to stop
+assuming and start asking.
+
+### The exchange
+
+BLE already carries identity and intent. It now carries visibility too:
+
+```
+buyer  -> seller   P2P_VISIBILITY   canSee=false, my name is "OnePlus Nord CE 2 Lite 5G"
+seller decides     it looks for exactly that name in its OWN peer list
+seller -> buyer    P2P_JOIN_PLAN    SELLER_INVITE
+seller             invites that exact peer
+```
+
+The decision is one pure function of two facts:
+
+```
+buyer sees seller                 -> BUYER_CONNECT   (preferred: it has formed groups)
+buyer blind, seller sees buyer    -> SELLER_INVITE
+neither sees the other            -> WAIT, both keep looking, bounded
+```
+
+It is taken on the provider, which is the only phone that holds both facts,
+and both sides then obey the same plan. The seller's `invite()` machinery,
+which has existed since v0.9.9 as a manual lab button, is now a real
+coordinated admission path.
+
+### Two rules that keep it safe
+
+- **Never guess.** A phone "sees" the other only when a peer's NAME matches
+  the identity exchanged over BLE and its address is real. No group owner
+  fallback, no anonymous address, no lone available peer. `P2pAdmission.look`
+  is the only way either side answers the question.
+- **One attempt owns admission.** Once a side is told to act, the plan is
+  held for `ATTEMPT_OWN_MS` (20 s), so a customer that suddenly sees the
+  provider cannot start connecting while an invitation is in flight, and an
+  invitation cannot be sent while a join is pending. An accepted association
+  also stops discovery on the initiating side, and discovery returns by
+  itself whenever an attempt did not produce a group.
+
+The bounded end is unchanged, with a truer sentence: a purchase where neither
+phone could ever address the other now fails saying exactly that.
+
 ## The radio lock is ruled out, and the band is the last lever (v0.9.19)
 
 The v0.9.18 run finally produced the measurement with everything else in

@@ -404,7 +404,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             manager?.connect(channel, cfg, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     lastJoin = "connect accepted for " + address + ", waiting for the group"
-                    DiagLog.i(tag, lastJoin); changed(); onResult?.invoke(true, "accepted")
+                    DiagLog.i(tag, lastJoin)
+                    // v0.9.20: an association is in flight on THIS phone; scanning now only gets in its way
+                    stopDiscovery("this phone is joining a group")
+                    changed(); onResult?.invoke(true, "accepted")
                 }
                 override fun onFailure(reason: Int) {
                     lastJoin = "connect refused for " + address + ": " + reasonName(reason)
@@ -597,6 +600,14 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private fun stopDiscovering() { discovering = false }
 
     /**
+     * v0.9.20: admission is symmetric, so discovery has to come back on its
+     * own whenever an attempt did not produce a group. It is idempotent: it
+     * does nothing while discovery is already running, and refuses while this
+     * link has a peer on it.
+     */
+    fun resumeDiscovery(why: String) { keepDiscovering(why) }
+
+    /**
      * v0.9.9, the fix the phone run pointed at: the phone that OWNS the group
      * invites the guest. A phone that already owns a group cannot join
      * another one, which is why the buyer's own connect() was accepted and
@@ -616,7 +627,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         changed()
         return try {
             m.connect(c, cfg, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { lastInvite = "invitation to " + name + " accepted by Android, waiting for it to join"; DiagLog.i(tag, lastInvite); changed() }
+                override fun onSuccess() {
+                    lastInvite = "invitation to " + name + " accepted by Android, waiting for it to join"
+                    DiagLog.i(tag, lastInvite)
+                    stopDiscovery("this phone is inviting a guest")
+                    changed()
+                }
                 override fun onFailure(reason: Int) { lastInvite = "invitation to " + name + " REFUSED: " + reasonName(reason); DiagLog.e(tag, lastInvite); changed() }
             })
             null

@@ -62,7 +62,9 @@ class WireTest {
         assertEquals("", (Wire.parseControl(Wire.wifiCancel(Wire.CANCEL_BUSY)) as Wire.Control.WifiCancel).detail)
         assertTrue(Wire.cancelReasonText(Wire.CANCEL_BUSY).contains("already serving"))
         assertTrue(Wire.cancelReasonText(Wire.CANCEL_NO_HOTSPOT).contains("hotspot"))
-        assertNull(Wire.parseControl(null)); assertNull(Wire.parseControl(ByteArray(0))); assertNull(Wire.parseControl(byteArrayOf(9)))
+        assertNull(Wire.parseControl(null)); assertNull(Wire.parseControl(ByteArray(0))); assertNull(Wire.parseControl(byteArrayOf(99)))
+        // v0.9.20: op 9 is the admission plan now, and a plan with no body reads as WAIT
+        assertEquals(Wire.JOIN_PLAN_WAIT, (Wire.parseControl(byteArrayOf(Wire.OP_P2P_JOIN_PLAN.toByte())) as Wire.Control.P2pJoinPlan).plan)
         assertNull(Wire.parseControl(Wire.wifiOffer("xy", "", 1, listOf("1.2.3.4")).copyOfRange(0, 3)))
         val rnd = java.util.Random(5)
         repeat(300) { Wire.parseControl(ByteArray(rnd.nextInt(80)).also { rnd.nextBytes(it) }) }

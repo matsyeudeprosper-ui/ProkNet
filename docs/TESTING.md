@@ -1295,3 +1295,60 @@ is still the result of the run.
 - `GROUP CHANNEL:` from the seller. Same band as the home Wi-Fi or not?
 - `LINK PROBE verdict:` from both phones.
 - Whether the seller kept the Freebox throughout.
+
+## 38. v0.9.20 symmetric admission
+
+Setup is section 30. This section is about the four lines that decide WHICH
+phone acts.
+
+**On the buyer, after the provider answers GROUP_READY:**
+
+```
+telling the provider what this phone can see: I cannot address the other phone
+(2 addressable: DIRECT-FB-HP DeskJet 2700 series; Hisense VIDAA TV)
+JOIN PLAN = SELLER_INVITE: only the provider can address the customer, so the provider invites
+waiting for the provider to invite this phone
+```
+
+or, in the other case:
+
+```
+telling the provider what this phone can see: I can address "C1 Pro" at 72:cb:dd:b9:a1:da
+JOIN PLAN = BUYER_CONNECT: the customer can address the provider, so the customer joins
+joining the provider group: attempt 1/4 to "C1 Pro" (72:cb:dd:b9:a1:da)
+```
+
+**On the seller, at the same moment:**
+
+```
+admission: the customer "OnePlus Nord CE 2 Lite 5G" cannot address me, and I can address
+"OnePlus Nord CE 2 Lite 5G" at 1e:4f:f2:19:36:ce -> SELLER_INVITE
+JOIN PLAN = SELLER_INVITE: only the provider can address the customer, so the provider invites
+INVITING the customer into my group: "OnePlus Nord CE 2 Lite 5G" (1e:4f:f2:19:36:ce)
+```
+
+**Both phones must print the SAME plan.** If they disagree, copy both lines:
+that is the bug.
+
+**Nothing may be dialled or invited that is not the other phone.** A printer
+or a television in the addressable list is normal and must simply be ignored.
+
+**Only one side acts.** A `connect accepted` on the buyer and an
+`invitation ... accepted` on the seller in the same attempt is the ownership
+rule failing.
+
+Then the run continues into section 37 and section 34:
+
+```
+CLIENT COUNT 0 -> 1
+GROUP CHANNEL: ... | this phone's Wi-Fi: ...
+LINK PROBE verdict: ...     (from BOTH phones)
+```
+
+### Checklist for the v0.9.20 report
+
+- The JOIN PLAN line from BOTH phones, and whether they match.
+- Which side acted, and whether the group formed.
+- If it formed: `GROUP CHANNEL` and the probe verdict from both phones.
+- If it did not: the visibility lines from both phones, so we can see who
+  could address whom.

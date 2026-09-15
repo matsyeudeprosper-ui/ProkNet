@@ -34,6 +34,7 @@ import net.prok.proknet.transport.Transport
 import net.prok.proknet.transport.TransportListener
 import net.prok.proknet.transport.P2pLink
 import net.prok.proknet.transport.WifiTransport
+import net.prok.proknet.core.P2pAdmission
 import net.prok.proknet.core.P2pPlan
 
 /**
@@ -281,6 +282,68 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile private var p2pPausedLogged = false
     @Volatile private var p2pLastAskAt = 0L
 
+    // ---- v0.9.20: symmetric admission ----------------------------------------------------------------
+    /** Buyer side: the plan the provider decided, and when we last said what we can see. */
+    @Volatile private var p2pJoinPlan: P2pAdmission.Plan? = null
+    @Volatile private var p2pVisibilityAt = 0L
+    /** Seller side: the customer's own P2P name, the plan in force, and when it was taken. */
+    @Volatile private var p2pBuyerName = ""
+    @Volatile private var p2pPlanChosen: P2pAdmission.Plan? = null
+    @Volatile private var p2pPlanOwner = P2pAdmission.Owner.NOBODY
+    @Volatile private var p2pPlanAt = 0L
+    @Volatile private var p2pInvitedAt = 0L
+
+    /**
+     * Seller: the customer says what it can see. Together with what THIS
+     * phone can see, that is the whole admission decision.
+     */
+    private fun onP2pVisibility(peerShort: String, c: Wire.Control.P2pVisibility) {
+        if (!gateway.providing) { DiagLog.w(tag, "prok-" + peerShort + " reported its visibility but this phone is not sharing"); return }
+        if (c.deviceName.isNotBlank()) p2pBuyerName = c.deviceName
+        val mine = P2pAdmission.look(p2p.realPeers(), p2pBuyerName)
+        val now = System.currentTimeMillis()
+        val since = if (p2pPlanAt == 0L) Long.MAX_VALUE else now - p2pPlanAt
+        val fresh = P2pAdmission.plan(c.canSee, mine.canSee)
+        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, false, p2p.groupFormed, fresh)
+        if (plan != p2pPlanChosen) {
+            p2pPlanChosen = plan
+            p2pPlanOwner = P2pAdmission.owner(plan)
+            p2pPlanAt = now
+            DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(plan) + ": " + P2pAdmission.planText(plan))
+        }
+        DiagLog.i(tag, "admission: the customer \"" + p2pBuyerName.ifEmpty { "?" } + "\" " +
+            (if (c.canSee) "can address me" else "cannot address me") + ", and I " + mine.describe() +
+            " -> " + P2pAdmission.planName(plan))
+        sendControl(peerShort, Wire.p2pJoinPlan(when (plan) {
+            P2pAdmission.Plan.BUYER_CONNECT -> Wire.JOIN_PLAN_BUYER_CONNECT
+            P2pAdmission.Plan.SELLER_INVITE -> Wire.JOIN_PLAN_SELLER_INVITE
+            P2pAdmission.Plan.WAIT -> Wire.JOIN_PLAN_WAIT
+        })) {}
+        val invitedAgo = if (p2pInvitedAt == 0L) Long.MAX_VALUE else now - p2pInvitedAt
+        if (P2pAdmission.mayInvite(plan, mine, invitedAgo, p2p.groupFormed)) {
+            p2pInvitedAt = now
+            DiagLog.i(tag, "INVITING the customer into my group: \"" + mine.name + "\" (" + mine.address + ")")
+            val err = p2p.invite(mine.address, mine.name)
+            if (err != null) sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
+        } else if (plan == P2pAdmission.Plan.WAIT) {
+            p2p.resumeDiscovery("neither phone can address the other yet")
+        }
+    }
+
+    /** Buyer: the provider decided. Both sides obey the same plan. */
+    private fun onP2pJoinPlan(peerShort: String, c: Wire.Control.P2pJoinPlan) {
+        if (!buyViaP2p || buyerWanted != peerShort) return
+        val plan = when (c.plan) {
+            Wire.JOIN_PLAN_BUYER_CONNECT -> P2pAdmission.Plan.BUYER_CONNECT
+            Wire.JOIN_PLAN_SELLER_INVITE -> P2pAdmission.Plan.SELLER_INVITE
+            else -> P2pAdmission.Plan.WAIT
+        }
+        if (plan != p2pJoinPlan) DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(plan) + ": " + P2pAdmission.planText(plan))
+        p2pJoinPlan = plan
+        if (plan != P2pAdmission.Plan.BUYER_CONNECT) p2p.resumeDiscovery("waiting to be invited, or still looking")
+        main.post { p2pWaitStep(peerShort) }
+    }
+
     // ---- v0.9.12: the buyer joins the seller group by itself ---------------------------------------
     @Volatile private var p2pStatus: P2pPlan.GroupStatus? = null
     @Volatile private var p2pSellerName = ""
@@ -327,7 +390,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pWaitStart = System.currentTimeMillis()
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
-        p2pAnnounced = 0
+        p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L
         val err = p2p.startBuyer()
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
@@ -380,21 +443,45 @@ class ProkNetNode(private val context: Context) : TransportListener {
             failBuy(P2pPlan.TRANSPORT_FAIL_REASON, P2pPlan.TRANSPORT_FAIL_REASON)
             return
         }
-        val sellerAddr = P2pPlan.pickSellerPeer(p2p.realPeers(), p2pSellerName)
-        val step = P2pPlan.joinStep(p2pStatus, sellerAddr != null, p2pConnectAttempts, p2pReachableMs, p2p.groupFormed)
+        val sight = P2pAdmission.look(p2p.realPeers(), p2pSellerName)
+        val sellerAddr = if (sight.canSee) sight.address else null
+        val step = P2pPlan.joinStep(p2pStatus, sight.canSee, p2pConnectAttempts, p2pReachableMs, p2p.groupFormed)
+        // v0.9.20: WAIT_PEER and CONNECT are both admission, and admission is symmetric now. What this
+        // phone can see is only half of the decision; the provider holds the other half.
+        val admission = if (step == P2pPlan.JoinStep.WAIT_PEER || step == P2pPlan.JoinStep.CONNECT || step == P2pPlan.JoinStep.RETRY_BUSY)
+            P2pAdmission.buyerStep(p2pJoinPlan, sight.canSee, System.currentTimeMillis() - p2pVisibilityAt) else null
+        when {
+            admission == P2pAdmission.BuyerStep.REPORT_VISIBILITY -> {
+                p2pVisibilityAt = System.currentTimeMillis()
+                val me = p2p.myDeviceName
+                DiagLog.i(tag, P2pAdmission.buyerStepText(admission) + ": I " + sight.describe() +
+                    " (" + p2p.realPeers().size + " addressable: " +
+                    (if (p2p.realPeers().isEmpty()) "none" else p2p.realPeers().joinToString("; ") { it.name.ifEmpty { "?" } }) + ")")
+                sendControl(peerShort, Wire.p2pVisibility(sight.canSee, me)) { ok ->
+                    if (!ok) DiagLog.w(tag, "the visibility report could not be delivered over BLE")
+                }
+                p2p.resumeDiscovery("still admitting")
+            }
+            admission == P2pAdmission.BuyerStep.WAIT_FOR_INVITE -> {
+                if (p2pReachableMs % 12_000L < 4_000L) DiagLog.i(tag, P2pAdmission.buyerStepText(admission))
+                p2p.resumeDiscovery("waiting to be invited: this phone must stay discoverable")
+            }
+            admission == P2pAdmission.BuyerStep.WAIT_DISCOVERY -> {
+                if (p2pReachableMs % 12_000L < 4_000L) DiagLog.i(tag, P2pAdmission.buyerStepText(admission) +
+                    " (" + p2p.peers.size + " seen, " + p2p.realPeers().size + " with a real address" +
+                    (if (p2pSellerName.isNotEmpty()) ", looking for \"" + p2pSellerName + "\"" else "") + "): " +
+                    (if (p2p.realPeers().isEmpty()) "none addressable" else p2p.realPeers().joinToString("; ") { it.name.ifEmpty { "?" } }))
+                p2p.resumeDiscovery("still looking for the provider")
+            }
+        }
         when (step) {
             P2pPlan.JoinStep.DONE -> {}
             P2pPlan.JoinStep.ASK_STATUS -> askForInvite(peerShort)
             P2pPlan.JoinStep.WAIT_REBUILD -> { if (p2pReachableMs % 12_000L < 4_000L) askForInvite(peerShort) }
-            P2pPlan.JoinStep.WAIT_PEER -> {
-                if (p2pReachableMs % 12_000L < 4_000L)
-                    DiagLog.i(tag, P2pPlan.joinStepText(step) + " (" + p2p.peers.size + " seen, " + p2p.realPeers().size + " with a real address" +
-                        (if (p2pSellerName.isNotEmpty()) ", looking for \"" + p2pSellerName + "\"" else "") + "): " +
-                        (if (p2p.realPeers().isEmpty()) "none addressable" else p2p.realPeers().joinToString("; ") { it.name.ifEmpty { "?" } }))
-            }
+            P2pPlan.JoinStep.WAIT_PEER -> {}
             P2pPlan.JoinStep.CONNECT, P2pPlan.JoinStep.RETRY_BUSY -> {
                 val now = System.currentTimeMillis()
-                if (now >= p2pNextConnectAt && sellerAddr != null) {
+                if (admission == P2pAdmission.BuyerStep.CONNECT && now >= p2pNextConnectAt && sellerAddr != null) {
                     p2pConnectAttempts++
                     // v0.9.18: hold the next attempt off BEFORE asking, so an accepted join is never
                     // overtaken by its own successor three seconds later, which is what made Android
@@ -418,8 +505,13 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 return
             }
             P2pPlan.JoinStep.GIVE_UP -> {
-                DiagLog.e(tag, P2pPlan.joinStepText(step) + " after " + p2pConnectAttempts + " attempts")
-                failBuy("Wi-Fi Direct join failed", "could not join the provider Wi-Fi Direct group")
+                if (p2pJoinPlan == P2pAdmission.Plan.WAIT || (p2pConnectAttempts == 0 && !sight.canSee)) {
+                    DiagLog.e(tag, P2pAdmission.BLIND_FAIL_REASON + " (plan " + P2pAdmission.planName(p2pJoinPlan ?: P2pAdmission.Plan.WAIT) + ")")
+                    failBuy(P2pAdmission.BLIND_FAIL_REASON, P2pAdmission.BLIND_FAIL_REASON)
+                } else {
+                    DiagLog.e(tag, P2pPlan.joinStepText(step) + " after " + p2pConnectAttempts + " attempts")
+                    failBuy("Wi-Fi Direct join failed", "could not join the provider Wi-Fi Direct group")
+                }
                 return
             }
         }
@@ -666,6 +758,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         } else {
             gateway.stop()
             p2pMemberAddress = ""; p2pMemberPeer = ""
+            p2pPlanChosen = null; p2pPlanOwner = P2pAdmission.Owner.NOBODY; p2pPlanAt = 0L; p2pInvitedAt = 0L; p2pBuyerName = ""
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
         }
         refreshAdvert(); pushStatus()
@@ -1139,6 +1232,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // transport, which is idle on this path and dropped it in silence. The phone test shows
             // the seller answering every single request and the buyer never reacting.
             c is Wire.Control.P2pStatus -> onP2pStatus(peerShort, c)
+            c is Wire.Control.P2pVisibility -> onP2pVisibility(peerShort, c)
+            c is Wire.Control.P2pJoinPlan -> onP2pJoinPlan(peerShort, c)
             c is Wire.Control.P2pMember -> onP2pMember(peerShort, c)
             c is Wire.Control.P2pTransport -> onP2pTransport(peerShort, c)
             c is Wire.Control.WifiCancel && buyViaP2p && buyerWanted == peerShort -> onP2pRefused(peerShort, c)
