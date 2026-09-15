@@ -266,15 +266,25 @@ class P2pDataPlaneTest {
 
     @Test
     fun the_link_probe_says_what_six_timed_out_syns_cannot() {
-        assertEquals(P2pPlan.LinkProof.NOT_RUN, P2pPlan.linkProof(sent = 0, replies = 0, echoedHere = 0))
-        // exactly the v0.9.14 result: nothing crossed, in either direction
-        assertEquals(P2pPlan.LinkProof.NO_PACKET_CROSSED, P2pPlan.linkProof(5, 0, 0))
-        // their packets reach us and ours do not get back
-        assertEquals(P2pPlan.LinkProof.ONE_WAY, P2pPlan.linkProof(5, 0, 3))
-        // one reply is enough to prove the link carries IP both ways
-        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(5, 1, 0))
-        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(1, 1, 7))
+        assertEquals(P2pPlan.LinkProof.NOT_RUN, P2pPlan.linkProof(sent = 0, unicastReplies = 0, broadcastReplies = 0, echoedHere = 0))
+        // nothing crossed at all
+        assertEquals(P2pPlan.LinkProof.NO_PACKET_CROSSED, P2pPlan.linkProof(5, 0, 0, 0))
+        // THE v0.9.15 result, seen from the owner: their packets reach us, our answers never get back
+        assertEquals(P2pPlan.LinkProof.ONE_WAY, P2pPlan.linkProof(5, 0, 0, 3))
+        // broadcast crosses where unicast does not: the two phones cannot address each other
+        assertEquals(P2pPlan.LinkProof.BROADCAST_ONLY, P2pPlan.linkProof(5, 0, 2, 0))
+        // one unicast reply is enough to prove the link carries IP both ways
+        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(5, 1, 0, 0))
+        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(1, 1, 4, 7))
         for (p in P2pPlan.LinkProof.values()) assertTrue(P2pPlan.linkProofText(p).isNotEmpty())
         assertNotEquals(P2pPlan.PORT, P2pPlan.PROBE_PORT)
+    }
+
+    @Test
+    fun the_probe_knows_where_to_broadcast() {
+        assertEquals("192.168.49.255", P2pPlan.broadcastOf("192.168.49.1"))
+        assertEquals("192.168.49.255", P2pPlan.broadcastOf("192.168.49.124"))
+        assertEquals("", P2pPlan.broadcastOf(""))
+        assertEquals("", P2pPlan.broadcastOf("nonsense"))
     }
 }

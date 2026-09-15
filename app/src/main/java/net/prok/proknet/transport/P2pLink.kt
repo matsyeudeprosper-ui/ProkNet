@@ -27,6 +27,7 @@ import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.P2pDataPlane
 import net.prok.proknet.core.P2pEndpoint
 import net.prok.proknet.core.P2pPlan
+import net.prok.proknet.core.ShareCheck
 
 /**
  * Method B, experimental: a local link over **Wi-Fi Direct**, so a seller
@@ -76,6 +77,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     // ---- v0.9.14: the data plane a socket belongs to ------------------------------------------------
 
     private val binding = P2pSocketBinding(context)
+    /** v0.9.16: the Wi-Fi radio must not sleep while a Wi-Fi Direct link is live. */
+    private val radio = RadioLock(context)
 
     /** Group generation, membership generation and the endpoint: what a socket belongs to. */
     @Volatile var plane: P2pDataPlane.Plane = P2pDataPlane.NONE
@@ -87,6 +90,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     @Volatile private var acceptToken = 0
     /** The interface name Android gave the group, so we bind to THAT p2p interface. */
     @Volatile private var groupIface: String = ""
+    /** The operating frequency of the group, when Android tells us (API 29+). */
+    @Volatile var groupFrequency: Int = 0
+        private set
     /** The group owner address, for a client that has to dial it. */
     @Volatile private var goAddress: String = ""
     private var netHandle: P2pSocketBinding.Handle? = null
@@ -426,6 +432,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (g == null) return
         val iface = try { g.`interface` } catch (e: Exception) { null }
         if (iface != null && iface != groupIface) groupIface = iface
+        // v0.9.16: WHICH channel the group runs on, next to the channel this phone's home Wi-Fi uses
+        val freq = if (Build.VERSION.SDK_INT >= 29) (try { g.frequency } catch (e: Exception) { 0 }) else 0
+        if (freq > 0 && freq != groupFrequency) {
+            groupFrequency = freq
+            DiagLog.i(tag, "GROUP CHANNEL: " + ShareCheck.describe(freq) + " | this phone's Wi-Fi: " + hooks.staDescription().ifEmpty { "none" })
+        }
         val before = clientCount
         clientCount = g.clientList?.size ?: 0
         val info = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + clientCount + " iface=" + (iface ?: "?")
@@ -460,9 +472,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         DiagLog.i(tag, "connection: formed=" + formed + " role=" + life.role + " groupOwner=" + go +
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
         if (!formed) {
+            radio.release("the group is gone")
             if (life.want != P2pPlan.Want.NONE) keepDiscovering("the group is gone, this phone can look for peers again")
             changed(); return
         }
+        // v0.9.16: a sleeping radio is where the owner downlink was being lost
+        radio.acquire("a Wi-Fi Direct group exists on this phone")
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
         goAddress = go ?: goAddress
         observePlane("connection info")
@@ -610,6 +625,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private fun dropPlane(why: String) {
+        radio.release(why)
         closeListener(why)
         if (plane != P2pDataPlane.NONE) DiagLog.i(tag, "DATA PLANE dropped: " + why)
         plane = plane.copy(role = P2pPlan.Role.NONE, interfaceName = "", localAddress = "", networkIdentity = "", clientCount = 0)
@@ -678,18 +694,29 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         closeProbe()
         try {
             val ds = binding.datagramOn(handle, P2pPlan.PROBE_PORT)
+            try { ds.broadcast = true } catch (_: Exception) {}
             probe = ds
             probeEchoed = 0
-            DiagLog.i(tag, "LINK PROBE listening on " + p.localAddress + ":" + P2pPlan.PROBE_PORT)
+            val bcast = P2pPlan.broadcastOf(p.localAddress)
+            DiagLog.i(tag, "LINK PROBE listening on " + p.localAddress + ":" + P2pPlan.PROBE_PORT + ", broadcast " + bcast)
             io.execute {
                 val buf = ByteArray(64)
                 while (!ds.isClosed) {
                     val pk = DatagramPacket(buf, buf.size)
                     try { ds.receive(pk) } catch (e: Exception) { break }
+                    val body = String(pk.data, 0, pk.length, Charsets.US_ASCII)
+                    if (body.startsWith("prok-r")) continue            // an answer, not a probe
                     probeEchoed++
-                    DiagLog.i(tag, "LINK PROBE: a packet DID cross, " + pk.length + " bytes from " + (pk.address?.hostAddress ?: "?") + ", answering it")
-                    try { ds.send(DatagramPacket(pk.data, pk.length, pk.address, pk.port)) }
-                    catch (e: Exception) { DiagLog.w(tag, "LINK PROBE could not answer: " + e) }
+                    DiagLog.i(tag, "LINK PROBE: a packet DID cross, " + body + " from " + (pk.address?.hostAddress ?: "?") + ", answering it twice")
+                    // answer BOTH ways, so the other side can tell unicast from broadcast
+                    val u = ("prok-r" + P2pPlan.PROBE_UNICAST + body).toByteArray(Charsets.US_ASCII)
+                    val b = ("prok-r" + P2pPlan.PROBE_BROADCAST + body).toByteArray(Charsets.US_ASCII)
+                    try { ds.send(DatagramPacket(u, u.size, pk.address, pk.port)) }
+                    catch (e: Exception) { DiagLog.w(tag, "LINK PROBE unicast answer failed: " + e) }
+                    if (bcast.isNotEmpty()) {
+                        try { ds.send(DatagramPacket(b, b.size, InetAddress.getByName(bcast), pk.port)) }
+                        catch (e: Exception) { DiagLog.w(tag, "LINK PROBE broadcast answer failed: " + e) }
+                    }
                 }
                 DiagLog.i(tag, "LINK PROBE responder ended")
             }
@@ -701,47 +728,73 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         probe = null
     }
 
-    /** Send a few probes to [host] and say plainly what came back. Diagnostic only, never a gate. */
+    /**
+     * Send a few probes to [host], unicast and broadcast, and say plainly
+     * what came back. Diagnostic only, never a gate.
+     *
+     * v0.9.16 separates the two because the v0.9.15 run proved the link is
+     * ONE WAY: everything the client sent reached the owner, and nothing the
+     * owner sent reached the client. If broadcast crosses where unicast does
+     * not, the two phones cannot address each other directly, which is a
+     * different fault from a radio that drops everything.
+     */
     private fun probeLink(host: String) {
         io.execute {
             val h = binding.resolve(groupIface.ifEmpty { null })
             if (h == null) { DiagLog.w(tag, "LINK PROBE: no P2P endpoint to probe from"); return@execute }
-            var replies = 0
+            val bcast = P2pPlan.broadcastOf(h.localAddress)
             var sent = 0
+            var uni = 0
+            var bro = 0
             var best = -1L
             val ds = try {
                 val d = DatagramSocket(null)
                 d.reuseAddress = true
                 h.network?.let { try { it.bindSocket(d) } catch (_: Exception) {} }
                 d.bind(InetSocketAddress(InetAddress.getByName(h.localAddress), 0))
+                d.broadcast = true
                 d.soTimeout = P2pPlan.PROBE_TIMEOUT_MS
                 d
             } catch (e: Exception) { DiagLog.w(tag, "LINK PROBE could not open a socket: " + LinkIo.describe(e)); return@execute }
-            val body = "prok-probe".toByteArray()
             for (i in 1..P2pPlan.PROBE_COUNT) {
                 if (life.cleaning) break
+                val tag1 = P2pPlan.PROBE_UNICAST + i
+                val tag2 = P2pPlan.PROBE_BROADCAST + i
+                val t0 = System.currentTimeMillis()
                 try {
-                    val t0 = System.currentTimeMillis()
-                    ds.send(DatagramPacket(body, body.size, InetAddress.getByName(host), P2pPlan.PROBE_PORT))
+                    ds.send(DatagramPacket(tag1.toByteArray(Charsets.US_ASCII), tag1.length, InetAddress.getByName(host), P2pPlan.PROBE_PORT))
                     sent++
-                    val back = DatagramPacket(ByteArray(64), 64)
-                    ds.receive(back)
-                    val ms = System.currentTimeMillis() - t0
-                    replies++
-                    if (best < 0 || ms < best) best = ms
-                    DiagLog.i(tag, "LINK PROBE " + i + "/" + P2pPlan.PROBE_COUNT + " to " + host + ": REPLY in " + ms + " ms")
-                    break
-                } catch (e: Exception) {
-                    DiagLog.w(tag, "LINK PROBE " + i + "/" + P2pPlan.PROBE_COUNT + " to " + host + ": no reply (" + LinkIo.describe(e) + ")")
-                    try { Thread.sleep(P2pPlan.PROBE_GAP_MS) } catch (_: InterruptedException) { break }
+                } catch (e: Exception) { DiagLog.w(tag, "LINK PROBE unicast send failed: " + LinkIo.describe(e)) }
+                if (bcast.isNotEmpty()) {
+                    try {
+                        ds.send(DatagramPacket(tag2.toByteArray(Charsets.US_ASCII), tag2.length, InetAddress.getByName(bcast), P2pPlan.PROBE_PORT))
+                        sent++
+                    } catch (e: Exception) { DiagLog.w(tag, "LINK PROBE broadcast send failed: " + LinkIo.describe(e)) }
                 }
+                var answered = false
+                while (true) {
+                    try {
+                        val back = DatagramPacket(ByteArray(64), 64)
+                        ds.receive(back)
+                        val body = String(back.data, 0, back.length, Charsets.US_ASCII)
+                        if (!body.startsWith("prok-r")) continue          // our own probe coming back on broadcast
+                        val ms = System.currentTimeMillis() - t0
+                        if (best < 0 || ms < best) best = ms
+                        if (body.startsWith("prok-r" + P2pPlan.PROBE_UNICAST)) uni++ else bro++
+                        answered = true
+                        DiagLog.i(tag, "LINK PROBE " + i + "/" + P2pPlan.PROBE_COUNT + " to " + host + ": REPLY " + body + " in " + ms + " ms")
+                        break
+                    } catch (e: Exception) { break }
+                }
+                if (answered && uni > 0) break
+                try { Thread.sleep(P2pPlan.PROBE_GAP_MS) } catch (_: InterruptedException) { break }
             }
             try { ds.close() } catch (_: Exception) {}
-            val proof = P2pPlan.linkProof(sent, replies, probeEchoed)
+            val proof = P2pPlan.linkProof(sent, uni, bro, probeEchoed)
             linkProof = proof
             DiagLog.i(tag, "LINK PROBE verdict: " + P2pPlan.linkProofText(proof) +
-                " (sent " + sent + ", replies " + replies + ", probes answered by us " + probeEchoed +
-                (if (best >= 0) ", best " + best + " ms" else "") + ")")
+                " (sent " + sent + ", unicast replies " + uni + ", broadcast replies " + bro +
+                ", probes answered by us " + probeEchoed + (if (best >= 0) ", best " + best + " ms" else "") + ")")
             main.post { changed() }
         }
     }
@@ -953,6 +1006,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("data plane usable: ").append(plane.usable).append("\n")
         sb.append("listener: ").append(listener?.describe() ?: "none").append("\n")
         sb.append("link probe: ").append(P2pPlan.linkProofText(linkProof)).append("\n")
+        sb.append("group channel: ").append(if (groupFrequency > 0) ShareCheck.describe(groupFrequency) else "unknown")
+            .append(" | this phone's Wi-Fi: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")
+        sb.append("radio lock: ").append(radio.state).append("\n")
         sb.append("listener belongs to this live membership: ").append(P2pDataPlane.verdictText(listenerVerdict())).append("\n")
         sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")

@@ -1146,3 +1146,63 @@ COPY P2P DIAG dumps: that would be a new and different fault.
 - The `LINK PROBE verdict` line from both phones.
 - Whether TCP connected, and which side won.
 - Seller Wi-Fi before, during and after. The Freebox must survive.
+
+## 34. v0.9.16 the one way link
+
+Setup is section 30. Section 30 is still the claim rule.
+
+Read these four lines on BOTH phones, in this order.
+
+**1. The radio lock, when the group forms:**
+
+```
+RADIO LOCK held: HIGH_PERF+LOW_LATENCY (a Wi-Fi Direct group exists on this phone)
+```
+
+If it says `none`, the phone refused both locks and that is worth reporting
+on its own.
+
+**2. The group channel, next to the home Wi-Fi channel:**
+
+```
+GROUP CHANNEL: 5 GHz ch 48 (5240 MHz) | this phone's Wi-Fi: ? 5 GHz ch 48 (5240 MHz)
+```
+
+Write down whether the two are the same channel. On the buyer the second half
+will say `none`, which is expected.
+
+**3. The probe verdict, on each phone.** There are now five:
+
+```
+the link carries IP packets both ways
+only BROADCAST crosses: the two phones cannot address each other directly
+packets arrive here but our answers do not get back
+NO IP packet crossed the Wi-Fi Direct link in either direction
+the link was never probed
+```
+
+**Copy the verdict from BOTH phones.** They can differ, and when they differ
+that is the answer: in the v0.9.15 run the owner said packets arrive but
+answers do not get back, and the client said nothing crossed. That pair means
+uplink only.
+
+**4. Whether TCP connected**, and which side won.
+
+### What each result means for the next step
+
+- Both phones say the link carries packets both ways, and TCP connects: the
+  transport is done and the rest of section 30 applies.
+- Both phones say it carries packets and TCP still fails: a new fault, above
+  IP. Send both COPY P2P DIAG dumps.
+- Owner says "answers do not get back" again: the Wi-Fi lock did not change
+  the downlink, and the next lever is the association direction, not the
+  sockets.
+- `only BROADCAST crosses`: the two phones cannot address each other
+  directly, which is an addressing fault and has its own fix.
+
+### Checklist for the v0.9.16 report
+
+- `RADIO LOCK held:` from both phones.
+- `GROUP CHANNEL:` from the seller, and the home Wi-Fi channel beside it.
+- `LINK PROBE verdict:` from BOTH phones, both lines.
+- Whether TCP connected. Seller Wi-Fi before, during and after.

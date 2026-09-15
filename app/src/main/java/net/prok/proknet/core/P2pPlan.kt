@@ -127,11 +127,22 @@ object P2pPlan {
     const val PROBE_GAP_MS = 400L
     const val PROBE_TIMEOUT_MS = 1_200
 
-    enum class LinkProof { NOT_RUN, NO_PACKET_CROSSED, ONE_WAY, ALIVE }
+    /** v0.9.16: the probe tells unicast and broadcast apart, because the answer is different. */
+    const val PROBE_UNICAST = "U"
+    const val PROBE_BROADCAST = "B"
 
-    fun linkProof(sent: Int, replies: Int, echoedHere: Int): LinkProof = when {
+    enum class LinkProof { NOT_RUN, NO_PACKET_CROSSED, ONE_WAY, BROADCAST_ONLY, ALIVE }
+
+    /**
+     * [unicastReplies] and [broadcastReplies] are answers that came BACK to
+     * this phone; [echoedHere] is how many of the other side's probes WE
+     * answered. The v0.9.15 run produced two different verdicts on the two
+     * phones, which is exactly how a one way link looks from each end.
+     */
+    fun linkProof(sent: Int, unicastReplies: Int, broadcastReplies: Int, echoedHere: Int): LinkProof = when {
         sent == 0 -> LinkProof.NOT_RUN
-        replies > 0 -> LinkProof.ALIVE
+        unicastReplies > 0 -> LinkProof.ALIVE
+        broadcastReplies > 0 -> LinkProof.BROADCAST_ONLY
         echoedHere > 0 -> LinkProof.ONE_WAY
         else -> LinkProof.NO_PACKET_CROSSED
     }
@@ -140,7 +151,14 @@ object P2pPlan {
         LinkProof.NOT_RUN -> "the link was never probed"
         LinkProof.NO_PACKET_CROSSED -> "NO IP packet crossed the Wi-Fi Direct link in either direction"
         LinkProof.ONE_WAY -> "packets arrive here but our answers do not get back"
+        LinkProof.BROADCAST_ONLY -> "only BROADCAST crosses: the two phones cannot address each other directly"
         LinkProof.ALIVE -> "the link carries IP packets both ways"
+    }
+
+    /** The broadcast address of a /24, which is what a Wi-Fi Direct group always is. */
+    fun broadcastOf(localAddress: String): String {
+        val i = localAddress.lastIndexOf('.')
+        return if (i <= 0) "" else localAddress.substring(0, i) + ".255"
     }
 
     // ---- v0.9.13: the buyer dial window and the bounded failure -------------------------------------

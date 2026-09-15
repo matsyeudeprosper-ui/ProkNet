@@ -746,6 +746,53 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The link is one way (v0.9.16)
+
+The v0.9.15 probe did its job on the first run, and the two phones returned
+different verdicts, which IS the finding:
+
+```
+buyer  (client)  LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+                 (sent 5, replies 0, probes answered by us 0)
+seller (owner)   LINK PROBE: a packet DID cross, 10 bytes from 192.168.49.124   x6
+seller (owner)   LINK PROBE verdict: packets arrive here but our answers do not get back
+                 (sent 5, replies 0, probes answered by us 3)
+```
+
+Read together: **every packet the client sent reached the owner, and nothing
+the owner sent reached the client.** Not the UDP answers, not its own probes,
+not a TCP handshake in either dial direction. The uplink is perfect and the
+downlink is dead.
+
+That also explains every failure since v0.9.12 in one line. The buyer's SYN
+arrives, the owner's SYN-ACK never comes back, so the buyer times out and the
+owner's `accept()` never completes, which is why `TCP accepted` was never
+printed even though the listener was correct all along.
+
+It is not a socket problem, it is not a binding problem, and it is not the
+listener lifecycle. Those are all correct now and the measurement proves it.
+
+### What an application can do about it
+
+A group owner has to buffer frames for a client whose radio is asleep and
+deliver them at the beacon. On a phone whose single radio is also serving a
+home Wi-Fi connection, that delivery is a known place for frames to die. The
+driver is not ours, but the sleep is refusable:
+
+- **`RadioLock`** holds `WIFI_MODE_FULL_HIGH_PERF` and, on API 29+,
+  `WIFI_MODE_FULL_LOW_LATENCY` for as long as a group exists on this phone,
+  on BOTH sides, and releases them the moment it is gone. Holding a Wi-Fi
+  lock during a data transfer is what Wi-Fi Direct expects of an application
+  in the first place.
+- **The group channel is logged** next to this phone's own Wi-Fi channel, so
+  a group forced onto the home Wi-Fi channel is visible rather than assumed.
+- **The probe separates unicast from broadcast**, in both directions. Each
+  side now answers a probe twice, once to the sender and once to the group
+  broadcast address, and the verdict has a fourth value: `only BROADCAST
+  crosses: the two phones cannot address each other directly`. That
+  distinguishes a radio that drops everything from two phones that cannot
+  resolve each other, which need different answers.
+
 ## The radio has to be on the group channel (v0.9.15)
 
 v0.9.14 removed the last socket-level doubt, and the phone run came back
