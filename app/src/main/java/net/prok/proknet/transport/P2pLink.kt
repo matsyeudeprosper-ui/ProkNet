@@ -21,6 +21,7 @@ import java.net.Socket
 import java.util.concurrent.Executors
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.LinkIo
+import net.prok.proknet.core.P2pEndpoint
 import net.prok.proknet.core.P2pPlan
 
 /**
@@ -65,6 +66,31 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private var server: ServerSocket? = null
     private var cleanupSeq = 0
     @Volatile private var discovering = false
+
+    // ---- v0.9.13: the endpoint a socket belongs to -------------------------------------------------
+
+    private val binding = P2pSocketBinding(context)
+
+    /** The P2P endpoint this phone owns right now, with its generation. */
+    @Volatile var endpoint: P2pEndpoint.Endpoint? = null
+        private set
+    /** The server socket that exists, and which endpoint generation it was built for. */
+    @Volatile var listener: P2pEndpoint.Listener? = null
+        private set
+    /** Only an accept loop of this generation, holding the current token, may hand a socket up. */
+    @Volatile private var acceptGeneration = 0
+    @Volatile private var acceptToken = 0
+    /** The interface name Android gave the group, so we bind to THAT p2p interface. */
+    @Volatile private var groupIface: String = ""
+    private var netHandle: P2pSocketBinding.Handle? = null
+    private var watching = false
+    private var watchTicks = 0
+    private var dialSeq = 0
+    private val ENDPOINT_WATCH_TICKS = 6
+    private val ENDPOINT_WATCH_MS = 2_000L
+
+    /** What the endpoint check says about the listener right now. */
+    fun listenerVerdict(): P2pEndpoint.Verdict = P2pEndpoint.validate(endpoint, listener)
 
     // ---- what the lab screen reads: one source of truth ------------------------------------------
 
@@ -197,11 +223,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
 
     private fun closeSockets(): String {
         stopDiscovering()
-        val had = server != null
-        try { server?.close() } catch (_: Exception) {}
-        server = null
+        val had = server != null || listener != null
+        dropEndpoint("cleanup")
         peers = emptyList()
-        return if (had) "server socket closed" else "no server socket was open"
+        return if (had) "listener closed and the endpoint forgotten" else "no listener was open"
     }
 
     private fun finishCleanup(then: () -> Unit) {
@@ -377,12 +402,33 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (life.cleaning) { DiagLog.i(tag, "group info ignored during cleanup"); return }
         if (g == null) return
         val iface = try { g.`interface` } catch (e: Exception) { null }
+        if (iface != null && iface != groupIface) groupIface = iface
+        val before = clientCount
         clientCount = g.clientList?.size ?: 0
         val info = "ssid=" + g.networkName + " owner=" + (g.owner?.deviceName ?: "?") + " clients=" + clientCount + " iface=" + (iface ?: "?")
         life.onGroup(true, g.isGroupOwner, info)
         ifaceInfo = interfaces()
         DiagLog.i(tag, "group: " + info + " | interfaces: " + ifaceInfo)
+        if (before != clientCount) onClientCountChanged(before, clientCount)
         changed()
+    }
+
+    /**
+     * v0.9.13: the moment that used to be lost. The owner created its
+     * listener when the group formed, and the buyer joined a minute and a
+     * half later. Nothing re-checked that the listener still belonged to the
+     * endpoint the buyer is dialling. So on 0 -> 1 the listener is
+     * VALIDATED, and replaced only if the check says it is not ours: this is
+     * endpoint validation, not "restart because maybe".
+     */
+    private fun onClientCountChanged(before: Int, now: Int) {
+        if (life.role != P2pPlan.Role.GROUP_OWNER) return
+        if (before != 0 || now < 1) return
+        observeEndpoint("a client joined the group")
+        val v = listenerVerdict()
+        DiagLog.i(tag, "CLIENT COUNT " + before + " -> " + now + ": listener check says " + P2pEndpoint.verdictText(v) +
+            " | endpoint " + (endpoint?.describe() ?: "none") + " | listener " + (listener?.describe() ?: "none"))
+        if (!P2pEndpoint.ok(v)) ensureListener("a client joined and the listener was not this endpoint")
     }
 
     private fun onConnectionInfo(info: WifiP2pInfo?) {
@@ -395,8 +441,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
         if (!formed) { changed(); return }
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
+        observeEndpoint("connection info")
         when (life.role) {
-            P2pPlan.Role.GROUP_OWNER -> { listen(); keepDiscovering("group owner waiting for a guest") }
+            P2pPlan.Role.GROUP_OWNER -> { ensureListener("the group is formed"); keepDiscovering("group owner waiting for a guest") }
             P2pPlan.Role.CLIENT -> {
                 val target = P2pPlan.socketTarget(life.role, go)
                 if (target == null) { fail("no group owner address"); return }
@@ -464,47 +511,208 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
 
     // ---- sockets --------------------------------------------------------------------------------------
 
-    private fun listen() {
-        if (server != null) return
-        try {
-            val ss = ServerSocket()
-            ss.reuseAddress = true
-            ss.bind(InetSocketAddress(P2pPlan.PORT))
-            server = ss
-            life.onSocket("listening on :" + P2pPlan.PORT)
-            DiagLog.i(tag, "group owner " + life.socketInfo)
-            io.execute {
-                while (!ss.isClosed) {
-                    val s = try { ss.accept() } catch (e: Exception) { break }
-                    val info = "accepted " + s.inetAddress?.hostAddress + ":" + s.port + " on " + s.localAddress?.hostAddress
-                    DiagLog.i(tag, "TCP " + info)
-                    main.post { life.onSocket(info); hooks.onSocket(s, true); changed() }
-                }
-                DiagLog.i(tag, "group owner accept loop ended")
-            }
+    /**
+     * Read the real endpoint from Android and adopt it. A NEW generation is
+     * taken only when something material changed (role, interface, local
+     * address, Android network, or the group itself); an unchanged endpoint
+     * is left exactly as it is, so nothing is rebuilt for no reason.
+     */
+    private fun observeEndpoint(why: String) {
+        if (life.cleaning) return
+        if (!life.groupFormed) { dropEndpoint("the group is gone (" + why + ")"); return }
+        val h = binding.resolve(groupIface.ifEmpty { null })
+        val o = binding.observe(life.role, h)
+        val before = endpoint
+        if (P2pEndpoint.changed(before, o)) {
+            val reason = P2pEndpoint.changeReason(before, o)
+            val e = P2pEndpoint.adopt(before, o)
+            endpoint = e
+            netHandle = h
+            DiagLog.i(tag, "P2P ENDPOINT " + e.describe() + "  (" + reason + ", seen on " + why + ")")
+            closeListener("the endpoint changed: " + reason)
             changed()
-        } catch (e: Exception) { fail("server socket: " + LinkIo.describe(e)) }
+        } else if (netHandle == null) netHandle = h
     }
 
+    private fun dropEndpoint(why: String) {
+        closeListener(why)
+        if (endpoint != null) DiagLog.i(tag, "P2P ENDPOINT dropped: " + why)
+        endpoint = null
+        netHandle = null
+        groupIface = ""
+        dialSeq++
+        watching = false
+    }
+
+    // ---- the listener ---------------------------------------------------------------------------------
+
+    /** Make sure a VALID listener of the current endpoint exists. Never trusts `server != null`. */
+    private fun ensureListener(why: String) {
+        if (life.role != P2pPlan.Role.GROUP_OWNER) return
+        val v = listenerVerdict()
+        if (P2pEndpoint.ok(v)) return
+        val e = endpoint
+        if (e == null || !e.usable) {
+            observeEndpoint("the listener needs an endpoint")
+            val again = endpoint
+            if (again == null || !again.usable) { watchEndpoint("the P2P endpoint is not readable yet (" + why + ")"); return }
+            openListener(again, why)
+            return
+        }
+        DiagLog.i(tag, "listener check: " + P2pEndpoint.verdictText(v) + " -> making one for this endpoint (" + why + ")")
+        openListener(e, why)
+    }
+
+    private fun openListener(e: P2pEndpoint.Endpoint, why: String) {
+        closeListener("replacing it for generation " + e.generation)
+        val gen = e.generation
+        acceptGeneration = gen
+        val token = ++acceptToken
+        val h = netHandle
+        DiagLog.i(tag, P2pEndpoint.listenLine("creating", e, e.localAddress, P2pPlan.PORT) + " | because " + why)
+        val handle = if (h != null && h.localAddress == e.localAddress) h else P2pSocketBinding.Handle(null, e.networkIdentity, e.interfaceName, e.localAddress)
+        try {
+            val ss = binding.listenOn(handle, P2pPlan.PORT)
+            server = ss
+            val actual = ss.inetAddress?.hostAddress ?: ""
+            val onEndpoint = actual == e.localAddress
+            listener = P2pEndpoint.Listener(gen, e.interfaceName, actual, ss.localPort, e.networkIdentity, true)
+            DiagLog.i(tag, P2pEndpoint.listenLine("actual", e, actual, ss.localPort) +
+                " | bound to the P2P endpoint=" + onEndpoint + " | network bound=" + (handle.network != null))
+            if (!onEndpoint) DiagLog.e(tag, "the listener did NOT bind to the P2P local address, it is on " + actual)
+            life.onSocket("listening on " + actual + ":" + ss.localPort + " (generation " + gen + ")")
+            acceptLoop(ss, gen, token)
+            watching = false
+            changed()
+        } catch (ex: Exception) {
+            server = null
+            listener = null
+            lastError = "listener on " + e.localAddress + ":" + P2pPlan.PORT + ": " + LinkIo.describe(ex)
+            DiagLog.e(tag, "LISTENER could not bind: " + lastError)
+            watchEndpoint("the listener could not bind to " + e.localAddress)
+        }
+    }
+
+    private fun closeListener(why: String) {
+        val had = server != null || listener != null
+        acceptToken++                   // anything still accepting is stale from this instant
+        try { server?.close() } catch (_: Exception) {}
+        server = null
+        listener = null
+        if (had) DiagLog.i(tag, "LISTENER closed: " + why)
+    }
+
+    /**
+     * The accept loop carries the generation it was born with. A loop of an
+     * older lifecycle that comes back with a connection is refused and the
+     * connection closed, so a stale listener can never feed a newer group.
+     */
+    private fun acceptLoop(ss: ServerSocket, gen: Int, token: Int) {
+        DiagLog.i(tag, "LISTENER accept loop started for generation " + gen + " (token " + token + ")" + " on " + (ss.inetAddress?.hostAddress ?: "?") + ":" + ss.localPort)
+        io.execute {
+            while (!ss.isClosed) {
+                val s = try { ss.accept() } catch (e: Exception) { break }
+                val from = (s.inetAddress?.hostAddress ?: "?") + ":" + s.port
+                if (gen != acceptGeneration || token != acceptToken) {
+                    DiagLog.w(tag, "a STALE accept loop (generation " + gen + "/token " + token + ", current " + acceptGeneration + "/" + acceptToken + ") refused a connection from " + from)
+                    try { s.close() } catch (_: Exception) {}
+                    continue
+                }
+                val info = "accepted " + from + " on " + (s.localAddress?.hostAddress ?: "?") + " (generation " + gen + ")"
+                DiagLog.i(tag, "TCP " + info)
+                main.post {
+                    if (!P2pEndpoint.acceptAllowed(gen, endpoint) || token != acceptToken) {
+                        DiagLog.w(tag, "dropping a socket from generation " + gen + ": the endpoint is now " + (endpoint?.describe() ?: "none"))
+                        try { s.close() } catch (_: Exception) {}
+                    } else {
+                        life.onSocket(info); hooks.onSocket(s, true); changed()
+                    }
+                }
+            }
+            DiagLog.i(tag, "LISTENER accept loop for generation " + gen + " ended")
+            main.post {
+                if (gen == acceptGeneration && token == acceptToken) {
+                    listener = listener?.copy(accepting = false)
+                    DiagLog.w(tag, "the listener of the CURRENT generation stopped accepting")
+                    ensureListener("the accept loop of the current generation ended")
+                }
+            }
+        }
+    }
+
+    /**
+     * The address of a fresh p2p interface can appear a moment after the
+     * group does. This watches the endpoint until it is readable, a bounded
+     * number of times, and stops the moment the listener is valid. It
+     * creates no socket by itself and retries nothing blindly.
+     */
+    private fun watchEndpoint(why: String) {
+        if (watching) return
+        watching = true
+        watchTicks = 0
+        DiagLog.i(tag, "watching for the P2P endpoint: " + why)
+        val r = object : Runnable {
+            override fun run() {
+                if (!watching) return
+                if (life.cleaning || !life.groupFormed) { watching = false; return }
+                watchTicks++
+                observeEndpoint("endpoint watch " + watchTicks + "/" + ENDPOINT_WATCH_TICKS)
+                val e = endpoint
+                if (e != null && e.usable && life.role == P2pPlan.Role.GROUP_OWNER && !P2pEndpoint.ok(listenerVerdict())) {
+                    watching = false
+                    openListener(e, "the endpoint became readable")
+                    return
+                }
+                if (P2pEndpoint.ok(listenerVerdict()) || (e != null && e.usable && life.role != P2pPlan.Role.GROUP_OWNER)) { watching = false; return }
+                if (watchTicks >= ENDPOINT_WATCH_TICKS) {
+                    watching = false
+                    DiagLog.e(tag, "the P2P endpoint never became readable: " + (endpoint?.describe() ?: "none") + " | interfaces: " + interfaces())
+                    return
+                }
+                main.postDelayed(this, ENDPOINT_WATCH_MS)
+            }
+        }
+        main.postDelayed(r, ENDPOINT_WATCH_MS)
+    }
+
+    // ---- the buyer side -------------------------------------------------------------------------------
+
+    /**
+     * Dial the group owner ON the P2P network. The endpoint is read again at
+     * every attempt, because the address of a fresh p2p interface can appear
+     * a moment after the group does; the bound state is logged every time,
+     * so a dial that left through the wrong network is visible instead of
+     * silent.
+     */
     private fun dial(host: String) {
+        val seq = ++dialSeq
         io.execute {
             var last = ""
-            for (attempt in 1..6) {
-                if (life.cleaning) return@execute
+            for (attempt in 1..P2pPlan.DIAL_ATTEMPTS) {
+                if (life.cleaning || seq != dialSeq) { DiagLog.i(tag, "dial abandoned: the lifecycle moved on"); return@execute }
+                val h = binding.resolve(groupIface.ifEmpty { null })
+                val s = Socket()
+                val bound = binding.bind(s, h)
+                DiagLog.i(tag, P2pEndpoint.dialLine(attempt, P2pPlan.DIAL_ATTEMPTS, h?.localAddress ?: "", host, P2pPlan.PORT,
+                    h?.interfaceName ?: "", h?.identity ?: "", bound))
                 try {
-                    val s = Socket()
-                    s.connect(InetSocketAddress(host, P2pPlan.PORT), 5000)
-                    val info = "connected " + s.localAddress?.hostAddress + " -> " + host + ":" + P2pPlan.PORT
+                    s.connect(InetSocketAddress(host, P2pPlan.PORT), P2pPlan.DIAL_TIMEOUT_MS)
+                    val info = "connected " + (s.localAddress?.hostAddress ?: "?") + " -> " + host + ":" + P2pPlan.PORT +
+                        " (bound to the P2P network=" + bound + ")"
                     DiagLog.i(tag, "TCP " + info)
-                    main.post { life.onSocket(info); hooks.onSocket(s, false); changed() }
+                    main.post {
+                        if (seq != dialSeq) { try { s.close() } catch (_: Exception) {} }
+                        else { life.onSocket(info); hooks.onSocket(s, false); changed() }
+                    }
                     return@execute
                 } catch (e: Exception) {
                     last = LinkIo.describe(e)
-                    DiagLog.w(tag, "TCP attempt " + attempt + "/6 to " + host + " failed: " + last)
-                    try { Thread.sleep(1500) } catch (_: InterruptedException) { return@execute }
+                    try { s.close() } catch (_: Exception) {}
+                    DiagLog.w(tag, "TCP attempt " + attempt + "/" + P2pPlan.DIAL_ATTEMPTS + " to " + host + " failed: " + last)
+                    try { Thread.sleep(P2pPlan.DIAL_GAP_MS) } catch (_: InterruptedException) { return@execute }
                 }
             }
-            main.post { fail("could not reach the group owner: " + last) }
+            main.post { if (seq == dialSeq) fail("could not reach the group owner: " + last) }
         }
     }
 
@@ -536,6 +744,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("last join attempt: ").append(lastJoin.ifEmpty { "none" }).append("\n")
         sb.append("peers I can really address: ").append(if (realPeers().isEmpty()) "none" else realPeers().joinToString("; ") { it.name + " " + it.address })
             .append(" (anonymised: ").append(peers.count { P2pPlan.anonymous(it.address) }).append(")\n")
+        sb.append("P2P endpoint: ").append(endpoint?.describe() ?: "none").append("\n")
+        sb.append("listener: ").append(listener?.describe() ?: "none").append("\n")
+        sb.append("listener belongs to this endpoint: ").append(P2pEndpoint.verdictText(listenerVerdict())).append("\n")
         sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")
         sb.append("my Wi-Fi network NOW: ").append(hooks.staDescription().ifEmpty { "none" }).append("\n")

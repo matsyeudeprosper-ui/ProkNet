@@ -212,6 +212,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile private var p2pSellerName = ""
     @Volatile private var p2pConnectAttempts = 0
     @Volatile private var p2pNextConnectAt = 0L
+    /** v0.9.13: when the local group formed on THIS phone. The transport has a bounded time from there. */
+    @Volatile private var p2pGroupFormedAt = 0L
 
     /** The seller answered. Its own P2P name is what lets us find it in OUR peer list. */
     private fun onP2pStatus(peerShort: String, c: Wire.Control.P2pStatus) {
@@ -250,7 +252,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         buyViaP2p = true
         p2pWaitStart = System.currentTimeMillis()
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
-        p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L
+        p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
         val err = p2p.startBuyer()
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
@@ -293,6 +295,16 @@ class ProkNetNode(private val context: Context) : TransportListener {
             return
         }
         p2pPausedLogged = false
+        // v0.9.13: the group can be formed and the transport still never come up. That must END, with
+        // a sentence the customer can read, instead of a spinner that never stops.
+        val sinceGroup = if (p2pGroupFormedAt == 0L) 0L else System.currentTimeMillis() - p2pGroupFormedAt
+        if (P2pPlan.transportStep(p2p.groupFormed, wifi.linkedPeer != null, sinceGroup) == P2pPlan.TransportStep.FAIL_NO_TRANSPORT) {
+            DiagLog.e(tag, "the Wi-Fi Direct group is formed but no ProkNet transport came up in " + (sinceGroup / 1000) +
+                "s | my endpoint: " + (p2p.endpoint?.describe() ?: "none"))
+            // the sentence the customer reads is built in French by ProductState.lostHint
+            failBuy(P2pPlan.TRANSPORT_FAIL_REASON, P2pPlan.TRANSPORT_FAIL_REASON)
+            return
+        }
         val sellerAddr = P2pPlan.pickSellerPeer(p2p.realPeers(), p2pSellerName, p2p.groupOwnerAddresses())
         val step = P2pPlan.joinStep(p2pStatus, sellerAddr != null, p2pConnectAttempts, p2pReachableMs, p2p.groupFormed)
         when (step) {
@@ -338,9 +350,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun onP2pGroupChanged() {
         if (p2p.groupFormed == p2pGroupWasFormed) return
         p2pGroupWasFormed = p2p.groupFormed
-        if (p2p.groupFormed)
-            DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo)
-        else DiagLog.w(tag, "Wi-Fi Direct group gone (" + p2p.phase + ")")
+        if (p2p.groupFormed) {
+            p2pGroupFormedAt = System.currentTimeMillis()
+            DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo +
+                " | endpoint " + (p2p.endpoint?.describe() ?: "not readable yet"))
+        } else {
+            p2pGroupFormedAt = 0L
+            DiagLog.w(tag, "Wi-Fi Direct group gone (" + p2p.phase + ")")
+        }
     }
 
     /** Developer test: this phone becomes the Wi-Fi Direct group owner and waits for a buyer. */
@@ -1042,6 +1059,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
         if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | hotspot refused on this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
         if (p2pFallbackActive) sb.append(" | sharing by Wi-Fi Direct: ").append(p2p.phase).append(" clients ").append(p2p.clientCount)
+            .append(" | listener ").append(net.prok.proknet.core.P2pEndpoint.verdictText(p2p.listenerVerdict()))
         if (relayOn) sb.append(" | RELAY on")
         if (tunnel.state != "DISCONNECTED" || buyerWanted != null) sb.append(" | BUY: ").append(tunnel.state)
         sb.append(" | ").append(q)

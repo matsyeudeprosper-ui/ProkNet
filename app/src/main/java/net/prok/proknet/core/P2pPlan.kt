@@ -89,6 +89,45 @@ object P2pPlan {
      * it is a local link with no Internet behind it. Names look like
      * `p2p-wlan0-0` or `p2p0`.
      */
+    /**
+     * v0.9.13: strictly the Wi-Fi Direct interface. [isLocalLinkIface] is
+     * wider on purpose (it also covers the method A hotspot), but a socket
+     * that must belong to the Wi-Fi Direct endpoint may only be bound to a
+     * `p2p...` interface.
+     */
+    fun isP2pIface(name: String?): Boolean = name != null && name.startsWith("p2p")
+
+    // ---- v0.9.13: the buyer dial window and the bounded failure -------------------------------------
+
+    const val DIAL_ATTEMPTS = 6
+    const val DIAL_TIMEOUT_MS = 4_000
+    const val DIAL_GAP_MS = 1_500L
+
+    /**
+     * After the local group is formed, the whole transport has this long to
+     * come up: the six dial attempts plus a margin for the owner to notice
+     * the client and revalidate its listener. Then the purchase fails with a
+     * sentence a customer can read, instead of spinning forever.
+     */
+    const val TRANSPORT_GIVE_UP_MS = 45_000L
+
+    /** What the buyer says to itself when it gives up on the transport. */
+    const val TRANSPORT_FAIL_REASON = "local link formed but no transport answer from the provider"
+
+    enum class TransportStep { WAIT, FAIL_NO_TRANSPORT, DONE }
+
+    /**
+     * [msSinceGroup] counts from the moment the Wi-Fi Direct group formed on
+     * this phone, not from the start of the purchase: the group is the point
+     * from which a socket is supposed to be possible.
+     */
+    fun transportStep(groupFormed: Boolean, linkUp: Boolean, msSinceGroup: Long): TransportStep = when {
+        linkUp -> TransportStep.DONE
+        !groupFormed -> TransportStep.WAIT
+        msSinceGroup >= TRANSPORT_GIVE_UP_MS -> TransportStep.FAIL_NO_TRANSPORT
+        else -> TransportStep.WAIT
+    }
+
     fun isLocalLinkIface(name: String?): Boolean {
         val n = (name ?: "").lowercase()
         return n.startsWith("p2p") || n.startsWith("ap") || n.startsWith("swlan") || n.contains("softap")

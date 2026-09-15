@@ -746,6 +746,64 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## A socket belongs to an endpoint (v0.9.13)
+
+v0.9.12 proved the topology on real phones, and nothing moved:
+
+```
+seller  wlan0 = 192.168.1.13           still on the Freebox
+seller  p2p-wlan0-25 = 192.168.49.1    GROUP_OWNER, clients 1
+buyer   p2p0 = 192.168.49.124          CLIENT, groupOwner 192.168.49.1
+seller 09:08:43  group owner listening on :47742
+buyer  09:10:1x  192.168.49.124 -> 192.168.49.1:47742   x6, all timed out
+seller           TCP accepted:         never
+```
+
+The listener was opened once, when the group formed, on every interface
+(`0.0.0.0`), and was then believed forever because the object was not null.
+Ninety seconds later the buyer joined a group whose endpoint that socket did
+not necessarily belong to any more. **A server socket object is not proof
+that a usable server exists.**
+
+So the socket is given an identity, in `core/P2pEndpoint.kt` (pure) and
+`transport/P2pSocketBinding.kt` (the only place that touches Android
+networks):
+
+```
+Endpoint  = generation + role + interface + local address + android network
+Listener  = the endpoint generation it was built for + what it really bound to
+validate(endpoint, listener) -> VALID | STALE_GENERATION | WRONG_ADDRESS |
+                                WRONG_INTERFACE | WRONG_NETWORK |
+                                NOT_ACCEPTING | NO_LISTENER | NO_ENDPOINT
+```
+
+- **Bound to the endpoint, not to the world.** The owner listens on
+  `192.168.49.1:47742`, taken from the live P2P interface, and the buyer
+  binds its dial socket to the P2P `Network` before connecting. Both log
+  `socket bound to P2P network=true/false`, so a dial that left through the
+  wrong network is visible instead of silent.
+- **A new generation only for a real change.** Role, interface, local
+  address, Android network, or the group being destroyed and recreated give
+  a new generation. Anything else leaves the endpoint, and its listener,
+  exactly as they are.
+- **Validation when the client arrives.** On `clients 0 -> 1` the endpoint is
+  read again and the listener is checked against it. It is replaced only if
+  the check says it is not this endpoint's listener. This is endpoint
+  validation, not "restart because maybe".
+- **A generation and a token on the accept loop.** A loop from an older
+  lifecycle that comes back with a connection is refused and the connection
+  closed, so a stale listener can never feed a newer group.
+- **The upstream is untouched.** Only the local buyer/seller transport socket
+  belongs to Wi-Fi Direct. The provider gateway keeps choosing the real
+  upstream network exactly as before, and a `p2p...` interface stays a LOCAL
+  link that can never be an upstream. LOCAL LINK = P2P, UPSTREAM = the home
+  Wi-Fi.
+- **The spinner ends.** Once the group is formed the whole transport has
+  `P2pPlan.TRANSPORT_GIVE_UP_MS` (45 s, more than the six dial attempts) to
+  come up. After that the purchase fails with
+  "Connexion locale créée, mais le fournisseur ne répond pas." and is torn
+  down cleanly; the seller keeps sharing.
+
 ## The buyer joins by itself (v0.9.12)
 
 The next run had everything healthy on both sides and a real group on the

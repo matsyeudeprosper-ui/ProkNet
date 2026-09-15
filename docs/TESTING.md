@@ -979,3 +979,63 @@ result and must be reported as one.
 - Seller clients count and its Wi-Fi network before and during.
 - Buyer role, group owner address, socket line, VPN, INTERNET OK.
 - Did Chrome load? Data and cost on both phones.
+
+## 31. v0.9.13 the TCP listener lifecycle
+
+Same setup as section 30, and section 30 is still THE claim rule. This
+section is only about reading the new lines while you run it.
+
+On the SELLER, after PARTAGER INTERNET, the log must show, in order:
+
+```
+WI-FI DIRECT GROUP FORMED: role GROUP_OWNER ... | endpoint generation 1, role GROUP_OWNER,
+        interface p2p-wlan0-XX, local 192.168.49.1, network NNN
+P2P ENDPOINT generation 1, ... (first endpoint, seen on connection info)
+LISTENER creating: 192.168.49.1:47742 | generation 1, ...
+LISTENER actual: 192.168.49.1:47742 | ... | bound to the P2P endpoint=true | network bound=true
+LISTENER accept loop started for generation 1 (token 1) on 192.168.49.1:47742
+```
+
+`bound to the P2P endpoint=true` is the line that was missing in v0.9.12. If
+it says false, copy the whole block: the listener did not land on the Wi-Fi
+Direct address.
+
+When the buyer joins, the seller must log:
+
+```
+CLIENT COUNT 0 -> 1: listener check says valid | endpoint ... | listener 192.168.49.1:47742 ...
+TCP accepted 192.168.49.124:NNNNN on 192.168.49.1 (generation 1)
+```
+
+A check that says anything else is not a failure by itself: the listener is
+then rebuilt for the current endpoint and the reason is printed. What must
+never appear is a client joining with no check line at all.
+
+On the BUYER, each dial attempt prints its own network:
+
+```
+DIAL 1/6: 192.168.49.124 -> 192.168.49.1:47742 | p2p interface p2p0 |
+          android network NNN | socket bound to P2P network=true
+TCP connected 192.168.49.124 -> 192.168.49.1:47742 (bound to the P2P network=true)
+```
+
+Then the signed handshake, the contract, the VPN and INTERNET OK, as before.
+
+**The bounded failure.** If the group forms and no transport comes up, the
+buyer must STOP after about 45 seconds with
+"Connexion locale créée, mais le fournisseur ne répond pas." and go back to
+the offer list. It must never spin forever. Check on the seller right after:
+its sharing card is still on, its Wi-Fi is still the Freebox, and it can
+serve the next attempt without being restarted.
+
+**Upstream check, every run:** while the customer is online, the seller must
+still show the Freebox as its Internet, and COPY DIAG on the seller must show
+`wlan0` as the upstream with `p2p...` listed as a local link only.
+
+### Checklist for the v0.9.13 report
+
+- The five seller lines above, verbatim.
+- The `CLIENT COUNT 0 -> 1` line and its verdict.
+- One `DIAL` line from the buyer, with the bound state.
+- Whether TCP was accepted, and how long after the join.
+- If it failed: the French sentence, the time it took, and both P2P DIAG dumps.

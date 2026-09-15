@@ -67,6 +67,9 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.9.13: the local Wi-Fi Direct link was built and the provider never answered on it
+        any(lastError, "no transport answer", "local link formed") ->
+            "Connexion locale créée, mais le fournisseur ne répond pas."
         // v0.9.3: the three ways the setup really fails, each with what to check
         any(lastError, "did not answer", "did not introduce", "no contract answer", "no SESSION_OK", "did not join") ->
             "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."
