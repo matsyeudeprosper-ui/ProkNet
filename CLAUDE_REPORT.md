@@ -1,141 +1,122 @@
-# CLAUDE_REPORT - ProkNet v0.9.15 "the radio has to be on the group channel"
+# CLAUDE_REPORT - ProkNet v0.9.16 "the link is one way"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 153/153 automated tests pass, released, not yet tested on phones.
-Home Wi-Fi resale is NOT claimed.**
+Status: **built, 154/154 automated tests pass, released, not yet tested on phones.
+Home Wi-Fi resale is NOT claimed. But the fault is now MEASURED, not guessed.**
 
-## 1. What the v0.9.14 run proved
+## 1. The measurement
 
-It did exactly what it was built to do: it removed the socket layer from the
-list of suspects.
-
-```
-seller  p2p-wlan0-27 = 192.168.49.1   GROUP_OWNER  network 159  clients 1
-seller  listener 192.168.49.1:47742   generation 1.1  valid for this live membership
-seller  DIAL 1..6  192.168.49.1 -> 192.168.49.124:47742   binding ANDROID_NETWORK
-buyer   p2p0 = 192.168.49.124         CLIENT       generation 1.1
-buyer   listener 192.168.49.124:47742 valid for this live membership
-buyer   DIAL 1..6  192.168.49.124 -> 192.168.49.1:47742   binding LOCAL_ADDRESS
-BOTH    every attempt: SocketTimeoutException after 4000 ms
-```
-
-The membership handshake worked end to end: `P2P MEMBER` arrived, the seller
-armed and answered `TRANSPORT_READY` in 0.2 s, the buyer dialled 2 s later.
-Two listeners, both armed for the live membership, both on their own P2P
-address, dialling each other, twelve timeouts.
-
-Not one `ECONNREFUSED`, not one `ENETUNREACH`. Nothing answered in either
-direction. **No IP packet crosses this link.** The socket layer is not the
-problem, and neither is the binding.
-
-## 2. What both logs show at the same time
-
-Every thirty seconds, through the entire dial window, on BOTH phones:
+The v0.9.15 probe returned two different verdicts, one per phone, and the
+pair is the finding:
 
 ```
-seller 10:56:52  starting peer discovery from a clean state / discoverPeers accepted
-buyer  10:57:02  starting peer discovery from a clean state / discoverPeers accepted
-seller 10:57:22  starting peer discovery from a clean state / discoverPeers accepted
+buyer  (client)  LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+                 (sent 5, replies 0, probes answered by us 0)
+seller (owner)   LINK PROBE: a packet DID cross, 10 bytes from 192.168.49.124   x6
+seller (owner)   LINK PROBE verdict: packets arrive here but our answers do not get back
+                 (sent 5, replies 0, probes answered by us 3)
 ```
 
-Wi-Fi Direct discovery takes a single-radio phone OFF the group channel to
-scan the social channels, and Android keeps a find running for about two
-minutes once it is accepted. Association survives that; beacons are cheap. A
-four second TCP handshake does not.
+**Every packet the client sent arrived at the owner. Nothing the owner sent
+arrived at the client.** Not the UDP answers, not the owner's own probes, and
+not a TCP handshake in either dial direction. Uplink perfect, downlink dead.
 
-We have been running discovery continuously on both sides since v0.9.9,
-when the owner needed a peer list in order to invite the guest. Since v0.9.12
-the buyer joins by itself, so after somebody has joined nothing needs it at
-all.
+This closes the question the last four versions were circling. The buyer's
+SYN arrives at the owner, the owner's SYN-ACK never gets back, so the buyer
+times out and the owner's `accept()` never completes. That is exactly why
+`TCP accepted` was never printed while the listener was correct.
 
-## 3. The change
+The socket layer, the binding, the endpoint identity, the membership
+generations and the listener lifecycle are all correct, and the measurement
+proves it. The remaining fault is below them.
 
-**Discovery belongs to admission, and admission ends when somebody joins.**
-The rule is tied to MEMBERSHIP, not to the group, precisely so that the
-proven admission path is untouched:
+## 2. Discovery, from the same run
 
-```
-seller sharing, group empty      -> discovery ON  (a buyer must still find it)
-buyer looking for the seller     -> discovery ON
-somebody joined (clients 0 -> 1) -> discovery OFF, on both phones, in the
-                                    FRAMEWORK (stopPeerDiscovery), not only
-                                    in our own 30 s loop
-the group is gone                -> discovery ON again
-```
-
-`P2pPlan.discoveryWanted(want, hasLiveMember)` is the whole rule, and it is
-tested. A seller with an empty group still discovers, exactly as in every run
-so far.
-
-## 4. Measure the link instead of guessing
-
-A timed out SYN says nothing about why. Each side now opens a UDP echo on its
-own P2P address, port 47743, for as long as its listener is armed, and the
-dialling side sends up to five probes:
+The v0.9.15 discovery rule worked exactly as specified:
 
 ```
-LINK PROBE listening on 192.168.49.1:47743
-LINK PROBE 1/5 to 192.168.49.124: REPLY in 14 ms
-LINK PROBE verdict: the link carries IP packets both ways
+seller 12:03:36.433  DISCOVERY off: somebody has joined: the radio must stay on the group channel
+seller 12:03:36.477  discovery stopped, the radio can stay on the group channel
+seller 12:03:36.594  not starting discovery: this link already has a peer on it
+buyer  12:03:57.909  DISCOVERY off: somebody has joined: the radio belongs to the data plane now
 ```
 
-Three possible verdicts, and the next run will produce one of them:
+No discovery ran while the customer was in the group, and the link was still
+one way, so scanning was not the cause either. The rule stays: it is correct
+and it costs nothing. One thing it did prove is that the seller now sees the
+buyer by name and with a real address, `OnePlus Nord CE 2 Lite 5G
+1e:4f:f2:19:36:ce`, which the v0.9.11 run could not.
 
-- `the link carries IP packets both ways` -> the radio is fine and the
-  remaining fault is above IP, which would be new,
-- `packets arrive here but our answers do not get back` -> a one way path,
-- `NO IP packet crossed the Wi-Fi Direct link in either direction` -> the
-  v0.9.14 situation, and then the fault is the radio or the driver, not us.
+## 3. What this version does about it
 
-It is a diagnostic, never a gate: TCP still runs exactly as before.
+A group owner has to buffer frames for a client whose radio is asleep and
+deliver them at the beacon. On a phone whose single radio is also serving a
+home Wi-Fi connection, that is a known place for downlink frames to die. The
+driver is not ours. The sleep is refusable.
 
-## 5. What I did NOT do
+- **`transport/RadioLock.kt`**: `WIFI_MODE_FULL_HIGH_PERF` plus, on API 29+,
+  `WIFI_MODE_FULL_LOW_LATENCY`, held while a group exists on this phone, on
+  BOTH sides, released the moment it is gone. Holding a Wi-Fi lock during a
+  data transfer is what Wi-Fi Direct expects of an application anyway, and we
+  never did it. `RADIO LOCK held: ...` is printed, so a phone that refuses
+  both locks says so.
+- **The group channel is logged**: `GROUP CHANNEL: 5 GHz ch 48 (5240 MHz) |
+  this phone's Wi-Fi: 5 GHz ch 48 (5240 MHz)`. A group forced onto the home
+  Wi-Fi channel is now visible instead of assumed.
+- **The probe separates unicast from broadcast**, both directions. Each side
+  answers a probe twice, once to the sender and once to the group broadcast
+  address, and there is a fifth verdict: `only BROADCAST crosses: the two
+  phones cannot address each other directly`. A radio that drops everything
+  and two phones that cannot resolve each other need different answers, and
+  this tells them apart.
 
-No sleeps, no forced reconnects, no repeated blind sockets, no device
-conditions. I did not touch discovery before a client joins, the BLE
-admission, the buyer-side peer selection, group formation, the membership
-handshake, the binding hierarchy, crypto, the signed handshake, the tunnel,
-the VPN, the accounting, the marketplace, method A, or the bounded failure.
+## 4. What I did NOT do
 
-The provider upstream is untouched: the probe sockets are bound to the P2P
-endpoint like every other local socket, and `p2p...` stays a LOCAL link that
-can never be an upstream.
+No sleeps, no forced reconnects, no blind sockets, no device conditions, and
+no change to discovery before a client joins, BLE admission, peer selection,
+group formation, the membership handshake, the binding hierarchy, crypto, the
+signed handshake, the tunnel, the VPN, the accounting, the marketplace,
+method A, or the bounded failure. The provider upstream is untouched.
 
-## 6. Tests (153)
+## 5. Tests (154)
 
-The discovery rule on every combination, including the one that must NOT
-change: a seller whose group is empty still discovers. The link proof: not
-run, nothing crossed, one way, alive. Plus everything from v0.9.14.
+The five link verdicts including the two the phones actually produced, the
+broadcast address of a group subnet, and everything from v0.9.15.
 
-## 7. Build
+## 6. Build
 
-Build 28, versionName 0.9.15, 1.44 MB,
-SHA256 `b0bbd0e212c2eae40f9900da1b32c6c935923a8f159c73bee4a304d341ffd16b`.
+Build 29, versionName 0.9.16, 1.28 MB,
+SHA256 `775446712f18414ed520b29bbb6f91900e903557942c93125e4569e6048611d4`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.15
-Commit `ffc4fee` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.16
+Commit `3087c2b` on `main`; this report on top.
 
-## 8. What the next run answers
+## 7. If the lock does not change the downlink
 
-`docs/TESTING.md` section 33. Two things, and the second one matters even if
-the first still fails:
+Then the software levers above IP are finished, and there are two left, in
+this order:
 
-1. does `DISCOVERY off` appear on both phones when the buyer joins, and does
-   nothing start discovery again while the customer is there,
-2. what does `LINK PROBE verdict` say on each phone.
+1. **The association direction.** The only session that ever carried traffic,
+   v0.9.9 with 70 minutes and 34 MB, was the one where the OWNER called
+   `connect()` to invite the guest. Since v0.9.12 the client joins by itself.
+   The seller can now see the buyer by name again, so the owner invite is
+   available as a data-plane experiment, and it is the only known difference
+   between a link that carried traffic on these two phones and one that does
+   not.
+2. **The group band.** Android 10+ can ask for a group on a chosen band
+   (`setGroupOperatingBand`). The group currently follows the seller's home
+   Wi-Fi onto 5 GHz channel 48. A 2.4 GHz group would put the radio in dual
+   band concurrency instead of sharing one channel.
 
-That verdict separates a radio problem from a software problem for good. If
-it says the link carries packets both ways and TCP still times out, the fault
-is somewhere new and I will have the evidence to find it. If it says nothing
-crossed even with the radio parked on the group channel, then these two
-phones cannot carry a Wi-Fi Direct data path while the provider stays on its
-home Wi-Fi, and that is a product level answer, not a bug.
+Both are one change each, and both should be tried one at a time, with the
+probe verdict as the measurement. I did not bundle them into this build
+because the Wi-Fi lock has to be ruled in or out on its own.
 
-## 9. The claim rule
+## 8. The claim rule
 
 Unchanged, section 30. Home Wi-Fi resale is not claimed.
