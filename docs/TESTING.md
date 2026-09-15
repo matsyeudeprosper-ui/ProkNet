@@ -1101,3 +1101,48 @@ keeps sharing.
 - Seller Wi-Fi before, during and after. Provider upstream must stay the Freebox.
 - If it still fails: both COPY P2P DIAG dumps, which now print the data plane,
   the listener and the verdict.
+
+## 33. v0.9.15 the radio and the link probe
+
+Setup is section 30, unchanged. Section 30 is still the claim rule.
+
+**What must appear now, on BOTH phones, the moment the buyer joins:**
+
+```
+DISCOVERY off: somebody has joined: the radio must stay on the group channel
+discovery stopped, the radio can stay on the group channel
+```
+
+After that line there must be **no** `starting peer discovery` and no
+`discoverPeers accepted` until the group is gone. If either appears while a
+customer is in the group, that is the bug coming back and the run should be
+reported with those timestamps.
+
+**The measurement.** Each side opens a UDP echo when its listener is armed:
+
+```
+LINK PROBE listening on 192.168.49.1:47743
+```
+
+and the dialling side prints one of three verdicts:
+
+```
+LINK PROBE verdict: the link carries IP packets both ways
+LINK PROBE verdict: packets arrive here but our answers do not get back
+LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+```
+
+**This verdict is the result of the run**, whatever happens to the TCP
+connection. Copy it from both phones. It is worth more than the six DIAL
+lines, because it separates a radio problem from a socket problem for good.
+
+If the probe says the link carries packets and TCP still times out, copy both
+COPY P2P DIAG dumps: that would be a new and different fault.
+
+### Checklist for the v0.9.15 report
+
+- The `DISCOVERY off` line on both phones, with its timestamp.
+- Any `discoverPeers accepted` AFTER it, if there is one.
+- The `LINK PROBE verdict` line from both phones.
+- Whether TCP connected, and which side won.
+- Seller Wi-Fi before, during and after. The Freebox must survive.

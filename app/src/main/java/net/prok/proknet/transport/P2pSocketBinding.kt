@@ -3,6 +3,7 @@ package net.prok.proknet.transport
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -117,6 +118,19 @@ class P2pSocketBinding(private val context: Context) {
             } catch (e: Exception) { DiagLog.e(tag, "binding to the P2P local address " + local + " failed: " + e) }
         }
         return P2pEndpoint.Binding.NONE
+    }
+
+    /**
+     * A datagram socket on the P2P endpoint, for the link probe. Same order
+     * as [bindOut]: the network when Android exposes one, and in every case
+     * an explicit bind to the P2P local address.
+     */
+    fun datagramOn(h: Handle, port: Int): DatagramSocket {
+        val ds = DatagramSocket(null)
+        ds.reuseAddress = true
+        h.network?.let { try { it.bindSocket(ds) } catch (e: Exception) { DiagLog.w(tag, "bindSocket(datagram): " + e) } }
+        ds.bind(java.net.InetSocketAddress(InetAddress.getByName(h.localAddress), port))
+        return ds
     }
 
     /**

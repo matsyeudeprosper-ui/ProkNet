@@ -97,6 +97,52 @@ object P2pPlan {
      */
     fun isP2pIface(name: String?): Boolean = name != null && name.startsWith("p2p")
 
+    // ---- v0.9.15: discovery belongs to admission, never to the data phase ---------------------------
+
+    /**
+     * Wi-Fi Direct peer discovery makes a single-radio phone LEAVE the group
+     * channel to scan the social channels, and Android keeps a find running
+     * for about two minutes once it is accepted.
+     *
+     * The v0.9.14 phone run is what forced this rule. Both phones were in the
+     * group, both listeners were armed for the live membership, both dialled
+     * with a correctly bound socket, and every SYN in BOTH directions timed
+     * out while each phone logged `discoverPeers accepted` every thirty
+     * seconds throughout. A socket cannot reach a radio that is off channel.
+     *
+     * The rule is tied to MEMBERSHIP, not to the group: a seller with an
+     * empty group still has to be found by a buyer, and that admission path
+     * is proven, so it is left exactly as it is. The moment somebody has
+     * joined, admission is over and the radio belongs to the data plane.
+     */
+    fun discoveryWanted(want: Want, hasLiveMember: Boolean): Boolean = want != Want.NONE && !hasLiveMember
+
+    /**
+     * The link probe: a UDP echo between the two P2P addresses, so a dead
+     * link is MEASURED instead of guessed at. It proves whether any IP packet
+     * crosses the Wi-Fi Direct link, in which direction, and how fast.
+     */
+    const val PROBE_PORT = 47743
+    const val PROBE_COUNT = 5
+    const val PROBE_GAP_MS = 400L
+    const val PROBE_TIMEOUT_MS = 1_200
+
+    enum class LinkProof { NOT_RUN, NO_PACKET_CROSSED, ONE_WAY, ALIVE }
+
+    fun linkProof(sent: Int, replies: Int, echoedHere: Int): LinkProof = when {
+        sent == 0 -> LinkProof.NOT_RUN
+        replies > 0 -> LinkProof.ALIVE
+        echoedHere > 0 -> LinkProof.ONE_WAY
+        else -> LinkProof.NO_PACKET_CROSSED
+    }
+
+    fun linkProofText(p: LinkProof): String = when (p) {
+        LinkProof.NOT_RUN -> "the link was never probed"
+        LinkProof.NO_PACKET_CROSSED -> "NO IP packet crossed the Wi-Fi Direct link in either direction"
+        LinkProof.ONE_WAY -> "packets arrive here but our answers do not get back"
+        LinkProof.ALIVE -> "the link carries IP packets both ways"
+    }
+
     // ---- v0.9.13: the buyer dial window and the bounded failure -------------------------------------
 
     const val DIAL_ATTEMPTS = 6

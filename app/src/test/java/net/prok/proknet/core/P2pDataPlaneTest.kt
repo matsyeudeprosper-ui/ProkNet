@@ -237,4 +237,44 @@ class P2pDataPlaneTest {
         assertEquals(Wire.P2P_READY, (Wire.parseControl(Wire.p2pStatus(Wire.P2P_READY, "C1 Pro")) as Wire.Control.P2pStatus).code)
         assertNotEquals(Wire.OP_P2P_MEMBER, Wire.OP_P2P_TRANSPORT)
     }
+
+    // ---- v0.9.15: the radio, and the measurement ----------------------------------------------------
+
+    @Test
+    fun discovery_belongs_to_admission_and_never_to_the_data_phase() {
+        // a seller with an EMPTY group still has to be found: that admission path is proven, keep it
+        val emptyGroup = P2pDataPlane.advance(P2pDataPlane.NONE, ownerSeen(), clientCount = 0, groupFormed = true)
+        assertFalse(emptyGroup.hasMember)
+        assertTrue(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, emptyGroup.hasMember))
+        // a buyer looking for the seller
+        assertTrue(P2pPlan.discoveryWanted(P2pPlan.Want.BUY, hasLiveMember = false))
+
+        // somebody joined: admission is over and the radio belongs to the data plane. A single radio
+        // that scans the social channels is not on the group channel, and in the v0.9.14 run both
+        // phones scanned every 30 s while every SYN in BOTH directions timed out.
+        val live = P2pDataPlane.advance(emptyGroup, ownerSeen(), clientCount = 1, groupFormed = true)
+        assertTrue(live.hasMember)
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.SELL, live.hasMember))
+        // a client is a member the moment it joins
+        val joined = P2pDataPlane.advance(P2pDataPlane.NONE, clientSeen(), clientCount = 0, groupFormed = true)
+        assertTrue(joined.hasMember)
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.BUY, joined.hasMember))
+        // idle: nothing to admit
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.NONE, false))
+        assertFalse(P2pPlan.discoveryWanted(P2pPlan.Want.NONE, true))
+    }
+
+    @Test
+    fun the_link_probe_says_what_six_timed_out_syns_cannot() {
+        assertEquals(P2pPlan.LinkProof.NOT_RUN, P2pPlan.linkProof(sent = 0, replies = 0, echoedHere = 0))
+        // exactly the v0.9.14 result: nothing crossed, in either direction
+        assertEquals(P2pPlan.LinkProof.NO_PACKET_CROSSED, P2pPlan.linkProof(5, 0, 0))
+        // their packets reach us and ours do not get back
+        assertEquals(P2pPlan.LinkProof.ONE_WAY, P2pPlan.linkProof(5, 0, 3))
+        // one reply is enough to prove the link carries IP both ways
+        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(5, 1, 0))
+        assertEquals(P2pPlan.LinkProof.ALIVE, P2pPlan.linkProof(1, 1, 7))
+        for (p in P2pPlan.LinkProof.values()) assertTrue(P2pPlan.linkProofText(p).isNotEmpty())
+        assertNotEquals(P2pPlan.PORT, P2pPlan.PROBE_PORT)
+    }
 }

@@ -14,6 +14,9 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
@@ -87,6 +90,11 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     /** The group owner address, for a client that has to dial it. */
     @Volatile private var goAddress: String = ""
     private var netHandle: P2pSocketBinding.Handle? = null
+    @Volatile private var probe: DatagramSocket? = null
+    @Volatile private var probeEchoed = 0
+    /** What the last link probe proved. The one thing six timed out SYNs cannot say. */
+    @Volatile var linkProof: P2pPlan.LinkProof = P2pPlan.LinkProof.NOT_RUN
+        private set
     private var watching = false
     private var watchTicks = 0
     private var dialSeq = 0
@@ -451,7 +459,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         life.onGroup(formed, info?.isGroupOwner == true, life.groupInfo.ifEmpty { "groupOwner=" + go })
         DiagLog.i(tag, "connection: formed=" + formed + " role=" + life.role + " groupOwner=" + go +
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
-        if (!formed) { changed(); return }
+        if (!formed) {
+            if (life.want != P2pPlan.Want.NONE) keepDiscovering("the group is gone, this phone can look for peers again")
+            changed(); return
+        }
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
         goAddress = go ?: goAddress
         observePlane("connection info")
@@ -479,16 +490,47 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
      */
     private fun keepDiscovering(why: String) {
         if (discovering) return
+        if (!P2pPlan.discoveryWanted(life.want, plane.hasMember)) {
+            DiagLog.i(tag, "not starting discovery: " + (if (plane.hasMember) "this link already has a peer on it" else "nothing to admit") + " (" + why + ")")
+            return
+        }
         discovering = true
         DiagLog.i(tag, "keeping Wi-Fi Direct discovery alive: " + why)
         val r = object : Runnable {
             override fun run() {
                 if (!discovering) return
+                // v0.9.15: the radio must stay on the group channel once a group exists
+                if (!P2pPlan.discoveryWanted(life.want, plane.hasMember)) { stopDiscovery("somebody has joined: the radio belongs to the data plane now"); return }
                 discover()
                 main.postDelayed(this, 30_000)
             }
         }
         main.post(r)
+    }
+
+    /**
+     * v0.9.15: stop the framework find, not just our own loop.
+     *
+     * Peer discovery takes a single-radio phone OFF the group channel, and
+     * Android keeps a find running for about two minutes. In the v0.9.14 run
+     * both phones were in the group, both listeners were armed, both dialled
+     * with a correctly bound socket, every SYN in both directions timed out,
+     * and both logged `discoverPeers accepted` every thirty seconds
+     * throughout. Discovery belongs to admission; the data phase has none.
+     */
+    private fun stopDiscovery(why: String) {
+        val wasOn = discovering
+        discovering = false
+        val m = manager; val c = channel
+        if (m == null || c == null) return
+        if (!wasOn) return
+        DiagLog.i(tag, "DISCOVERY off: " + why)
+        try {
+            m.stopPeerDiscovery(c, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { DiagLog.i(tag, "discovery stopped, the radio can stay on the group channel") }
+                override fun onFailure(reason: Int) { DiagLog.w(tag, "stopPeerDiscovery refused: " + reasonName(reason)) }
+            })
+        } catch (e: SecurityException) { DiagLog.w(tag, "stopPeerDiscovery: " + e.message) }
     }
 
     private fun stopDiscovering() { discovering = false }
@@ -552,6 +594,9 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                 dialled.clear()
             }
             now.membershipGeneration != before.membershipGeneration -> {
+                // v0.9.15: admission is over. A single radio that scans the social channels is not on
+                // the group channel, and that is what six timed out SYNs in BOTH directions look like.
+                stopDiscovery("somebody has joined: the radio must stay on the group channel")
                 DiagLog.i(tag, "DATA PLANE generation " + now.generationText() + " created (client membership established, seen on " + why + ")")
                 DiagLog.i(tag, "   " + now.describe())
                 val old = listener
@@ -611,6 +656,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             if (actual != p.localAddress) DiagLog.e(tag, "the listener did NOT bind to the P2P local address, it is on " + actual)
             life.onSocket("listening on " + actual + ":" + ss.localPort + " (generation " + p.generationText() + ")")
             acceptLoop(ss, p, token)
+            openProbe(p, handle)
             watching = false
             changed()
         } catch (ex: Exception) {
@@ -622,9 +668,88 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         }
     }
 
+    // ---- the link probe: measure the link instead of guessing ------------------------------------------
+
+    /**
+     * A UDP echo on the P2P endpoint. It answers the one question six timed
+     * out SYNs cannot: does ANY IP packet cross this Wi-Fi Direct link?
+     */
+    private fun openProbe(p: P2pDataPlane.Plane, handle: P2pSocketBinding.Handle) {
+        closeProbe()
+        try {
+            val ds = binding.datagramOn(handle, P2pPlan.PROBE_PORT)
+            probe = ds
+            probeEchoed = 0
+            DiagLog.i(tag, "LINK PROBE listening on " + p.localAddress + ":" + P2pPlan.PROBE_PORT)
+            io.execute {
+                val buf = ByteArray(64)
+                while (!ds.isClosed) {
+                    val pk = DatagramPacket(buf, buf.size)
+                    try { ds.receive(pk) } catch (e: Exception) { break }
+                    probeEchoed++
+                    DiagLog.i(tag, "LINK PROBE: a packet DID cross, " + pk.length + " bytes from " + (pk.address?.hostAddress ?: "?") + ", answering it")
+                    try { ds.send(DatagramPacket(pk.data, pk.length, pk.address, pk.port)) }
+                    catch (e: Exception) { DiagLog.w(tag, "LINK PROBE could not answer: " + e) }
+                }
+                DiagLog.i(tag, "LINK PROBE responder ended")
+            }
+        } catch (e: Exception) { DiagLog.w(tag, "LINK PROBE could not listen: " + LinkIo.describe(e)) }
+    }
+
+    private fun closeProbe() {
+        try { probe?.close() } catch (_: Exception) {}
+        probe = null
+    }
+
+    /** Send a few probes to [host] and say plainly what came back. Diagnostic only, never a gate. */
+    private fun probeLink(host: String) {
+        io.execute {
+            val h = binding.resolve(groupIface.ifEmpty { null })
+            if (h == null) { DiagLog.w(tag, "LINK PROBE: no P2P endpoint to probe from"); return@execute }
+            var replies = 0
+            var sent = 0
+            var best = -1L
+            val ds = try {
+                val d = DatagramSocket(null)
+                d.reuseAddress = true
+                h.network?.let { try { it.bindSocket(d) } catch (_: Exception) {} }
+                d.bind(InetSocketAddress(InetAddress.getByName(h.localAddress), 0))
+                d.soTimeout = P2pPlan.PROBE_TIMEOUT_MS
+                d
+            } catch (e: Exception) { DiagLog.w(tag, "LINK PROBE could not open a socket: " + LinkIo.describe(e)); return@execute }
+            val body = "prok-probe".toByteArray()
+            for (i in 1..P2pPlan.PROBE_COUNT) {
+                if (life.cleaning) break
+                try {
+                    val t0 = System.currentTimeMillis()
+                    ds.send(DatagramPacket(body, body.size, InetAddress.getByName(host), P2pPlan.PROBE_PORT))
+                    sent++
+                    val back = DatagramPacket(ByteArray(64), 64)
+                    ds.receive(back)
+                    val ms = System.currentTimeMillis() - t0
+                    replies++
+                    if (best < 0 || ms < best) best = ms
+                    DiagLog.i(tag, "LINK PROBE " + i + "/" + P2pPlan.PROBE_COUNT + " to " + host + ": REPLY in " + ms + " ms")
+                    break
+                } catch (e: Exception) {
+                    DiagLog.w(tag, "LINK PROBE " + i + "/" + P2pPlan.PROBE_COUNT + " to " + host + ": no reply (" + LinkIo.describe(e) + ")")
+                    try { Thread.sleep(P2pPlan.PROBE_GAP_MS) } catch (_: InterruptedException) { break }
+                }
+            }
+            try { ds.close() } catch (_: Exception) {}
+            val proof = P2pPlan.linkProof(sent, replies, probeEchoed)
+            linkProof = proof
+            DiagLog.i(tag, "LINK PROBE verdict: " + P2pPlan.linkProofText(proof) +
+                " (sent " + sent + ", replies " + replies + ", probes answered by us " + probeEchoed +
+                (if (best >= 0) ", best " + best + " ms" else "") + ")")
+            main.post { changed() }
+        }
+    }
+
     private fun closeListener(why: String) {
         val had = server != null || listener != null
         acceptToken++                   // anything still accepting is stale from this instant
+        closeProbe()
         try { server?.close() } catch (_: Exception) {}
         server = null
         listener = null
@@ -730,6 +855,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         val key = p.generationText() + "|" + address + ":" + port
         if (!dialled.add(key)) return null
         DiagLog.i(tag, "TRANSPORT dial to " + address + ":" + port + " for generation " + p.generationText() + " because " + why)
+        probeLink(address)
         dial(address, port, p)
         return null
     }
@@ -826,6 +952,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("data plane: ").append(plane.describe()).append("\n")
         sb.append("data plane usable: ").append(plane.usable).append("\n")
         sb.append("listener: ").append(listener?.describe() ?: "none").append("\n")
+        sb.append("link probe: ").append(P2pPlan.linkProofText(linkProof)).append("\n")
         sb.append("listener belongs to this live membership: ").append(P2pDataPlane.verdictText(listenerVerdict())).append("\n")
         sb.append("interfaces now: ").append(interfaces()).append("\n")
         sb.append("my Wi-Fi network BEFORE p2p: ").append(staBefore.ifEmpty { "none" }).append("\n")

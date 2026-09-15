@@ -746,6 +746,76 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The radio has to be on the group channel (v0.9.15)
+
+v0.9.14 removed the last socket-level doubt, and the phone run came back
+with the cleanest possible result:
+
+```
+seller  p2p-wlan0-27 = 192.168.49.1   GROUP_OWNER   network 159   clients 1
+seller  listener 192.168.49.1:47742   generation 1.1   valid for this live membership
+seller  DIAL 1..6  192.168.49.1 -> 192.168.49.124:47742   binding ANDROID_NETWORK
+buyer   p2p0 = 192.168.49.124         CLIENT        generation 1.1
+buyer   listener 192.168.49.124:47742 valid for this live membership
+buyer   DIAL 1..6  192.168.49.124 -> 192.168.49.1:47742   binding LOCAL_ADDRESS
+BOTH    every attempt: SocketTimeoutException after 4000 ms
+```
+
+Two listeners, both armed for the live membership, both bound to their own
+P2P address, dialling each other, and twelve timeouts. Not one refusal, not
+one unreachable: nothing answered in either direction. **That is not a
+socket problem. No IP packet crosses the link at all.**
+
+What both logs also show, every thirty seconds, right through the dial
+window:
+
+```
+starting peer discovery from a clean state
+discoverPeers accepted
+```
+
+Wi-Fi Direct discovery makes a single-radio phone LEAVE the group channel to
+scan the social channels, and Android keeps a find running for about two
+minutes once it is accepted. The association survives that, because beacons
+do. A four second TCP handshake does not.
+
+### The rule
+
+Discovery belongs to **admission**, and admission ends when somebody has
+joined. It is tied to membership, not to the group, so nothing about the
+proven admission path changes:
+
+```
+seller sharing, group empty     -> discovery ON   (a buyer must still find it)
+buyer looking for the seller    -> discovery ON
+somebody joined (clients 0 -> 1)-> discovery OFF, on both phones, in the
+                                   framework, not only in our own loop
+the group is gone               -> discovery ON again
+```
+
+### Measure the link, do not guess at it
+
+A timed out SYN says nothing about why. So each side now opens a UDP echo on
+its own P2P address, port 47743, for as long as its listener lives, and the
+dialling side sends a few probes:
+
+```
+LINK PROBE listening on 192.168.49.1:47743
+LINK PROBE 1/5 to 192.168.49.124: REPLY in 14 ms
+LINK PROBE verdict: the link carries IP packets both ways
+```
+
+or, if the link really is dead:
+
+```
+LINK PROBE verdict: NO IP packet crossed the Wi-Fi Direct link in either direction
+```
+
+`ONE_WAY` is the third possible answer: their packets reach us and ours do
+not get back. Whatever the next run shows, the log now names which of the
+three it is, and that decides whether the remaining problem is the radio,
+the routing, or something in between.
+
 ## Membership is part of the transport (v0.9.14)
 
 v0.9.13 gave the socket an endpoint identity. The phone run then produced
