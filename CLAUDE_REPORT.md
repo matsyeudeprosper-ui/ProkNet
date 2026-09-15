@@ -1,128 +1,135 @@
-# CLAUDE_REPORT - ProkNet v0.9.21 "a group is a room, membership is admission"
+# CLAUDE_REPORT - ProkNet v0.9.22 "an accepted association owns the radio and its own clock"
 
 Date: 2026-09-15
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 172/172 automated tests pass, released, not yet tested on phones.
-Home Wi-Fi resale is NOT claimed. The 2.4 GHz band experiment has still never run.**
+Status: **built, 176/176 automated tests pass, released, not yet tested on phones.
+Home Wi-Fi resale is NOT claimed. The 2.4 GHz result is NOT decided: run A was
+contaminated and run B never formed a group.**
 
-## 1. Your diagnosis is exactly right
-
-```
-17:56:05.441  admission: the customer "OnePlus Nord CE 2 Lite 5G" cannot address me,
-              and I can address "OnePlus Nord CE 2 Lite 5G" at 1e:4f:f2:19:36:ce
-              -> SELLER_INVITE
-              role = GROUP_OWNER, group formed = true, clients = 0
-17:56:05      INVITING ...     never printed
-```
-
-`mayInvite` required `!groupFormed`. In this architecture the provider
-creates and owns its group BEFORE any customer arrives, so `groupFormed` is
-true from the moment sharing starts, and the invitation the code had just
-decided on could never be sent. A logic bug of mine, not an Android mystery.
-
-## 2. The correction
-
-`groupFormed` is the room. `P2pDataPlane.Plane.hasMember` is somebody being
-in it: a client count above zero for an owner, and "I joined" for a client.
-That is what "admission is over" means, and the data plane already modelled
-it since v0.9.14.
-
-- `keepOwner(owner, sinceMs, failed, hasMember)`
-- `heldPlan(current, owner, sinceMs, failed, hasMember, fresh)`
-- `mayInvite(plan, sellerSight, ownsGroup, hasMember, invitedMsAgo)`
-
-`ownsGroup` is separate and explicit, because a provider must own a group
-before it can invite anybody into it. The state the invitation exists FOR is
-exactly the one the phone was in:
+## 1. Run A: the group formed on 2.4 GHz, and the window was contaminated
 
 ```
-plan SELLER_INVITE, this phone can address the exact customer,
-role GROUP_OWNER, group formed, NO member, no invitation pending
--> INVITE
+18:54:58.447  connect accepted
+18:54:58.447  DISCOVERY off
+18:54:58.470  stopPeerDiscovery refused: BUSY
+18:54:58.472  connection formed=false
+18:54:58.474  starting peer discovery again
+18:55:04      group formed, LINK PROBE starts
+18:55:15      LINK PROBE verdict: no packets crossed
+18:55:20      DISCOVERY off
 ```
 
-Ownership now ends on live membership, an explicit failure, or the 20 s
-timeout. Not on the existence of an empty group.
+Sixteen seconds of scanning inside the data-path window. You are right that
+this is not a clean verdict on the band, and I am not treating it as one.
 
-## 3. Two corrections that came with it
+Two faults of mine produced it:
 
-**A customer waiting for an invitation keeps reporting what it can see.** In
-v0.9.20 `WAIT_FOR_INVITE` stopped the visibility reports, and those reports
-are what make the provider decide again. A failed invitation therefore had
-nothing to retry it. `buyerStep` now reports first and labels the wait
-second; the plan is still held by the provider, so re-reporting cannot start
-a competing attempt.
+- Android emits `groupFormed = false` in the middle of its own join
+  choreography, and v0.9.21 read that as "the attempt is dead, look again".
+- On a first join the group generation AND the membership generation change
+  in the same observation. The group branch won, and the line that stops
+  discovery lived in the membership branch, so it never ran. That is why the
+  stop finally came sixteen seconds later, from a different callback.
 
-**Every ending names the stage that failed.**
-
-```
-SELLER_INVITE  -> the provider could see this phone, but the Wi-Fi Direct invitation did not complete
-BUYER_CONNECT  -> the customer could see the provider, but the Wi-Fi Direct join did not complete
-WAIT           -> neither phone could address the other over Wi-Fi Direct
-```
-
-The last run ended with the third, which was false. Each has its own French
-sentence on the customer's screen.
-
-## 4. Diagnostics
-
-The seller's admission line now carries the whole decision:
+## 2. Run B: the attempt was killed two milliseconds after it was chosen
 
 ```
-admission: the customer "..." cannot address me, and I can address "..." at 1e:4f:f2:19:36:ce
-| group formed=true role=GROUP_OWNER hasMember=false owner=SELLER -> SELLER_INVITE
+19:10:36.476  JOIN PLAN = SELLER_INVITE
+19:10:36.478  the provider could see this phone, but the invitation did not complete
 ```
 
-and when it does NOT invite it says which condition failed:
-`not inviting right now: a customer is already on this link` / `this phone
-does not own a group yet` / `the customer is not addressable` / `the last
-invitation is still pending (Ns)`.
+The purchase had been searching for about thirty seconds, and the deadline it
+was judged against had already expired before the attempt existed. Android
+had a confirmation dialog open on both phones while ProkNet tore it down.
 
-## 5. Preserved
+## 3. The fixes
 
-The symmetric decision itself, the no-guessing rule, the single admission
-owner, discovery recovery, the 2.4 GHz group request, the radio lock, the
-data plane generations, the binding hierarchy, the UDP link probe, crypto,
-the signed handshake, the tunnel, the VPN, the marketplace, method A and the
-bounded consumer error. This was a semantic correction, not a redesign.
+**One truth keeps the radio.** `P2pAdmission.associationPending(owner,
+startedAt, now, hasMember, failed)`, centralised in `P2pLink` and checked by
+`keepDiscovering` itself, so every caller in the node obeys it without
+knowing about it. An attempt ends on membership, on an explicit Android
+refusal, or on its own clock. A transient `formed=false` is none of those and
+no longer releases the radio lock either.
 
-## 6. Tests (172, +4, and the backwards ones replaced)
+**Stopping discovery is a post-condition of membership.** In `observePlane`,
+before any branch and before the unchanged-plane early return:
 
-The assertion that encoded the bug, "never once the group exists", is gone.
-In its place: a provider holding an EMPTY group with the exact customer in
-sight MUST invite; a provider whose customer has joined must not; a provider
-with no group of its own must not; an invitation is not repeated inside the
-ownership window and may be retried after it with no member; membership ends
-ownership; and the customer leaving resets admission and leaves an empty
-group ready to invite the next one. Plus the three endings and their French.
+```
+if (now.hasMember) { stopDiscovery(...); endAssociation("membership formed") }
+```
 
-## 7. Build
+Whatever else changed in the same callback, a link with a peer on it has no
+discovery.
 
-Build 34, versionName 0.9.21, 1.29 MB,
-SHA256 `92fd423c751e400394afc3a02a1f157dde632dc81d95eacaa9d80a572cb2e7cd`.
+**Two clocks, and choosing a plan starts neither.**
+
+```
+SEARCH_GIVE_UP_MS       60 s   from the start of the purchase, until an
+                               association is accepted
+ASSOCIATION_TIMEOUT_MS  40 s   from the moment Android ACCEPTED a connect()
+                               or an invite(): long enough for a person to
+                               read a dialog and tap Connect
+```
+
+`P2pAdmission.ladder(associationStartedAt, now, searchedMs)` -> SEARCH,
+ASSOCIATING, GIVE_UP. Once an association is accepted the search time decides
+nothing. The buyer starts its clock when its `connect()` is accepted, and
+when the provider announces SELLER_INVITE, because the provider invites in
+the same breath. A refusal ends the attempt at once and a replan follows.
+
+The same constant now governs how long a plan is held and how long before an
+unanswered invitation may be repeated, so nothing can interrupt a dialog a
+person is reading.
+
+## 4. Preserved
+
+Symmetric admission, the no-guessing rule, BUYER_CONNECT preferred when both
+see, SELLER_INVITE as the other path, membership semantics, the 2.4 GHz group
+request, the radio lock, data plane generations, the binding hierarchy, the
+UDP probe, TRANSPORT_READY, crypto, the tunnel, the VPN, the accounting,
+method A, the bounded consumer failure. None of them changed.
+
+## 5. Tests (176, +4)
+
+A transient `formed=false` after an accepted connect, and after an accepted
+invite, leaves the association pending; membership, refusal and the timeout
+each end it. Both generations changing in one observation still leaves
+discovery off. A plan chosen after thirty seconds of searching gets a full
+fresh association clock, and the exact run B sequence cannot fail two
+milliseconds later any more. An explicit refusal ends the attempt at once and
+allows a replan.
+
+## 6. Build
+
+Build 35, versionName 0.9.22, 1.30 MB,
+SHA256 `3774b26ad12f59d82e7331686b26d2202b95c26019d5ed89008ebd7bb54cf09c`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.21
-Commit `30b3a89` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.9.22
+Commit `a842f93` on `main`; this report on top.
 
-## 8. What the next run must produce
+## 7. The one clean run
 
-`docs/TESTING.md` section 39, then 37 and 34:
+`docs/TESTING.md` section 40. In order, and the third line is the one that
+makes the verdict trustworthy:
 
 ```
-JOIN PLAN = SELLER_INVITE      (the same on both phones)
-INVITING the customer into my group: "OnePlus Nord CE 2 Lite 5G" (1e:4f:f2:19:36:ce)
-invitation ... accepted by Android, waiting for it to join
+JOIN PLAN = ...                 (the same on both phones)
+ASSOCIATION started, clock starts NOW
+no "starting peer discovery" between that line and the group forming
 CLIENT COUNT 0 -> 1
-GROUP CHANNEL: ...
-LINK PROBE verdict: ...        (from BOTH phones)
+DISCOVERY off                   (immediately, not fifteen seconds later)
+GROUP CHANNEL: 2.4 GHz ...
+LINK PROBE verdict: ...         (from BOTH phones)
 ```
 
-Only the last line judges the 2.4 GHz band, and only once membership exists.
+If Android shows a confirmation dialog, tap CONNECT: the attempt waits for
+you now.
 
-## 9. The claim rule
+## 8. The claim rule
 
-Unchanged, section 30. Home Wi-Fi resale is not claimed.
+Unchanged, section 30. Home Wi-Fi resale is not claimed, and the 2.4 GHz
+question stays open until one uncontaminated run answers it.
