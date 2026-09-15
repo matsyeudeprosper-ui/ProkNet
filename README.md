@@ -42,7 +42,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.6 | Sharing capability probe: a seller on Wi-Fi tests its own hotspot once per network before any customer, remembers the answer with the band, and the coverage engine stops planning Wi-Fi resale through that phone while keeping the network as an observed source | built, 114 JVM tests pass |
 | v0.9.7 | Wi-Fi Direct experiment (method B) behind the developer screens: form a P2P group while the seller stays on its home router, adopt the P2P socket into the existing authenticated link, COPY P2P DIAG. Method A untouched | phone test: stale P2P state survived STOP, so a later BUY never discovered anything |
 | v0.9.8 | Deterministic P2P lifecycle: every role change walks cancelConnect, stopPeerDiscovery, close sockets, removeGroup, each confirmed by Android, and only then starts the new role | phone test: seller hosts a group and stays on the router, but the buyer never joins |
-| v0.9.9 | The group OWNER invites the guest (a group owner cannot join another group), the guest waits and is never silent, and the whole path runs from the normal Internet screens with the hotspot as the fallback | built, 128 JVM tests pass; **the real-phone flow is not proven yet** |
+| v0.9.9 | The group OWNER invites the guest (a group owner cannot join another group), the guest waits and is never silent, and the whole path runs from the normal Internet screens with the hotspot as the fallback | phone test: a 70 min Internet session over Wi-Fi Direct WORKED; afterwards BLE discovery was wedged |
+| v0.9.10 | Self-healing BLE: real health tracked from the callbacks, a controlled scanner/advertiser restart after a session or when discovery is wedged, with cooldown, and the buyer's admission ladder pauses instead of hammering a transport that is gone | built, 136 JVM tests pass |
 
 ### v0.1 - what it does
 

@@ -3,6 +3,7 @@ package net.prok.proknet.ble
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import net.prok.proknet.core.BleHealth
 import net.prok.proknet.core.Crypto
 import net.prok.proknet.core.DeliveryResult
 import net.prok.proknet.core.DiagLog
@@ -187,11 +188,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     @Volatile private var buyViaP2p = false
     @Volatile private var p2pWaitStart = 0L
+    @Volatile private var p2pReachableMs = 0L
+    @Volatile private var p2pUnreachableMs = 0L
+    @Volatile private var p2pPausedLogged = false
 
     /** The buyer becomes discoverable and asks the seller to invite it; it never joins on its own first. */
     private fun startP2pBuy(peerShort: String): Boolean {
         buyViaP2p = true
         p2pWaitStart = System.currentTimeMillis()
+        p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false
         val err = p2p.startBuyer()
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
@@ -202,6 +207,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     private fun askForInvite(peerShort: String) {
         if (!buyViaP2p || buyerWanted != peerShort) return
+        // v0.9.10: never hammer a transport that is not there. The provider has to be in BLE range.
+        if (transportFor(peerShort) == null) {
+            if (!p2pPausedLogged) { p2pPausedLogged = true; DiagLog.w(tag, "prok-" + peerShort + " is not reachable over BLE: pausing the invitation requests until it is seen again") }
+            return
+        }
+        p2pPausedLogged = false
         val name = p2p.myDeviceName
         if (name.isEmpty()) { DiagLog.w(tag, "this phone does not know its own Wi-Fi Direct name yet, retrying"); main.postDelayed({ askForInvite(peerShort) }, 2500); return }
         DiagLog.i(tag, "asking prok-" + peerShort + " to invite \"" + name + "\" into its Wi-Fi Direct group")
@@ -211,9 +222,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** No silent waiting: ask again, then try to join by ourselves, then give up with a reason. */
     private fun p2pWaitStep(peerShort: String) {
         if (!buyViaP2p || buyerWanted != peerShort || wifi.linkedPeer != null) return
-        val elapsed = System.currentTimeMillis() - p2pWaitStart
+        val reachable = transportFor(peerShort) != null
+        if (reachable) p2pReachableMs += 4000 else p2pUnreachableMs += 4000
         val owner = p2p.peers.firstOrNull { it.isGroupOwner } ?: p2p.peers.firstOrNull()
-        when (P2pPlan.guestStep(elapsed, p2p.groupFormed, owner != null)) {
+        when (P2pPlan.guestTick(reachable, p2pReachableMs, p2pUnreachableMs, p2p.groupFormed, owner != null)) {
+            P2pPlan.GuestStep.PAUSED -> {}
+            P2pPlan.GuestStep.UNREACHABLE -> {
+                DiagLog.e(tag, P2pPlan.guestStepText(P2pPlan.GuestStep.UNREACHABLE))
+                lastBuyError = "the provider is no longer in range"
+                stopInternet("provider out of range")
+                return
+            }
             P2pPlan.GuestStep.WAIT -> {}
             P2pPlan.GuestStep.ASK_AGAIN -> { DiagLog.i(tag, P2pPlan.guestStepText(P2pPlan.GuestStep.ASK_AGAIN)); askForInvite(peerShort) }
             P2pPlan.GuestStep.TRY_MYSELF -> {
@@ -529,6 +548,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onTunnelFrame(peerShort: String, frame: Tunnel.Frame) = routeTunnelFrame(peerShort, frame, "plain on link")
         override fun onLinkClosed(peerShort: String, reason: String) {
             gateway.onLinkClosed(peerShort, reason); tunnel.onLinkClosed(peerShort, reason)
+            onSessionTornDown("link with prok-" + peerShort + " closed: " + reason)
             // v0.9: the far end behind this relay is unreachable too
             relay.onLinkToRelayClosed()?.let { far -> gateway.onLinkClosed(far, "link to relay closed: " + reason); tunnel.onLinkClosed(far, "link to relay closed: " + reason) }
             relay.onLinksChanged()
@@ -550,7 +570,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
-        if (buyViaP2p) { buyViaP2p = false; p2p.stop() }
+        if (buyViaP2p) { buyViaP2p = false; p2p.stop(); onSessionTornDown("buyer stopped a Wi-Fi Direct attempt") }
         buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
@@ -563,6 +583,60 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     @Volatile var isRunning = false
         private set
+
+    // ---- v0.9.10: BLE self-healing ----------------------------------------------------------------
+    @Volatile private var sessionEndedAt = 0L
+    @Volatile var lastBleVerdict: BleHealth.Verdict = BleHealth.Verdict.NOT_RUNNING
+        private set
+
+    private fun bleState(): BleHealth.State {
+        val now = System.currentTimeMillis()
+        val lastSeen = store.knownPeers().maxOfOrNull { it.lastSeen } ?: 0L
+        val msSince = if (lastSeen > 0) now - lastSeen else -1L
+        val linkBusy = wifi.linkedPeer != null || !wifi.state.isIdle || wifiUp.linkedPeer != null || !wifiUp.state.isIdle ||
+            p2p.groupFormed || p2p.phase == "CLEANING" || p2p.phase == "CREATING GROUP"
+        return BleHealth.State(
+            now = now, running = isRunning && ble.isRunning, bluetoothOn = ble.isBluetoothOn,
+            advertising = ble.advertising, advertiseFailedAt = ble.advertiseFailedAt,
+            scanning = ble.scanning, scanFailedAt = ble.scanFailedAt, lastScanResultAt = ble.lastScanResultAt,
+            startedAt = ble.startedAt, gattTimeouts = ble.gattTimeouts,
+            expectPeers = BleHealth.expectPeers(msSince, buyerWanted != null, gateway.providing),
+            linkBusy = linkBusy, sessionEndedAt = sessionEndedAt,
+            lastRecoveryAt = ble.lastRecoveryAt, recoveries = ble.recoveries,
+        )
+    }
+
+    /** Runs while the service runs. Silent when everything is fine; never loops. */
+    private val bleWatchdog = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            val s = bleState()
+            val v = BleHealth.verdict(s)
+            if (v != lastBleVerdict && (v != BleHealth.Verdict.HEALTHY || lastBleVerdict != BleHealth.Verdict.NOT_RUNNING))
+                DiagLog.i(tag, "BLE health: " + BleHealth.verdictText(v))
+            lastBleVerdict = v
+            if (BleHealth.action(v) == BleHealth.Action.RECOVER) {
+                DiagLog.w(tag, "BLE health check: " + BleHealth.verdictText(v) + " (no scan result for " +
+                    (if (s.lastScanResultAt > 0) ((s.now - s.lastScanResultAt) / 1000).toString() + "s" else "ever") +
+                    ", gatt timeouts " + s.gattTimeouts + ", peers expected " + s.expectPeers + ")")
+                if (ble.recoverRadio(BleHealth.verdictText(v))) {
+                    refreshAdvert()          // SELL stays on: its offer must go back on the air
+                    main.postDelayed({ listener.onPeers(peers()); pushStatus() }, 1500)
+                }
+            }
+            main.postDelayed(this, 10_000)
+        }
+    }
+
+    /**
+     * v0.9.10: a Wi-Fi or Wi-Fi Direct session just ended. The BLE stack is the
+     * prime suspect after one, so look sooner than the normal watchdog would.
+     */
+    fun onSessionTornDown(why: String) {
+        sessionEndedAt = System.currentTimeMillis()
+        DiagLog.i(tag, "BLE health check scheduled after a Wi-Fi session ended (" + why + ")")
+        main.postDelayed({ if (isRunning) bleWatchdog.run() }, 3_000)
+    }
     private var lastVisibleIds: Set<String> = emptySet()
     private val linkStates = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val keyFetchInFlight = HashSet<String>()
@@ -585,6 +659,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         engine.start()
         DiagLog.i(tag, "node started: ble=" + bleOk + " wifi=ready(idle)")
         main.postDelayed({ pushStatus() }, 1500)
+        main.postDelayed(bleWatchdog, 15_000)
         listener.onPeers(peers())
         pushStatus()
         return bleOk
@@ -602,6 +677,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         wifi.stop()
         ble.stop()
         isRunning = false
+        main.removeCallbacks(bleWatchdog)
         lastVisibleIds = emptySet()
         DiagLog.i(tag, "node stopped")
         listener.onPeers(peers())
@@ -661,6 +737,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!keyFetchInFlight.add(shortId)) return
         DiagLog.i(tag, "KEY FETCH: reading identity record of prok-" + shortId + " over BLE")
         ble.fetchIdentity(shortId) { ok ->
+            ble.noteGatt(ok)
             main.post {
                 keyFetchInFlight.remove(shortId)
                 if (!ok) DiagLog.w(tag, "KEY FETCH from prok-" + shortId + " failed; will retry when it reappears")
@@ -704,6 +781,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun linkState(transport: String): String = linkStates[transport] ?: "?"
+
+    /** v0.9.10: one line for the developer diagnostic. */
+    fun bleHealthLine(): String = BleHealth.verdictText(BleHealth.verdict(bleState())) + " | " + ble.healthLine()
 
     // ---- sending -----------------------------------------------------------------------------------
 
@@ -756,6 +836,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         transport.send(peerShort, Frame(msgId, pkt.encode())) { res, detail ->
             val ok = res == DeliveryResult.DELIVERED || res == DeliveryResult.DUPLICATE
             if (!ok) DiagLog.w(tag, "CONTROL to prok-" + peerShort + " failed: " + res + " " + detail)
+            if (transport.name == Routing.TRANSPORT_BLE) ble.noteGatt(ok)
             cb(ok)
         }
     }

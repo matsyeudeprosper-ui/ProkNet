@@ -29,6 +29,17 @@ class BleScanner(
     private var notifyPending = false
     @Volatile var isScanning = false
         private set
+    /** v0.9.10: the truth about this scanner, for BleHealth. */
+    @Volatile var lastResultAt = 0L
+        private set
+    @Volatile var startedAt = 0L
+        private set
+    @Volatile var failedAt = 0L
+        private set
+    @Volatile var lastFailure = ""
+        private set
+    @Volatile var results = 0L
+        private set
 
     private val callback = object : ScanCallback() {
         // A malformed scan record must never crash the scan callback thread.
@@ -40,7 +51,9 @@ class BleScanner(
         }
         override fun onScanFailed(errorCode: Int) {
             isScanning = false
-            DiagLog.e(tag, "scan FAILED: " + errName(errorCode))
+            failedAt = System.currentTimeMillis()
+            lastFailure = errName(errorCode)
+            DiagLog.e(tag, "scan FAILED: " + lastFailure)
         }
     }
 
@@ -64,6 +77,7 @@ class BleScanner(
     }
 
     private fun onResult(result: ScanResult) {
+        lastResultAt = System.currentTimeMillis(); results++
         val address = result.device?.address ?: return
         val record = result.scanRecord
         val mfg = record?.getManufacturerSpecificData(BleConstants.MANUFACTURER_ID)
@@ -129,6 +143,7 @@ class BleScanner(
         return try {
             s.startScan(filters, settings, callback)
             isScanning = true
+            startedAt = System.currentTimeMillis(); failedAt = 0L; lastFailure = ""
             main.postDelayed(expiry, 5000)
             DiagLog.i(tag, "scan started (filter=ProkNet service, LOW_LATENCY)")
             true

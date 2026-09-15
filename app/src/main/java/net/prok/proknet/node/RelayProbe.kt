@@ -87,6 +87,7 @@ object RelayProbe {
         sb.append("--- networks now (ConnectivityManager) ---\n")
         for (l in networks(context)) sb.append(l).append("\n")
         sb.append("interfaces with IPv4: ").append(interfaces().joinToString(" ")).append("\n")
+        sb.append("--- BLE health ---\n").append(node.bleHealthLine()).append("\n")
         sb.append("--- ProkNet links ---\n")
         sb.append("DOWNSTREAM / normal link: ").append(node.wifi.linkState()).append("\n  ").append(node.wifi.linkDescription())
             .append(if (node.wifi.hotspotSsid.isNotEmpty()) "\n  hotspot ssid " + node.wifi.hotspotSsid else "").append(if (node.wifi.lastHotspotError.isNotEmpty()) "\n  last hotspot error: " + node.wifi.lastHotspotError else "")

@@ -20,17 +20,26 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile var isAdvertising = false
         private set
+    /** v0.9.10: the truth about this advertiser, for BleHealth. */
+    @Volatile var startedOkAt = 0L
+        private set
+    @Volatile var failedAt = 0L
+        private set
+    @Volatile var lastFailure = ""
+        private set
 
     private val callback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             isAdvertising = true
+            startedOkAt = System.currentTimeMillis(); failedAt = 0L; lastFailure = ""
             DiagLog.i(tag, "advertising started (mode=" + settingsInEffect.mode +
                 " tx=" + settingsInEffect.txPowerLevel + " connectable=" + settingsInEffect.isConnectable + ")")
         }
 
         override fun onStartFailure(errorCode: Int) {
             isAdvertising = false
-            DiagLog.e(tag, "advertising FAILED: " + errName(errorCode))
+            failedAt = System.currentTimeMillis(); lastFailure = errName(errorCode)
+            DiagLog.e(tag, "advertising FAILED: " + lastFailure)
             if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE && !shortPayload) {
                 // This chipset refuses the 16-byte full-ID scan response: fall back to the v1 4-byte short ID.
                 // Peers can still address us (short-ID addressing) and relay for us.

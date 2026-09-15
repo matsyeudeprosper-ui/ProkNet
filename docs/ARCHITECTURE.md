@@ -746,6 +746,48 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Self-healing BLE (v0.9.10)
+
+A 70 minute Internet session over Wi-Fi Direct ended with "connection
+closed: end of stream". Both phones were then side by side and saw nobody:
+the known seller expired after 25 s, every control message answered "no
+transport", two GATT reconnects timed out after 20 s each, and the
+diagnostic still said `server ready, adv on, scan on`. Restarting the
+service changed nothing because the node considered itself running.
+
+The requested state was not the truth, so the truth is now recorded and
+judged separately.
+
+- **What is measured** (from the callbacks, not from intent): when
+  advertising was confirmed and its last failure; whether `startScan` was
+  accepted, its last failure, how many results have ever arrived and when
+  the last one did; consecutive GATT timeouts and the last success; the
+  adapter state; whether a Wi-Fi or Wi-Fi Direct session just ended.
+- **`core/BleHealth` (pure)** turns that into a verdict: HEALTHY,
+  NOT_RUNNING, BLUETOOTH_OFF, BUSY, COOLING_DOWN, ADVERTISING_STALE,
+  SCAN_STALE, BOTH_STALE, GATT_WEDGED. Silence only counts as a fault when
+  company is expected (`expectPeers`: buying, selling, or a phone seen in
+  the last 15 minutes), so a phone alone in a field is never restarted.
+  After a session the stale window drops from 40 s to 15 s because the
+  stack is the prime suspect.
+- **`BleTransport.recoverRadio(why)`** stops and recreates ONLY the scanner
+  and the advertiser, re-applying the advertised flags and price so a
+  seller's offer goes straight back on the air. The GATT server is
+  restarted only if it is itself not ready; the identity, the queue, the
+  node and any live link are untouched.
+- **The watchdog** runs every 10 s inside the foreground service, never
+  while a link is up or a group is being formed, and backs off after each
+  recovery: one minute, then double, capped at five.
+- **The admission ladder pauses.** `P2pPlan.guestTick(controlAvailable,
+  reachableMs, unreachableMs, ...)` returns PAUSED when the provider is not
+  reachable over BLE, so nothing is sent to a dead transport; the 45 s
+  admission timeout only counts time when the control path was really
+  there, and 90 s out of range is its own clear failure.
+
+The consumer app shows none of this. It goes back from "0 personnes" to
+seeing phones and offers on its own; the developer diagnostic carries the
+health line and what recovery happened.
+
 ## The group owner invites (v0.9.9)
 
 The v0.9.8 run narrowed the failure to the join itself. The seller's group

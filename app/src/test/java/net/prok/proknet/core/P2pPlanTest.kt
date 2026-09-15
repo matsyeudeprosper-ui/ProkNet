@@ -254,6 +254,23 @@ class P2pPlanTest {
     }
 
     @Test
+    fun the_ladder_pauses_when_the_provider_is_out_of_ble_range() {
+        // v0.9.10: after a long session the seller vanished from BLE and the buyer kept asking
+        // every 4 s over a transport that was not there. Now it pauses and the clock pauses with it.
+        assertEquals(P2pPlan.GuestStep.PAUSED, P2pPlan.guestTick(controlAvailable = false, reachableMs = 0, unreachableMs = 8_000, groupFormed = false, ownerVisible = false))
+        assertEquals(P2pPlan.GuestStep.PAUSED, P2pPlan.guestTick(false, 30_000, 40_000, false, true))
+        // the admission timeout only counts time when the provider was actually reachable
+        assertEquals(P2pPlan.GuestStep.WAIT, P2pPlan.guestTick(true, 1_000, 60_000, false, true))
+        assertEquals(P2pPlan.GuestStep.ASK_AGAIN, P2pPlan.guestTick(true, P2pPlan.INVITE_ASK_AGAIN_MS, 60_000, false, true))
+        assertEquals(P2pPlan.GuestStep.GIVE_UP, P2pPlan.guestTick(true, P2pPlan.INVITE_GIVE_UP_MS, 0, false, true))
+        // out of range for too long is its own, clear failure
+        assertEquals(P2pPlan.GuestStep.UNREACHABLE, P2pPlan.guestTick(false, 10_000, P2pPlan.UNREACHABLE_GIVE_UP_MS, false, true))
+        // and once we are in the group nothing else matters
+        assertEquals(P2pPlan.GuestStep.WAIT, P2pPlan.guestTick(false, 0, P2pPlan.UNREACHABLE_GIVE_UP_MS, groupFormed = true, ownerVisible = false))
+        for (g in P2pPlan.GuestStep.values()) assertTrue(P2pPlan.guestStepText(g).isNotEmpty())
+    }
+
+    @Test
     fun the_owner_finds_the_guest_by_the_name_it_sent() {
         // Android hides a phone's own P2P MAC, so the buyer sends its NAME over BLE
         val peers = listOf(P2pPlan.PeerRef("C1 Pro", "aa:bb:cc:00:11:22"), P2pPlan.PeerRef("OnePlus Nord", "aa:bb:cc:00:11:33"))

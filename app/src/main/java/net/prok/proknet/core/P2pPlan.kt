@@ -209,7 +209,7 @@ object P2pPlan {
     fun joinRole(iOwnAGroup: Boolean): Join = if (iOwnAGroup) Join.OWNER_INVITES else Join.GUEST_WAITS
 
     /** The guest never waits in silence: it asks again, then tries itself, then gives up with a reason. */
-    enum class GuestStep { WAIT, ASK_AGAIN, TRY_MYSELF, GIVE_UP }
+    enum class GuestStep { WAIT, ASK_AGAIN, TRY_MYSELF, GIVE_UP, PAUSED, UNREACHABLE }
 
     const val INVITE_ASK_AGAIN_MS = 12_000L
     const val INVITE_TRY_SELF_MS = 24_000L
@@ -228,6 +228,23 @@ object P2pPlan {
         GuestStep.ASK_AGAIN -> "asking the provider again"
         GuestStep.TRY_MYSELF -> "the provider has not invited us: trying to join its group directly"
         GuestStep.GIVE_UP -> "the provider could not bring this phone into its Wi-Fi Direct group"
+        GuestStep.PAUSED -> "the provider is not in range: waiting for it to be discovered again"
+        GuestStep.UNREACHABLE -> "the provider never came back in range"
+    }
+
+    /** v0.9.10: a phone whose Bluetooth went deaf must not keep hammering a transport that is gone. */
+    const val UNREACHABLE_GIVE_UP_MS = 90_000L
+
+    /**
+     * The ladder only advances while the control path (BLE) is really there.
+     * Time spent out of range does not count towards the 45 s admission
+     * timeout; it counts towards a separate, clear reachability failure.
+     */
+    fun guestTick(controlAvailable: Boolean, reachableMs: Long, unreachableMs: Long, groupFormed: Boolean, ownerVisible: Boolean): GuestStep = when {
+        groupFormed -> GuestStep.WAIT
+        !controlAvailable && unreachableMs >= UNREACHABLE_GIVE_UP_MS -> GuestStep.UNREACHABLE
+        !controlAvailable -> GuestStep.PAUSED
+        else -> guestStep(reachableMs, groupFormed, ownerVisible)
     }
 
     /** One discovered Wi-Fi Direct peer, as the owner sees it. */

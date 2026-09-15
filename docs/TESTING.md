@@ -878,3 +878,39 @@ in its log: no group, not invited, or not seen in the peer list.
 - Both COPY P2P DIAG outputs.
 
 Home Wi-Fi resale is claimed only when this exact flow passes.
+
+## 28. v0.9.10 Bluetooth must repair itself after a session
+
+Both phones on 0.9.10. This is the recovery the last run needed; section 27
+is still the flow that decides Wi-Fi Direct.
+
+1. Run section 27 to the end: a real Internet session over Wi-Fi Direct,
+   Chrome loading pages.
+2. End it: STOP on the buyer, or let it drop on its own.
+3. Put the two phones side by side and DO NOTHING for two minutes. No
+   toggling Bluetooth, no killing the app, no reboot.
+   Expected: the seller reappears in Accueil ("1 personne") and its offer
+   comes back under OBTENIR INTERNET, by itself.
+   In the log you should see, if a repair was needed: "BLE health check
+   ... scan stale", "BLE radio recovery started", "advertising restarted",
+   "scan restarted", "BLE recovery complete".
+4. Buy again from the normal screens. It must work without any developer
+   action.
+5. Seller side: sharing must still be ON the whole time, and its offer must
+   be advertised again after any recovery (do not tap PARTAGER INTERNET
+   again).
+6. Negative check: with both phones idle and nothing shared, leave the app
+   running for five minutes. The log must NOT show repeated recoveries;
+   the watchdog must stay quiet when nobody is expected.
+
+Developer screen -> COPY DIAG now has a "ble health:" line with advertising
+state, scan results and their age, GATT timeouts and how many recoveries
+happened.
+
+### Checklist for the v0.9.10 report
+
+- Did the phones find each other again on their own, and how long did it
+  take?
+- The recovery lines from the log, if any.
+- Did sharing stay on, and did the offer come back without touching it?
+- Any sign of a restart loop while idle.

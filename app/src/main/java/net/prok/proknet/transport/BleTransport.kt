@@ -8,6 +8,7 @@ import net.prok.proknet.ble.BleScanner
 import net.prok.proknet.ble.BleSender
 import net.prok.proknet.ble.GattServerNode
 import net.prok.proknet.ble.Peer
+import net.prok.proknet.core.BleHealth
 import net.prok.proknet.core.DeliveryResult
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
@@ -40,6 +41,76 @@ class BleTransport(
     @Volatile private var visible: List<Peer> = emptyList()
     private val identityFetched = HashSet<String>()
 
+    // ---- v0.9.10: what the radio is really doing --------------------------------------------------
+    @Volatile var startedAt = 0L
+        private set
+    @Volatile var gattTimeouts = 0
+        private set
+    @Volatile var lastGattOkAt = 0L
+        private set
+    @Volatile var recoveries = 0
+        private set
+    @Volatile var lastRecoveryAt = 0L
+        private set
+    @Volatile var lastRecoveryWhy = ""
+        private set
+    private var lastFlags = 0
+    private var lastPrice = 0
+
+    val lastScanResultAt: Long get() = scanner?.lastResultAt ?: 0L
+    val scanResults: Long get() = scanner?.results ?: 0L
+    val scanFailedAt: Long get() = scanner?.failedAt ?: 0L
+    val scanFailure: String get() = scanner?.lastFailure ?: ""
+    val advertiseFailedAt: Long get() = advertiser?.failedAt ?: 0L
+    val advertiseFailure: String get() = advertiser?.lastFailure ?: ""
+    val advertiseOkAt: Long get() = advertiser?.startedOkAt ?: 0L
+
+    /** Called by the node when a GATT operation to a known peer finished. */
+    fun noteGatt(ok: Boolean) {
+        if (ok) { gattTimeouts = 0; lastGattOkAt = System.currentTimeMillis() } else gattTimeouts++
+    }
+
+    /**
+     * v0.9.10: stop and recreate ONLY the scanner and the advertiser. The GATT
+     * server, the identity, the queue and any live link are left alone; the
+     * server is restarted only if it is itself not ready.
+     */
+    fun recoverRadio(why: String): Boolean {
+        if (!isRunning) return false
+        val a = adapter ?: return false
+        if (!a.isEnabled) { DiagLog.w(tag, "cannot recover the radio: Bluetooth is off"); return false }
+        val l = listener ?: return false
+        lastRecoveryWhy = why
+        DiagLog.w(tag, "BLE radio recovery started: " + why)
+        try { scanner?.stop() } catch (e: Exception) { DiagLog.w(tag, "stop scan: " + e) }
+        scanner = null
+        try { advertiser?.stop() } catch (e: Exception) { DiagLog.w(tag, "stop advertising: " + e) }
+        advertiser = null
+        if (server?.isReady != true) {
+            DiagLog.w(tag, "the GATT server is not ready either: restarting it too")
+            try { server?.stop() } catch (_: Exception) {}
+            server = GattServerNode(context, identityRecord) { pkt -> l.onFrame(name, null, pkt.encode()) }
+            DiagLog.i(tag, "GATT server restarted: " + server!!.start())
+        }
+        val adv = BleAdvertiser(a, identity)
+        adv.setCapabilities(lastFlags, lastPrice)      // whatever SELL advertises must come back with it
+        advertiser = adv
+        val advOk = adv.start()
+        DiagLog.i(tag, "advertising restarted: " + advOk + " (flags " + lastFlags + ", price " + lastPrice + ")")
+        val sc = BleScanner(a) { peers -> visible = peers; l.onPeersChanged(peers); l.onLinkState(name, linkState()) }
+        scanner = sc
+        val scanOk = sc.start()
+        DiagLog.i(tag, "scan restarted: " + scanOk)
+        recoveries++
+        lastRecoveryAt = System.currentTimeMillis()
+        startedAt = lastRecoveryAt
+        gattTimeouts = 0
+        identityFetched.clear()
+        DiagLog.i(tag, "BLE recovery complete (#" + recoveries + "): advertising " + advOk + ", scan " + scanOk)
+        l.onLinkState(name, linkState())
+        return advOk || scanOk
+    }
+
     val isBluetoothOn: Boolean get() = adapter?.isEnabled == true
     val serverReady: Boolean get() = server?.isReady == true
     val advertising: Boolean get() = advertiser?.isAdvertising == true
@@ -60,6 +131,8 @@ class BleTransport(
         val scanOk = scanner!!.start()
         sender = BleSender(context, a)
         isRunning = true
+        startedAt = System.currentTimeMillis()
+        gattTimeouts = 0
         identityFetched.clear()
         DiagLog.i(tag, "transport started: server=" + srvOk + " advertise=" + advOk + " scan=" + scanOk)
         listener.onLinkState(name, linkState())
@@ -81,7 +154,7 @@ class BleTransport(
     fun visiblePeers(): List<Peer> = visible
 
     /** v0.6: capability bits in the scan response (bit0 = providing Internet). */
-    fun setCapabilities(flags: Int, price: Int = 0) { advertiser?.setCapabilities(flags, price) }
+    fun setCapabilities(flags: Int, price: Int = 0) { lastFlags = flags; lastPrice = price; advertiser?.setCapabilities(flags, price) }
 
     private fun peer(short: String): Peer? = visible.firstOrNull { it.shortId == short && it.inRange && it.hasId }
 
@@ -89,7 +162,19 @@ class BleTransport(
 
     override fun linkState(): String =
         if (!isRunning) "off" else "server " + (if (serverReady) "ready" else "not ready") + ", adv " + (if (advertising) "on" else "OFF") +
-            ", scan " + (if (scanning) "on" else "OFF") + ", peers " + visible.size
+            ", scan " + (if (scanning) "on" else "OFF") + ", peers " + visible.size +
+            (if (lastScanResultAt > 0) ", last result " + ((System.currentTimeMillis() - lastScanResultAt) / 1000) + "s ago" else ", no result yet") +
+            (if (recoveries > 0) ", " + recoveries + " recovery" else "")
+
+    /** v0.9.10: everything BleHealth needs, plus what a human reads in the diagnostic. */
+    fun healthLine(): String =
+        "adv " + (if (advertising) "on since " + ((System.currentTimeMillis() - advertiseOkAt) / 1000) + "s" else "OFF") +
+            (if (advertiseFailure.isNotEmpty()) " [last failure " + advertiseFailure + "]" else "") +
+            " | scan " + (if (scanning) "on" else "OFF") + ", " + scanResults + " results" +
+            (if (lastScanResultAt > 0) ", last " + ((System.currentTimeMillis() - lastScanResultAt) / 1000) + "s ago" else ", none yet") +
+            (if (scanFailure.isNotEmpty()) " [last failure " + scanFailure + "]" else "") +
+            " | gatt timeouts " + gattTimeouts + (if (lastGattOkAt > 0) ", last ok " + ((System.currentTimeMillis() - lastGattOkAt) / 1000) + "s ago" else "") +
+            " | recoveries " + recoveries + (if (lastRecoveryWhy.isNotEmpty()) " (last: " + lastRecoveryWhy + ")" else "")
 
     override fun sendBatch(peerShort: String, frames: List<Frame>, onEach: (Int, DeliveryResult, String) -> Boolean, onDone: () -> Unit) {
         val s = sender; val p = peer(peerShort)
