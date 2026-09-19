@@ -746,6 +746,81 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## One tap, and the phone as a sensor (v0.12.0)
+
+**The promise.** No Internet? Open ProkNet, tap once. The home screen is
+one big button, OBTENIR INTERNET. Everything under it is the proven stack
+of v0.10/v0.11; this milestone adds the decision, the request, and the
+coverage memory, all pure and tested, and the screens that show them.
+
+**GetInternet** (`core/GetInternet.kt`). Candidates carry an id, a way
+(ProkNet direct, existing link, connected Wi-Fi, mobile-data provider), a
+price in centimes per MB, reachable-now, signal, last seen, validated,
+reliability, setup cost, capacity, authorization. `decide()` blocks what
+the phone cannot genuinely use (not reachable, stale > 90 s, not
+authorized, not validated, above the ceiling), then ranks: usable free
+first, then by `price + (1 - reliability) x 3 CFA/MB + setup/20 MB`, with
+a 0.4 CFA tie-break for the last source that worked. So free validated
+Internet beats 5 CFA, a 6 CFA source at 0.9 reliability beats a 5 CFA one
+at 0.3, and a cheaper source that is unreachable or stale never wins. No
+usable candidate but something known -> REQUEST_NETWORK; nothing known ->
+NONE. The reason is a sentence for the diagnostic. `fromOffer` turns a live
+BLE offer into a candidate; the transport underneath stays the v0.10.1 /
+v0.11 rules, never the engine's choice.
+
+**InternetRequest** (`core/InternetRequest.kt`). One tap creates a request
+with flexible MB and duration, automatic price, urgency NOW, a coarse zone,
+and walks SEARCHING -> DIRECT_SOURCE_FOUND -> CONNECTING -> ONLINE, or
+NETWORK_NEEDED ("Aucun Internet disponible tout de suite. ProkNet continue
+de chercher autour de vous."), FAILED, CANCELLED. NETWORK_NEEDED never
+pretends a relay is coming. The planner foundation is there: hops with
+roles PROVIDER / ANCHOR / RELAY / MOVER / COURIER, cost classes COMMERCIAL
+/ SPONSORED / GROWTH_SUBSIDY, and the rule: a commercial plan whose
+delivery cost exceeds the customer ceiling is refused; sponsored and
+growth plans may carry an explicit subsidy; movement ranks last. v0.12
+only ever builds the direct plan.
+
+**CoverageModel** (`core/CoverageModel.kt`). A sighting (ProkNet peer or
+Wi-Fi network) becomes ONE source record: `prok:<id>` or `wifi:<sha256 of
+the BSSID, 16 hex>`; the BSSID itself is never stored. First / last seen,
+observation count, best / last signal, price if any, validation history,
+trust class (OPEN_REUSABLE, AUTHORIZED_PRIVATE, CAPTIVE_PORTAL, UNKNOWN,
+NOT_ALLOWED), security, zones seen, selling, successes. Detection is not
+authorization: a network merely seen stays UNKNOWN and is never usable.
+Zones are ~500 m cells (`z<latIdx>:<lonIdx>`, 0.005 degrees); a phone that
+does not know its position records `z?`. A cell is GREEN only when a
+source in it is usable now and was seen within 10 minutes; YELLOW when a
+plausible source was seen within 24 h; RED otherwise. Everything persists
+through a versioned, tolerant text codec (sources, the last 500
+observations, the last 50 requests, the last successful source).
+
+**CoverageEngine** (`node/CoverageEngine.kt`). Feeds sightings from the
+node's peer list (a node listener), the connected Wi-Fi with Android's own
+validated / captive-portal verdict, and cached scan results when the app
+is in front and fine location was granted, never starting a scan.
+Throttles to one observation per source per minute, saves 20 s after a
+change and on background. Location: last known, plus network-provider
+updates every 5 minutes / 300 m while the app is in front, coarse
+permission asked once on the Carte tab with one plain sentence. Builds the
+GET INTERNET candidates from live offers (reachable = in range and key
+known; existing link = the bulk or Wi-Fi link already up), remembers the
+last successful source, and prints the whole picture for COPY COVERAGE.
+
+**The screens.** Accueil: the question, the button, the promise, a status
+card while searching / connecting / connected / failed, and a coverage
+hint ("Internet autour de vous, 1 option trouvée, à partir de 5 CFA par
+Mo" / "Internet vu récemment ici" / "Pas encore d'Internet disponible
+ici"). Internet: the manual list, simple cards, CONNECTER. Carte: the
+cells around the phone, a legend, "around you", the known sources, a
+dialog per source or cell. Gagner: source line, price, options folded,
+COMMENCER À PARTAGER, then clients / shared today / earned today. Activité:
+session cards, the wallet row, and the account block (name, keep running,
+battery, developer). No protocol word anywhere; a test checks the buyer
+and seller words for L2CAP / PSM / BULK / GATT / probe / hotspot / BSSID.
+
+**Not built on purpose.** No tiles, no backend, no relay execution, no
+mover payments, no change to the probe size.
+
 ## The consumer path (v0.11.0)
 
 The proven two-phone path is the normal product now. Nothing under it

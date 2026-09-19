@@ -170,6 +170,15 @@ object ProductState {
         Seller.LOST -> "Votre Internet est coupé"
     }
 
+    /** v0.12: the big line on the Gagner screen. */
+    fun sellerHeadline(s: Seller): String = when (s) {
+        Seller.OFF -> "Vous ne partagez pas"
+        Seller.NO_INTERNET -> "En attente de votre Internet"
+        Seller.AVAILABLE -> "Disponible autour de vous \u2705"
+        Seller.SERVING -> "1 personne utilise votre Internet"
+        Seller.LOST -> "Votre Internet est coup\u00e9"
+    }
+
     fun sellerHint(s: Seller): String = when (s) {
         Seller.NO_INTERNET -> "Activez les données mobiles ou connectez-vous au Wi-Fi"
         Seller.AVAILABLE -> "Disponible pour les personnes à proximité"

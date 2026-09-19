@@ -66,6 +66,8 @@
             android:layout_height="wrap_content" android:text="Relay Lab" />
         <Button android:id="@+id/btnBulkLab" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="BT diagnostics" />
+        <Button android:id="@+id/btnCopyCoverage" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="COPY COVERAGE" />
     </LinearLayout>
 
     <TextView

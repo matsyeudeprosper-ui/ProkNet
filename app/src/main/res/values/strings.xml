@@ -161,6 +161,73 @@
     <string name="vpn_explain">Prok a besoin de votre autorisation pour faire passer Internet par le fournisseur à proximité.</string>
     <string name="continue_btn">CONTINUER</string>
 
+    <!-- v0.12 one-tap home -->
+    <string name="brand_full">ProkNet</string>
+    <string name="home_question">Besoin d\'Internet ?</string>
+    <string name="get_internet_big">OBTENIR\nINTERNET</string>
+    <string name="home_promise">Gratuit si possible\nLe moins cher sinon</string>
+    <string name="stop_big">ARRÊTER</string>
+    <string name="cancel_big">ANNULER</string>
+    <string name="close_big">FERMER</string>
+    <string name="home_around">Internet autour de vous</string>
+    <string name="home_options_one">1 option trouvée · À partir de %1$s</string>
+    <string name="home_options_many">%1$d options trouvées · À partir de %2$s</string>
+    <string name="home_seen_recently">Internet vu récemment ici</string>
+    <string name="home_seen_recently_sub">ProkNet continue de chercher. Appuyez sur le bouton pour essayer.</string>
+    <string name="home_none_yet">Pas encore d\'Internet disponible ici</string>
+    <string name="home_none_sub">ProkNet cherche autour de vous</string>
+    <string name="home_start_sub">Appuyez sur le bouton : ProkNet démarre et cherche</string>
+    <string name="home_price">Prix : %1$s</string>
+    <string name="home_used">Utilisé : %1$s</string>
+    <string name="home_cost">Coût : %1$s</string>
+    <string name="already_online">Vous avez déjà Internet par le Wi-Fi %1$s</string>
+    <string name="toast_stop_sharing_first">Arrêtez d\'abord le partage pour obtenir Internet</string>
+
+    <!-- v0.12 internet tab -->
+    <string name="internet_nearby">Internet à proximité</string>
+    <string name="offer_wifi">Internet Wi-Fi</string>
+    <string name="offer_mobile">Internet mobile</string>
+    <string name="offer_free">Internet gratuit</string>
+    <string name="connect_big">CONNECTER</string>
+    <string name="disconnect">DÉCONNECTER</string>
+
+    <!-- v0.12 map -->
+    <string name="tab_map">Carte</string>
+    <string name="map_question">Où ProkNet a-t-il vu Internet ?</string>
+    <string name="map_legend_green">Disponible</string>
+    <string name="map_legend_yellow">Peut être organisé</string>
+    <string name="map_legend_red">Pas encore couvert</string>
+    <string name="map_allow_location">Autoriser la position approximative</string>
+    <string name="map_known">Sources connues</string>
+    <string name="map_empty">ProkNet n\'a encore rien observé ici. Gardez l\'application ouverte près d\'un fournisseur ou d\'un Wi-Fi.</string>
+    <string name="map_location_title">Position approximative</string>
+    <string name="map_location_explain">ProkNet utilise votre position approximative (à 500 m près) pour se souvenir où Internet a été vu. Jamais votre position exacte, jamais d\'historique de vos déplacements.</string>
+    <string name="map_no_location">Position inconnue : autorisez la position approximative pour placer les observations.</string>
+    <string name="map_no_fix">Position pas encore connue.</string>
+    <string name="map_around_sources">Autour de vous · %1$d source(s) connue(s)</string>
+    <string name="map_last_seen">Dernière observation : %1$s</string>
+    <string name="map_type">Type : %1$s</string>
+    <string name="map_direct">Sources disponibles : %1$d</string>
+    <string name="map_potential">Sources possibles : %1$d</string>
+    <string name="map_best_price">Prix : %1$s</string>
+    <string name="map_seen_times">Vu %1$d fois</string>
+    <string name="map_nothing">Aucune observation ici pour l\'instant.</string>
+
+    <!-- v0.12 earn -->
+    <string name="earn_title">Gagner avec mon Internet</string>
+    <string name="share_price_big">Prix</string>
+    <string name="per_mb">CFA / Mo</string>
+    <string name="share_options">Options (minimum par client, limite de données)</string>
+    <string name="start_sharing_big">COMMENCER À PARTAGER</string>
+    <string name="clients">Clients</string>
+    <string name="shared_today">Partagé aujourd\'hui</string>
+    <string name="earned_today">Gagné aujourd\'hui</string>
+    <string name="share_no_internet_yet_big">Votre téléphone n\'a pas encore Internet</string>
+
+    <!-- v0.12 activity -->
+    <string name="activity_used">Internet utilisé</string>
+    <string name="activity_shared">Internet partagé</string>
+
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>
     <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>

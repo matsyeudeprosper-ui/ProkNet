@@ -1903,3 +1903,32 @@ interface while the session is running.
 The normal UI is regression-proven when both phones reach "Internet
 connecté ✅" / "Quelqu'un utilise votre Internet" with Wikipedia loaded,
 twice, with no Developer screen opened.
+
+## 50. v0.12.0 one tap
+
+OUKITEL (seller): on the Freebox, mobile data off, Bluetooth on. Open
+ProkNet -> Gagner -> COMMENCER À PARTAGER. It says "Disponible autour de
+vous ✅" with "Source : Wi-Fi (Freebox) ✅".
+
+OnePlus (buyer): mobile data OFF, not on the Freebox, Bluetooth on. Open
+ProkNet. Tap the big button OBTENIR INTERNET. Wait. The card walks by
+itself: "Recherche d'Internet…", "Recherche du meilleur Internet…",
+"Internet trouvé ✅", "Connexion…", "Vérification de la connexion…",
+"Démarrage d'Internet…" (the VPN sentence and Android's prompt the first
+time), "Internet connecté ✅" with price, used, cost. Open Wikipedia.
+
+Then open Carte on both phones and send a screenshot if anything looks
+wrong. That is all.
+
+If something fails, the card shows one sentence; tap ARRÊTER and try
+again. For us: Développeur -> COPY COVERAGE shows the sources, the cells
+and "last GET INTERNET decision ... why".
+
+### Claim rule
+
+The one-tap flow is regression-proven when the OnePlus reaches "Internet
+connecté ✅" from OBTENIR INTERNET, with the OUKITEL chosen automatically
+(the diagnostic says "cheapest validated reachable source" or "the last
+one that worked"), and Wikipedia loads. The map is a foundation: it is
+checked for honesty (no source shown that was never seen), not for
+coverage.

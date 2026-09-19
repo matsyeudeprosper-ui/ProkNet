@@ -110,6 +110,13 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
+        findViewById<Button>(R.id.btnCopyCoverage).setOnClickListener {
+            // v0.12: sources, observations, cells, the last GET INTERNET decision and why
+            val text = "Prok COVERAGE DIAG " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + "\n" +
+                "me: prok-" + node.identity.shortIdHex + "\n" + ProkNetApp.coverage(this).diag()
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("ProkNet coverage", text))
+            toast("Coverage diagnostic copied (" + text.length + " chars)")
+        }
         node.vpnRequested = { startVpnWithConsent() }
         txtSelected = findViewById(R.id.txtSelected)
         txtLog = findViewById(R.id.txtLog)
@@ -532,7 +539,7 @@ class LabActivity : Activity(), ProkNetNode.Listener {
             (if (node.wifi.peerCancelDetail.isNotEmpty()) "provider refused, ITS error: " + node.wifi.peerCancelDetail + "\n" else "") +
             "ble: " + node.linkState(Routing.TRANSPORT_BLE) + " | sent " + node.ble.bytesSent + " B, recv " + node.ble.bytesReceived + " B\n" +
             "wifi: " + node.linkState(Routing.TRANSPORT_WIFI) + " | sent " + node.wifi.bytesSent + " B, recv " + node.wifi.bytesReceived + " B\n" +
-            node.bulk.diag() +
+            node.bulk.diag() + ProkNetApp.coverage(this).diag() +
             "peers: " + peers.joinToString("; ") { describe(it) } + "\n" +
             "keys known: " + node.store.peerKeyCount() + "\n" +
             "market: SELL " + (if (node.sellOn) "on " + node.sellPrice + " CFA/MB min " + node.sellMinPrice + " max " + node.sellMaxMb + " MB" else "off") + ", RELAY " + node.relayOn + ", fee " + node.feePct + "%, offers nearby " + node.offers().joinToString("; ") { it.describe() } + "\n" +

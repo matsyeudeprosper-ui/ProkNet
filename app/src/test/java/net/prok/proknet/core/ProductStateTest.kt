@@ -225,6 +225,13 @@ class ProductStateTest {
         assertTrue(ProductState.sellerNeedsHotspotWarnings(BulkPlan.SellerAccessPath.HOTSPOT))
         assertFalse(ProductState.sellerNeedsHotspotWarnings(BulkPlan.SellerAccessPath.BLUETOOTH_BULK))
         assertFalse(ProductState.sellerNeedsHotspotWarnings(BulkPlan.SellerAccessPath.NONE))
+        // v0.12: the seller headline and the buyer words carry no transport word
+        for (st in ProductState.Seller.values()) {
+            val h = ProductState.sellerHeadline(st) + ProductState.sellerTitle(st) + ProductState.sellerHint(st)
+            for (w in listOf("L2CAP", "PSM", "BULK", "GATT", "hotspot", "Bluetooth", "tunnel", "BSSID")) assertFalse(w, h.contains(w))
+        }
+        assertEquals("Disponible autour de vous ✅", ProductState.sellerHeadline(ProductState.Seller.AVAILABLE))
+        assertEquals("1 personne utilise votre Internet", ProductState.sellerHeadline(ProductState.Seller.SERVING))
         // the source line: the SSID, a tick, no protocol
         assertEquals("Source : Wi-Fi (Freebox) \u2705", ProductState.sellerSourceLine(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, Tunnel.UP_WIFI, "Freebox"))
         assertEquals("Source : Donn\u00e9es mobiles \u2705", ProductState.sellerSourceLine(BulkPlan.SellerAccessPath.HOTSPOT, Tunnel.UP_CELLULAR, null))

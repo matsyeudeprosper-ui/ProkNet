@@ -64,7 +64,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.10.0 | Bluetooth bulk Internet: the provider keeps its home Wi-Fi and serves over a Bluetooth L2CAP channel, the same signed handshake / tunnel / VPN on top, a 1 MB probe each way before the tunnel, no hotspot and no Wi-Fi Direct | built, 211 JVM tests pass; runtime still ran the old sharing machinery (fixed in v0.10.1) |
 | v0.10.1 | The runtime obeys the architecture: a home-Wi-Fi Bluetooth seller chooses the Bluetooth path directly, runs no hotspot probe, and never creates a Wi-Fi Direct group automatically; the watchdog and reachability know the bulk link | **phones proved it**: seller stayed on the Freebox, no probe, no Wi-Fi Direct, L2CAP + signed auth + BULK UP; the 1 MB full-duplex probe was too aggressive (one direction killed at 700-960 KB) |
 | v0.10.2 | Sequential probe: 256 KB buyer -> seller, confirmed, then 256 KB seller -> buyer, confirmed; PARTIAL / NO_DATA / PASS per direction instead of "carried nothing"; a two-button test screen with COPY TEST RESULT | **HARDWARE PROVEN 2026-09-19 on the OUKITEL (Android 15) / OnePlus (Android 14) pair**: Freebox Wi-Fi -> seller -> Bluetooth L2CAP -> buyer -> ProkNet VPN -> real Internet. Signed auth, 256 KB PASS both ways, contract, session, VPN, DNS, HTTPS (TLS 1.3, HTTP 200), accounting/checkpoint, Wikipedia in Chrome |
-| v0.11.0 | Consumer integration: the proven two-phone path from the normal app. Seller: Partager -> Commencer. Buyer: Internet -> offer -> Connecter -> "Internet connecté ✅". Transport chosen by rule, never by the user; VPN explained in one sentence; failures in one sentence; stale developer Wi-Fi Direct group removed at start | built, 222 JVM tests pass, hardware regression of the normal UI pending |
+| v0.11.0 | Consumer integration: the proven two-phone path from the normal app. Seller: Partager -> Commencer. Buyer: Internet -> offer -> Connecter -> "Internet connecté ✅". Transport chosen by rule, never by the user; VPN explained in one sentence; failures in one sentence; stale developer Wi-Fi Direct group removed at start | built, 222 JVM tests pass |
+| v0.12.0 | One big button: OBTENIR INTERNET. A pure decision engine (free first, cheapest reliable next, never a stale or unauthorized source), an Internet request model, a coverage observation layer (one record per real source, coarse ~500 m cells, hashed Wi-Fi ids, no passwords), the first Carte tab, a polished consumer UI (Accueil / Internet / Carte / Gagner / Activité), COPY COVERAGE for developers | built, 236 JVM tests pass, one-tap hardware regression pending |
 
 ### v0.1 - what it does
 
@@ -191,6 +192,23 @@ started, VPN up, DNS working, HTTPS working (TLS 1.3, HTTP 200),
 accounting and checkpoint working, Wikipedia loaded in Chrome with the
 ProkNet VPN as the phone's Internet path. Not generalised to every Android
 device: proven on this pair.
+
+## Built and software-tested (not yet hardware-proven)
+
+- The one-tap decision engine (`core/GetInternet.kt`): 14 JVM tests on the
+  ranking rules and the request state machine.
+- The coverage observation layer (`core/CoverageModel.kt`, `node/CoverageEngine.kt`):
+  deduplication, cells, conservative status, persistence codec.
+- The first Carte tab: schematic ~500 m cells around the phone, no tiles.
+- The Internet request model and the planner foundation with the economic
+  rule (`core/InternetRequest.kt`).
+- The one-tap flow on the phones (OBTENIR INTERNET -> the proven Bluetooth
+  provider) is the pending hardware regression, TESTING section 50.
+
+## Not yet hardware-proven, not claimed
+
+- 3-phone relay, relay / mover marketplace, citywide request fulfilment.
+  The models exist (hops, roles, cost classes); nothing executes them.
 
 ## Decided
 
