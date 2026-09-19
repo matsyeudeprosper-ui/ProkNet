@@ -1,36 +1,39 @@
-# CLAUDE_REPORT - ProkNet v0.12.3 "the sphere, second pass"
+# CLAUDE_REPORT - ProkNet v0.12.4 "the sphere is the interface"
 
 Date: 2026-09-19
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 236/236 tests pass, released. Visual only. The one-tap
-hardware regression (TESTING section 50) remains the pending test.**
+Status: **built, 236/236 tests pass, released. Visual and interaction only.
+The one-tap hardware regression (TESTING section 50) remains the pending
+test.**
 
 ## 1. Why
 
-Mike, on v0.12.2: "Better but not quite. Was that the best you have?" It
-was not: a pale flat disc in three even circles, truncated tiles, one
-blue everywhere.
+Mike, on v0.12.3: "Good, I like the sphere, but design could be better.
+I'm expecting less writing, more intuitive, animation, for example that
+sphere would have been a breathing something." His screenshot also showed
+two defects: the blur layer as a hard rectangle behind the sphere, and the
+outer arc clipped.
 
 ## 2. What changed
 
-`ui/PulseButtonView.kt`, redrawn in a software layer:
-- the sphere: four-stop radial gradient from a tight near-white specular
-  through the brand blue to a deep navy edge, a thin white rim, a blurred
-  halo, a blurred drop shadow beneath, a soft text shadow;
-- ambient light instead of a bullseye: blue high-left, violet low-right,
-  two scan arcs whose stroke fades around the circle;
-- the usable sources as green glowing dots on the first arc (`sources`,
-  from the home refresh); while searching they drift and a radar wedge
-  turns.
-Layout and strings: tile captions Sources / Prix / Dernière on one line,
-values auto-sized 12-18 sp; shorter door-row subtitles.
+- `ui/PulseButtonView.kt`: modes IDLE / SEARCHING / CONNECTING / ONLINE.
+  Breathing at rest (3.4 s), quicker while searching with a turning radar
+  wedge, pulse rings while connecting, green body / halo / arcs when
+  online, a ripple on press, arcs turning slowly, source dots orbiting.
+  Continuous redraw only while attached and shown. Ambient light bounded
+  inside the view; arcs bounded by the view radius; height 336 dp.
+- The home: no question line, no status line; the sphere stays visible
+  during a request (it IS the status) with one word per state; the status
+  card with details and ARRÊTER sits under it; tiles show only the value;
+  door rows are a title and a chevron; "Vous partagez" only while sharing.
+- A tap while a request is alive does nothing.
 
 ## 3. Build
 
-Build 48, versionName 0.12.3, SHA256 `67e6164e4d413f77adbfe14d2477efd07b25930532789d6b671fd68de1a5bd7e`.
-Commit `cca5b04` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.3
+Build 49, versionName 0.12.4, SHA256 `adecff0940972f99fae620636692e15e7b0dc7322acca1002b1aabc54d916a34`.
+Commit `5f39aa7` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.4
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
@@ -38,10 +41,11 @@ C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 
 ## 4. Files changed
 
-`ui/PulseButtonView.kt`, `res/layout/activity_main.xml` (tiles),
-`res/values/strings.xml` (5 strings), `ui/MainActivity.kt` (one line:
-`sources`), `build.gradle.kts`.
+`ui/PulseButtonView.kt`, `res/layout/activity_main.xml` (home block),
+`res/values/strings.xml` (+6), `ui/MainActivity.kt` (sphere mode / label,
+ask-block visibility, tile values, tap guard), `build.gradle.kts`.
 
 ## 5. The test
 
-Unchanged: TESTING section 50.
+Unchanged: TESTING section 50. The sphere itself now shows RECHERCHE ->
+CONNEXION -> CONNECTÉ during it.
