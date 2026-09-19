@@ -67,6 +67,11 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.9.27: the framework on THIS phone asked for time. Not the provider, which may be perfectly free.
+        P2pCreation.isFrameworkBusy(lastError) ->
+            "Le Wi-Fi Direct de ce t\u00e9l\u00e9phone est encore occup\u00e9. Attendez quelques secondes puis r\u00e9essayez."
+        P2pCreation.isCreationFailure(lastError) || any(lastError, "createGroup") ->
+            "Ce t\u00e9l\u00e9phone n'a pas r\u00e9ussi \u00e0 cr\u00e9er la connexion Wi-Fi Direct. R\u00e9essayez."
         // v0.9.25: this phone could not create its own Wi-Fi Direct group
         any(lastError, "no Wi-Fi Direct group formed") ->
             "Ce t\u00e9l\u00e9phone n'a pas pu cr\u00e9er sa connexion directe. \u00c9teignez et rallumez le Wi-Fi, puis r\u00e9essayez."
@@ -83,7 +88,8 @@ object ProductState {
         // v0.9.3: the three ways the setup really fails, each with what to check
         any(lastError, "did not answer", "did not introduce", "no contract answer", "no SESSION_OK", "did not join") ->
             "Le fournisseur n'a pas répondu. Sur son téléphone : Wi-Fi et localisation activés, application ouverte."
-        any(lastError, "already serving", "busy") ->
+        // v0.9.27: only the PROVIDER saying so counts; a bare "busy" from an Android framework does not
+        any(lastError, "already serving", "provider is busy", "provider busy") ->
             "Le fournisseur est d\u00e9j\u00e0 occup\u00e9 avec un autre t\u00e9l\u00e9phone. R\u00e9essayez dans un moment."
         // v0.9.5: the provider now sends its own Android error, so we can name the ONE thing to change
         any(lastError, "location services are off") ->

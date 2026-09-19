@@ -349,7 +349,9 @@ object P2pAdmission {
     /** Which stage a failure reason belongs to, for the log and the saved test record. */
     fun stageOf(reason: String): FailStage = when {
         reason.isEmpty() -> FailStage.NONE
-        reason == P2pPlan.GROUP_CREATE_FAIL_REASON || reason.contains("no Wi-Fi Direct group formed") -> FailStage.GROUP_CREATE
+        // v0.9.27: typed and prefixed. A refusal, a BUSY framework, a permission, a silence: all GROUP_CREATE.
+        P2pCreation.isCreationFailure(reason) || reason.contains("createGroup", ignoreCase = true) ||
+            reason.contains("no Wi-Fi Direct group formed") -> FailStage.GROUP_CREATE
         reason == BLIND_FAIL_REASON -> FailStage.SEARCH
         reason == INVITE_FAIL_REASON || reason == JOIN_FAIL_REASON -> FailStage.ASSOCIATION
         reason.contains("transport", ignoreCase = true) || reason.contains("local link", ignoreCase = true) -> FailStage.TRANSPORT

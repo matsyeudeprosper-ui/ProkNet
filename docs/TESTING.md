@@ -1673,3 +1673,50 @@ admission: the customer "C1 Pro" ... | group formed=true role=GROUP_OWNER ... ->
 The seller keeps its loop the whole time: `telling the customer what this
 phone can see` every eight seconds, on the Freebox, upstream validated. That
 is correct and must not stop.
+
+## 45. v0.9.27 three REAL creation attempts, or a specific reason why not
+
+Sections 43 and 44 still apply. This section is about counting honestly.
+
+A **real attempt** is one of these, and nothing else:
+
+```
+createGroup attempt N accepted (...), waiting for the group to form
+   ... fifteen seconds of only pending / deferred / owns-the-radio lines ...
+no group formed within 15s of createGroup attempt N being accepted
+```
+
+or
+
+```
+createGroup attempt N refused: <a reason that is not BUSY>
+```
+
+Between real attempts the buyer must show the reset, and the framework must
+be verified clean before the next one:
+
+```
+RESETTING_FRAMEWORK before attempt 2/3
+reset: the half-made group was removed         (or: nothing to remove)
+framework clean: starting GROUP_CREATE_ATTEMPT 2/3
+```
+
+BUSY lines are allowed and do NOT count:
+
+```
+Wi-Fi Direct framework still busy after previous creation; waiting before retry (...)
+```
+
+**The decision rule.** If the log shows three lines of the form
+`createGroup attempt N accepted` (N = 1, 2, 3), each followed by a silent
+fifteen seconds and `no group formed`, with a verified reset between them,
+then this OnePlus does not create an autonomous Wi-Fi Direct group in this
+configuration, and we stop patching this topology. Anything less than that
+is not yet a verdict.
+
+If instead it ends with `GROUP CREATE FAILED: GROUP_CREATE: the Wi-Fi Direct
+framework stayed BUSY ...`, the framework never settled and the screen says
+to wait a few seconds. Try once more after a minute before drawing anything.
+
+Whatever happens, the buyer must NOT show "Le fournisseur est déjà occupé".
+Copy the LAST P2P TEST RESULT block from both phones.

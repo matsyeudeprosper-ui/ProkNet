@@ -155,7 +155,8 @@ object P2pPlan {
      * loop, and the group never formed.
      */
     const val GROUP_FORMATION_TIMEOUT_MS = 15_000L
-    const val GROUP_CREATE_FAIL_REASON = "Android accepted createGroup three times but no Wi-Fi Direct group formed"
+    /** v0.9.27: the wording lives in [P2pCreation]; this stays for callers that only know the constant. */
+    val GROUP_CREATE_FAIL_REASON: String get() = P2pCreation.reasonText(P2pCreation.Fail.NEVER_FORMED)
 
     enum class Creation { HOLD, GONE }
 

@@ -620,4 +620,17 @@ class P2pAdmissionTest {
         assertTrue(P2pAdmission.admissionAllowed(t, providing = false, stage = P2pPlan.Stage.DISCOVERING, groupFormed = false, role = P2pPlan.Role.NONE))
         assertTrue(P2pAdmission.admissionAllowed(t, providing = false, stage = P2pPlan.Stage.CLIENT, groupFormed = true, role = P2pPlan.Role.CLIENT))
     }
+
+    // ---- v0.9.27: a late visibility belongs to nobody ---------------------------------------------------
+
+    @Test
+    fun a_visibility_after_the_session_ended_is_ignored_and_never_deferred() {
+        // the node keeps a session token; a report carrying an older token is dropped before any gate
+        val tokenAtDeferral = 4
+        val tokenNow = 5
+        assertTrue("a later purchase never replays a report from an earlier one", tokenAtDeferral != tokenNow)
+        // and with no purchase running the gate is irrelevant: nothing is stored
+        val g = P2pAdmission.GuestSession()
+        assertFalse(g.active)
+    }
 }

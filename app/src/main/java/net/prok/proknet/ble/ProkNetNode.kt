@@ -397,19 +397,27 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * phone can see, that is the whole admission decision.
      */
     /** v0.9.26: the last visibility that arrived while this phone was still creating its group. */
-    @Volatile private var p2pDeferredVisibility: Pair<String, Wire.Control.P2pVisibility>? = null
+    @Volatile private var p2pDeferredVisibility: Triple<Int, String, Wire.Control.P2pVisibility>? = null
+    /** v0.9.27: a callback from a previous purchase can never mutate a later one. */
+    @Volatile private var p2pSessionToken = 0
+
+    /** Does a P2P control from [peerShort] belong to a session this phone is running right now? */
+    private fun p2pSessionActive(peerShort: String): Boolean =
+        if (gateway.providing) true else (buyViaP2p && buyerWanted == peerShort)
 
     private fun admissionAllowed(): Boolean =
         P2pAdmission.admissionAllowed(p2pTopology, gateway.providing, p2p.stage, p2p.groupFormed, p2p.role)
 
     private fun onP2pVisibility(peerShort: String, c: Wire.Control.P2pVisibility) {
+        // v0.9.27: a report that belongs to no live session is stale, never remembered, never deferred
+        if (!p2pSessionActive(peerShort)) { DiagLog.i(tag, "prok-" + peerShort + " reported its visibility but no purchase is running with it: ignored"); return }
         // v0.9.23: the GROUP OWNER decides, whichever phone that is in this topology
         if (!iOwnGroup()) { DiagLog.i(tag, "prok-" + peerShort + " reported its visibility; this phone does not own the group, so it decides nothing"); return }
         if (c.deviceName.isNotBlank()) p2pGuestName = c.deviceName
         // v0.9.26: no plan, no message, no invitation, no discovery until our group exists. Remember
         // what the guest said and act on it the moment the group forms.
         if (!admissionAllowed()) {
-            p2pDeferredVisibility = Pair(peerShort, c)
+            p2pDeferredVisibility = Triple(p2pSessionToken, peerShort, c)
             DiagLog.i(tag, P2pAdmission.ADMISSION_DEFERRED + " (stage " + p2p.stage + ", formed " + p2p.groupFormed +
                 ", role " + p2p.role + "; remembered that \"" + p2pGuestName.ifEmpty { "?" } + "\" " + (if (c.canSee) "can" else "cannot") + " address me)")
             return
@@ -532,7 +540,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
      */
     private fun failBuy(logReason: String, userError: String) {
         // v0.9.23: the saved test record keeps WHICH stage died, after cleanup has erased everything else
-        val stage = P2pAdmission.stageOf(logReason)
+        val stage = if (p2p.lastFailStage != P2pAdmission.FailStage.NONE && logReason == p2p.lastError) p2p.lastFailStage
+                    else P2pAdmission.stageOf(logReason)
         p2p.lastTest.failureStage = P2pAdmission.stageName(stage)
         if (p2p.lastTest.verdict.isEmpty()) p2p.lastTest.verdict = logReason
         DiagLog.e(tag, "PURCHASE FAILED at stage " + P2pAdmission.stageName(stage) + ": " + logReason)
@@ -548,7 +557,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
         p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L; p2pAssociationAt = 0L; p2pOwnerFormedAt = 0L
-        p2pDeferredVisibility = null
+        p2pDeferredVisibility = null; p2pSessionToken++
         val mine = P2pPlan.ownsGroup(p2pTopology, false)
         DiagLog.i(tag, "TOPOLOGY = " + P2pPlan.topologyName(p2pTopology) + ": " + P2pPlan.topologyText(p2pTopology))
         sendControl(peerShort, Wire.p2pTopology(
@@ -751,11 +760,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (owner) p2pOwnerFormedAt = System.currentTimeMillis()
             // v0.9.26: the group exists: act on the visibility the guest sent while we were creating it
             val deferred = p2pDeferredVisibility
-            if (owner && deferred != null && admissionAllowed()) {
+            if (owner && deferred != null && admissionAllowed() && deferred.first == p2pSessionToken) {
                 p2pDeferredVisibility = null
-                DiagLog.i(tag, "the group exists now: evaluating the visibility prok-" + deferred.first + " sent while it was being created")
-                main.post { onP2pVisibility(deferred.first, deferred.second) }
-            }
+                DiagLog.i(tag, "the group exists now: evaluating the visibility prok-" + deferred.second + " sent while it was being created")
+                main.post { onP2pVisibility(deferred.second, deferred.third) }
+            } else if (deferred != null) p2pDeferredVisibility = null
             DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo +
                 " | " + p2p.plane.describe())
         } else {
@@ -1120,6 +1129,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
+        p2pSessionToken++; p2pDeferredVisibility = null
         if (buyViaP2p) {
             // v0.9.24: tell the provider, so a reversed session on its side ends with ours
             buyerWanted?.let { peer -> if (transportFor(peer) != null) sendControl(peer, Wire.wifiCancel(Wire.CANCEL_GENERIC, "customer stopped: " + reason.take(60))) {} }

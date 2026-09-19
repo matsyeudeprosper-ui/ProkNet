@@ -68,7 +68,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private val CREATE_ATTEMPTS = 3
     /** v0.9.25: createGroup() was accepted and the group has not formed yet. */
     @Volatile private var createAccepted = false
-    private var createAttempt = 0
+    /** v0.9.27: logical attempts and framework recovery are two different counters. */
+    @Volatile private var creation = net.prok.proknet.core.P2pCreation.START
+    private var resetTimer: Runnable? = null
+    /** Typed stage of the last failure, so a creation failure can never be filed elsewhere. */
+    @Volatile var lastFailStage: P2pAdmission.FailStage = P2pAdmission.FailStage.NONE
+        private set
     private var formationTimer: Runnable? = null
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
@@ -352,6 +357,8 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         if (!lastTest.ran || lastTest.role.isEmpty()) { lastTest.begin("SELLER_GROUP_OWNER", true); lastTest.role = "GROUP_OWNER (creating)"; providesInternet = true }
         DiagLog.i(tag, "GROUP OWNER requested while this phone is on " + (staBefore.ifEmpty { "no Wi-Fi network" }))
         life.start(P2pPlan.Want.SELL)
+        creation = net.prok.proknet.core.P2pCreation.START
+        lastFailStage = P2pAdmission.FailStage.NONE
         cleanup("before SELL") { createGroup() }
         return null
     }
@@ -403,30 +410,51 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
      * plain group is created instead and the log says which one happened.
      * `GROUP CHANNEL:` then reports what was actually granted.
      */
-    private fun createGroup(attempt: Int = 1, withBand: Boolean = true) {
+    /**
+     * v0.9.27: `createGroup()` is driven by [net.prok.proknet.core.P2pCreation].
+     * A logical attempt is one Android ACCEPTED or explicitly REFUSED. A BUSY
+     * answer is the framework asking for time: it never consumes an attempt,
+     * it consumes a bounded reset try. The v0.9.26 run counted two BUSY
+     * answers as attempts 2 and 3, so only one real attempt ever ran.
+     */
+    private fun createGroup(withBand: Boolean = true) {
         val m = manager; val c = channel
-        if (m == null || c == null) { fail("no p2p channel"); return }
+        if (m == null || c == null) { creation = net.prok.proknet.core.P2pCreation.permissionDenied(creation, "no p2p channel"); failCreation(); return }
+        creation = net.prok.proknet.core.P2pCreation.begin(creation)
+        val n = creation.pending
         val sta = try { hooks.staFrequency() } catch (e: Exception) { 0 }
         val band = P2pPlan.groupBand(sta)
         val useBand = withBand && band == 2 && Build.VERSION.SDK_INT >= 29
-        DiagLog.i(tag, "creating a fresh Wi-Fi Direct group (attempt " + attempt + "/" + CREATE_ATTEMPTS + "): " +
+        DiagLog.i(tag, "GROUP_CREATE_ATTEMPT " + n + "/" + net.prok.proknet.core.P2pCreation.ATTEMPTS + ": " +
             (if (useBand) P2pPlan.groupBandText(band, sta) else P2pPlan.groupBandText(0, sta)))
         val listener = object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                DiagLog.i(tag, "createGroup attempt " + attempt + " accepted (" + (if (useBand) "2.4 GHz requested" else "default band") + "), waiting for the group to form")
+                creation = net.prok.proknet.core.P2pCreation.accepted(creation)
                 createAccepted = true
-                createAttempt = attempt
-                armFormationTimeout(attempt)
+                DiagLog.i(tag, "createGroup attempt " + creation.attempt + " accepted (" + (if (useBand) "2.4 GHz requested" else "default band") + "), waiting for the group to form")
+                armFormationTimeout()
                 refreshAll()
             }
             override fun onFailure(reason: Int) {
-                if (useBand) {
-                    DiagLog.w(tag, "the 2.4 GHz group was refused (" + reasonName(reason) + "): creating a default group instead")
-                    main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt, withBand = false) }
-                } else if (attempt < CREATE_ATTEMPTS) {
-                    DiagLog.w(tag, "createGroup refused (" + reasonName(reason) + "), retrying in 3s")
-                    main.postDelayed({ if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }, 3_000)
-                } else fail("createGroup failed after " + attempt + " attempts: " + reasonName(reason))
+                val name = reasonName(reason)
+                when {
+                    useBand -> {
+                        DiagLog.w(tag, "the 2.4 GHz group was refused (" + name + "): creating a default group instead")
+                        main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(withBand = false) }
+                    }
+                    net.prok.proknet.core.P2pCreation.isBusy(name) -> {
+                        creation = net.prok.proknet.core.P2pCreation.createBusy(creation)
+                        if (creation.phase == net.prok.proknet.core.P2pCreation.Phase.FAILED) { failCreation(); return }
+                        DiagLog.w(tag, "Wi-Fi Direct framework still busy after previous creation; waiting before retry (" + creation.describe() + ")")
+                        scheduleReset(net.prok.proknet.core.P2pCreation.RESET_BACKOFF_MS)
+                    }
+                    else -> {
+                        creation = net.prok.proknet.core.P2pCreation.createRefused(creation, name)
+                        if (creation.phase == net.prok.proknet.core.P2pCreation.Phase.FAILED) { failCreation(); return }
+                        DiagLog.w(tag, "createGroup attempt " + creation.attempt + " refused: " + name + " -> RESETTING_FRAMEWORK before attempt " + creation.pending)
+                        scheduleReset(net.prok.proknet.core.P2pCreation.RESET_BACKOFF_MS)
+                    }
+                }
             }
         }
         try {
@@ -438,24 +466,19 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
                     .build()
                 m.createGroup(c, cfg, listener)
             } else m.createGroup(c, listener)
-        } catch (e: SecurityException) { fail("permission: " + e.message) }
-        catch (e: Exception) {
+        } catch (e: SecurityException) {
+            creation = net.prok.proknet.core.P2pCreation.permissionDenied(creation, e.message ?: "SecurityException")
+            failCreation()
+        } catch (e: Exception) {
             DiagLog.w(tag, "the band request could not be built (" + e + "): creating a default group instead")
-            if (useBand) main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt, withBand = false) }
-            else fail("createGroup: " + LinkIo.describe(e))
+            if (useBand) main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(withBand = false) }
+            else { creation = net.prok.proknet.core.P2pCreation.createRefused(creation, LinkIo.describe(e)); if (creation.phase == net.prok.proknet.core.P2pCreation.Phase.FAILED) failCreation() else scheduleReset(net.prok.proknet.core.P2pCreation.RESET_BACKOFF_MS) }
         }
     }
 
-    /**
-     * v0.9.25: an accepted `createGroup()` that never forms is not a refusal,
-     * and the old code only retried refusals. Each acceptance gets its own
-     * clock; when it runs out with the group still not formed the group is
-     * removed and created again, and the third such silence is a specific
-     * failure, not a peer-visibility one.
-     */
-    private fun armFormationTimeout(attempt: Int) {
+    private fun armFormationTimeout() {
         formationTimer?.let { main.removeCallbacks(it) }
-        val r = Runnable { onFormationTimeout(attempt) }
+        val r = Runnable { onFormationTimeout() }
         formationTimer = r
         main.postDelayed(r, P2pPlan.GROUP_FORMATION_TIMEOUT_MS)
     }
@@ -463,33 +486,96 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     private fun cancelFormationTimeout() {
         formationTimer?.let { main.removeCallbacks(it) }
         formationTimer = null
+        resetTimer?.let { main.removeCallbacks(it) }
+        resetTimer = null
         createAccepted = false
+        creation = net.prok.proknet.core.P2pCreation.formed(creation)
     }
 
-    private fun onFormationTimeout(attempt: Int) {
+    /** The formation window closed with no group. The attempt happened; the framework is reset before the next one. */
+    private fun onFormationTimeout() {
         formationTimer = null
-        when (P2pPlan.onFormationTimeout(life.stage, life.groupFormed, attempt, CREATE_ATTEMPTS)) {
-            P2pPlan.Formation.FORMED, P2pPlan.Formation.IGNORE -> createAccepted = false
-            P2pPlan.Formation.RETRY -> {
-                createAccepted = false
-                DiagLog.w(tag, "no group formed within " + (P2pPlan.GROUP_FORMATION_TIMEOUT_MS / 1000) + "s of createGroup attempt " + attempt +
-                    " being accepted: retrying group creation attempt " + (attempt + 1) + "/" + CREATE_ATTEMPTS)
-                val m = manager; val c = channel
-                if (m == null || c == null) { createGroup(attempt + 1); return }
-                try {
-                    m.removeGroup(c, object : WifiP2pManager.ActionListener {
-                        override fun onSuccess() { DiagLog.i(tag, "the half-made group was removed"); if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }
-                        override fun onFailure(reason: Int) { DiagLog.i(tag, "nothing to remove (" + reasonName(reason) + ")"); if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }
-                    })
-                } catch (e: Exception) { createGroup(attempt + 1) }
-            }
-            P2pPlan.Formation.FAIL -> {
-                createAccepted = false
-                DiagLog.e(tag, "GROUP CREATE FAILED: " + P2pPlan.GROUP_CREATE_FAIL_REASON)
-                lastTest.failureStage = "GROUP_CREATE_FAIL"
-                fail(P2pPlan.GROUP_CREATE_FAIL_REASON)
-            }
+        createAccepted = false
+        if (life.groupFormed || life.stage != P2pPlan.Stage.CREATING_GROUP) return
+        val before = creation
+        creation = net.prok.proknet.core.P2pCreation.formationTimeout(creation)
+        DiagLog.w(tag, "no group formed within " + (P2pPlan.GROUP_FORMATION_TIMEOUT_MS / 1000) + "s of createGroup attempt " + before.attempt + " being accepted")
+        if (creation.phase == net.prok.proknet.core.P2pCreation.Phase.FAILED) { failCreation(); return }
+        DiagLog.i(tag, "RESETTING_FRAMEWORK before attempt " + creation.pending + "/" + net.prok.proknet.core.P2pCreation.ATTEMPTS)
+        scheduleReset(0L)
+    }
+
+    private fun scheduleReset(delayMs: Long) {
+        resetTimer?.let { main.removeCallbacks(it) }
+        val r = Runnable { runReset() }
+        resetTimer = r
+        main.postDelayed(r, delayMs)
+    }
+
+    /**
+     * The bounded reset between logical attempts: cancelConnect, stop
+     * discovery, remove the half-made group, then VERIFY the framework is
+     * clean before the next createGroup(). BUSY anywhere means back off and
+     * try the reset again, a bounded number of times.
+     */
+    private fun runReset() {
+        resetTimer = null
+        if (life.stage != P2pPlan.Stage.CREATING_GROUP) return
+        val m = manager; val c = channel
+        if (m == null || c == null) { onResetClean(); return }
+        val removeGroup = {
+            try {
+                m.removeGroup(c, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { DiagLog.i(tag, "reset: the half-made group was removed"); verifyClean() }
+                    override fun onFailure(reason: Int) {
+                        val name = reasonName(reason)
+                        if (net.prok.proknet.core.P2pCreation.isBusy(name)) onResetBusy("removeGroup: " + name)
+                        else { DiagLog.i(tag, "reset: nothing to remove (" + name + ")"); verifyClean() }
+                    }
+                })
+            } catch (e: Exception) { verifyClean() }
         }
+        val stopDiscovery = {
+            try { m.stopPeerDiscovery(c, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { removeGroup() }
+                override fun onFailure(reason: Int) { removeGroup() }
+            }) } catch (e: Exception) { removeGroup() }
+        }
+        try { m.cancelConnect(c, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() { stopDiscovery() }
+            override fun onFailure(reason: Int) { stopDiscovery() }
+        }) } catch (e: Exception) { stopDiscovery() }
+    }
+
+    private fun verifyClean() {
+        try {
+            manager?.requestConnectionInfo(channel) { info ->
+                if (info?.groupFormed == true) onResetBusy("a group is still reported as formed") else onResetClean()
+            } ?: onResetClean()
+        } catch (e: Exception) { onResetClean() }
+    }
+
+    private fun onResetBusy(what: String) {
+        if (life.stage != P2pPlan.Stage.CREATING_GROUP) return
+        creation = net.prok.proknet.core.P2pCreation.resetBusy(creation)
+        if (creation.phase == net.prok.proknet.core.P2pCreation.Phase.FAILED) { failCreation(); return }
+        DiagLog.w(tag, "Wi-Fi Direct framework still busy after previous creation; waiting before retry (" + what + "; " + creation.describe() + ")")
+        scheduleReset(net.prok.proknet.core.P2pCreation.RESET_BACKOFF_MS)
+    }
+
+    private fun onResetClean() {
+        if (life.stage != P2pPlan.Stage.CREATING_GROUP) return
+        creation = net.prok.proknet.core.P2pCreation.resetClean(creation)
+        DiagLog.i(tag, "framework clean: starting GROUP_CREATE_ATTEMPT " + creation.pending + "/" + net.prok.proknet.core.P2pCreation.ATTEMPTS)
+        createGroup()
+    }
+
+    private fun failCreation() {
+        val reason = net.prok.proknet.core.P2pCreation.reasonText(creation)
+        lastFailStage = P2pAdmission.FailStage.GROUP_CREATE
+        lastTest.failureStage = "GROUP_CREATE_FAIL"
+        DiagLog.e(tag, "GROUP CREATE FAILED: " + reason + " | " + creation.describe())
+        fail(reason)
     }
 
     private fun discover() {
@@ -651,7 +737,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             // v0.9.25: after an ACCEPTED createGroup(), formed=false means "still being created", not
             // "gone". Starting discovery here fought Android's own creation and got BUSY in a loop.
             if (P2pPlan.onFormedFalse(life.stage, createAccepted) == P2pPlan.Creation.HOLD) {
-                DiagLog.i(tag, "group creation pending: formed=false is normal while CREATING_GROUP (attempt " + createAttempt + "/" + CREATE_ATTEMPTS + ")")
+                DiagLog.i(tag, "group creation pending: formed=false is normal while CREATING_GROUP (attempt " + creation.attempt + "/" + net.prok.proknet.core.P2pCreation.ATTEMPTS + ")")
                 changed(); return
             }
             // v0.9.22: Android reports groupFormed=false in the middle of its own join choreography.
@@ -664,7 +750,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             if (life.want != P2pPlan.Want.NONE) keepDiscovering("the group is gone, this phone can look for peers again")
             changed(); return
         }
-        if (createAccepted) { cancelFormationTimeout(); DiagLog.i(tag, "GROUP FORMED after createGroup attempt " + createAttempt + ": role " + life.role) }
+        if (createAccepted) { val n = creation.attempt; cancelFormationTimeout(); DiagLog.i(tag, "GROUP FORMED after createGroup attempt " + n + ": role " + life.role) }
         // v0.9.16: a sleeping radio is where the owner downlink was being lost
         radio.acquire("a Wi-Fi Direct group exists on this phone")
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
@@ -859,6 +945,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
 
     private fun dropPlane(why: String) {
         cancelFormationTimeout()
+        creation = net.prok.proknet.core.P2pCreation.START
         endAssociation(why, failed = true)
         radio.release(why)
         closeListener(why)
@@ -1249,6 +1336,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         sb.append("data plane: ").append(plane.describe()).append("\n")
         sb.append("data plane usable: ").append(plane.usable).append("\n")
         sb.append("listener: ").append(listener?.describe() ?: "none").append("\n")
+        sb.append("group creation: ").append(creation.describe()).append("\n")
         sb.append("association in flight: ").append(if (associationPending) associationOwner.toString() +
             " for " + ((System.currentTimeMillis() - associationAt) / 1000) + "s" else "none").append("\n")
         sb.append("link probe: ").append(P2pPlan.linkProofText(linkProof)).append("\n")

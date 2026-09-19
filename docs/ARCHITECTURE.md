@@ -746,6 +746,68 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## BUSY is not an attempt (v0.9.27)
+
+v0.9.26 produced the first genuinely clean creation attempt on the OnePlus:
+accepted, fifteen silent seconds with nothing but `pending` and `deferred`
+lines, no group. Then:
+
+```
+12:20:13.617  nothing to remove (BUSY)
+12:20:13.618  creating attempt 2
+12:20:13.620  createGroup refused BUSY
+12:20:16.631  creating attempt 3
+12:20:16.636  createGroup failed after 3 attempts: BUSY
+```
+
+Attempts 2 and 3 never happened. Android was still settling the first
+creation, said BUSY twice, and the counter treated that as evidence. One
+real attempt, not three, and a screen that told the customer the provider
+was busy with another phone while the provider sat idle on the Freebox.
+
+### Two counters
+
+`core/P2pCreation.kt` is a pure state machine: IDLE, CREATING, FORMING,
+RESETTING, DONE, FAILED. A **logical attempt** is one Android accepted or
+explicitly refused; there are three. A **reset try** is the framework asking
+for time; there are eight, a second and a half apart. BUSY never consumes an
+attempt, it consumes a reset try.
+
+```
+GROUP_CREATE_ATTEMPT 1/3    accepted, never formed
+RESETTING_FRAMEWORK         cancelConnect, stopPeerDiscovery, removeGroup,
+                            then requestConnectionInfo must say formed=false;
+                            BUSY anywhere -> back off, try the reset again
+framework clean             only now: GROUP_CREATE_ATTEMPT 2/3
+```
+
+Nothing is committed when `createGroup()` is called; the attempt number is
+committed when Android answers. If the framework never leaves BUSY, the
+machine ends in a bounded, specific failure after its eight tries.
+
+### Typed failures
+
+`P2pCreation.Fail` is NEVER_FORMED, FRAMEWORK_BUSY, REFUSED or PERMISSION.
+Every reason text carries the same prefix, the link records the stage as a
+typed value, and `stageOf` recognises the prefix and the word `createGroup`,
+so a creation failure cannot fall through to stage NONE again.
+
+### The screen tells the truth
+
+A bare `BUSY` used to match the provider-busy sentence. That branch now
+requires the provider to have said so. A framework that stayed busy on this
+phone reads "Le Wi-Fi Direct de ce téléphone est encore occupé. Attendez
+quelques secondes puis réessayez." Any other creation failure reads "Ce
+téléphone n'a pas réussi à créer la connexion Wi-Fi Direct. Réessayez."
+Neither mentions the provider.
+
+### Late callbacks
+
+Each purchase carries a session token. A visibility report from a peer with
+no purchase running is ignored before any gate, a deferred report is
+replayed only if its token still matches, and stopping a purchase bumps the
+token so nothing from it can touch the next one.
+
 ## The admission plane is dormant while the owner creates its group (v0.9.26)
 
 v0.9.25 held `formed=false` correctly inside the link, and the admission
