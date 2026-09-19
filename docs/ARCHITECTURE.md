@@ -746,6 +746,35 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Accueil and Carte, redesigned (v0.12.2)
+
+Mike rejected the v0.12.1 home (a giant filled ball in an empty frame) and
+map (one green square). Both were redrawn with a metaphor the product can
+honour: a sonar.
+
+- `ui/PulseButtonView` draws the one button: a soft radial glow, three
+  thin still rings, a 150 dp sphere lit from the top-left with a faint rim,
+  the label inside. While a request is alive (`searching = true`) two rings
+  expand from the sphere to the edge and fade, on a 2 s loop driven by
+  `postInvalidateOnAnimation`. Pressed state darkens the sphere. It is a
+  plain `View`, so the Activity uses `setOnClickListener` as before.
+- Under it one quiet line ("Prêt · 1 source · 5 CFA par Mo"), then three
+  tiles (Autour de vous / Meilleur prix / Dernière fois, the last from the
+  persisted requests), then two door rows with chevrons (Partager mon
+  Internet, Carte). The status card is unchanged.
+- `ui/CoverageMapView` without a position draws a sonar: rings at 30 / 55 /
+  85 / 100 %, a faint cross, "récent" and "ancien" on the axis, the phone
+  as a glowing dot, and one dot per known source placed by age (fresh
+  within 10 min at 30 %, then linearly to the edge at 24 h), spread evenly
+  with a little of the id so the picture is stable, coloured by status
+  (available / seen recently / stale), labelled, tappable (nearest dot
+  within 28 dp). With a position it draws the cell grid as before.
+- The Carte tab: the sonar in a card, one hint line, two tiles (Disponible
+  maintenant / Vu récemment with their dots), the "around you" card with
+  the location button inside it and an honest sentence, then source rows
+  with a status dot, name, status · age · price, and a chevron.
+- Stat tiles auto-size their text so "629 CFA" never wraps.
+
 ## The design system (v0.12.1)
 
 The first v0.12 screens were flat: plain circle, plain cards, a legend

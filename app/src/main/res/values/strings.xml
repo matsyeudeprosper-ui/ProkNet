@@ -230,6 +230,31 @@
     <string name="activity_used">Internet utilisé</string>
     <string name="activity_shared">Internet partagé</string>
 
+    <!-- v0.12.2 home and map -->
+    <string name="home_promise_short">Gratuit si possible, le moins cher sinon</string>
+    <string name="home_line_ready">Prêt · %1$s</string>
+    <string name="home_line_off">Appuyez pour démarrer</string>
+    <string name="tile_around">Autour de vous</string>
+    <string name="tile_price">Meilleur prix</string>
+    <string name="tile_last">Dernière fois</string>
+    <string name="sources_none">aucune</string>
+    <string name="sources_one">1 source</string>
+    <string name="sources_many">%1$d sources</string>
+    <string name="never">jamais</string>
+    <string name="row_share_title">Partager mon Internet</string>
+    <string name="row_share_sub">Gagnez en partageant votre Wi-Fi ou vos données</string>
+    <string name="row_share_on">Vous partagez · appuyez pour voir</string>
+    <string name="row_map_title">Carte</string>
+    <string name="row_map_sub">Où ProkNet a vu Internet autour de vous</string>
+    <string name="chevron">›</string>
+    <string name="map_subtitle">Ce que ProkNet a vu autour de vous</string>
+    <string name="map_radar_hint">Au centre : vous. Plus un point est proche du centre, plus il a été vu récemment.</string>
+    <string name="map_grid_hint">Les cases autour de la vôtre, à 500 m près.</string>
+    <string name="map_now">Disponible maintenant</string>
+    <string name="map_recent">Vu récemment</string>
+    <string name="map_place">Placer sur une vraie carte</string>
+    <string name="map_place_sub">Autorisez la position approximative (à 500 m près) pour placer ces observations dans des cases. Jamais votre position exacte.</string>
+
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>
     <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>

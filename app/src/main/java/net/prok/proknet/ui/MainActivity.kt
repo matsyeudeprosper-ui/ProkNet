@@ -97,9 +97,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<View>(R.id.navEarn).setOnClickListener { select(Tab.EARN) }
         v<View>(R.id.navActivity).setOnClickListener { select(Tab.ACTIVITY) }
 
-        v<Button>(R.id.btnGetInternet).setOnClickListener { getInternet() }
+        v<PulseButtonView>(R.id.btnGetInternet).label = getString(R.string.get_internet_big)
+        v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
         v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
-        v<Button>(R.id.btnShareInternet).setOnClickListener { ensureRunning { select(Tab.EARN) } }
+        v<View>(R.id.rowShare).setOnClickListener { ensureRunning { select(Tab.EARN) } }
+        v<View>(R.id.rowMap).setOnClickListener { select(Tab.MAP) }
         v<Button>(R.id.btnConnect).setOnClickListener { connect() }
         v<Button>(R.id.btnConfirmBack).setOnClickListener { pendingOffer = null; refresh() }
         v<Button>(R.id.btnStopInternet).setOnClickListener { stopAll() }
@@ -108,6 +110,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<TextView>(R.id.btnShareOptions).setOnClickListener { val o = v<View>(R.id.shareOptions); o.visibility = if (o.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         v<Button>(R.id.btnMapLocation).setOnClickListener { askLocation() }
         v<CoverageMapView>(R.id.mapView).onCellTap = { zone, cell -> cellDialog(zone, cell) }
+        v<CoverageMapView>(R.id.mapView).onMarkTap = { m -> cover.state.sources[m.id]?.let { sourceDialog(it, m.status, System.currentTimeMillis()) } }
         v<Switch>(R.id.switchRelay).setOnClickListener { node.setRelay(v<Switch>(R.id.switchRelay).isChecked); refresh() }
         v<Switch>(R.id.switchNode).setOnClickListener {
             val want = v<Switch>(R.id.switchNode).isChecked
@@ -300,21 +303,18 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 stop.text = getString(if (rr.active) R.string.cancel_big else R.string.close_big)
             }
         }
-        // what ProkNet knows around here, without opening the map
+        // the sonar breathes while a request is alive
+        v<PulseButtonView>(R.id.btnGetInternet).searching = r != null && r.active
+        // three quiet numbers, and the line under the sonar
         val cands = if (running) cover.candidates() else emptyList()
         val usable = cands.filter { GetInternet.blocker(it, now, null) == null }
-        val here = if (running) cover.hereStatus() else Coverage.ZoneStatus.RED
-        when {
-            !running -> { text(R.id.homeCoverageTitle, getString(R.string.home_around)); text(R.id.homeCoverageSub, getString(R.string.home_start_sub)) }
-            usable.isNotEmpty() -> {
-                val from = CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb })
-                text(R.id.homeCoverageTitle, getString(R.string.home_around))
-                text(R.id.homeCoverageSub, if (usable.size == 1) getString(R.string.home_options_one, from) else getString(R.string.home_options_many, usable.size, from))
-            }
-            here == Coverage.ZoneStatus.YELLOW -> { text(R.id.homeCoverageTitle, getString(R.string.home_seen_recently)); text(R.id.homeCoverageSub, getString(R.string.home_seen_recently_sub)) }
-            else -> { text(R.id.homeCoverageTitle, getString(R.string.home_none_yet)); text(R.id.homeCoverageSub, getString(R.string.home_none_sub)) }
-        }
-        v<Button>(R.id.btnShareInternet).text = getString(if (sellerOn) R.string.earn_see_sharing else R.string.share_internet)
+        val sourcesWord = if (usable.isEmpty()) getString(R.string.sources_none) else if (usable.size == 1) getString(R.string.sources_one) else getString(R.string.sources_many, usable.size)
+        text(R.id.tileAround, sourcesWord)
+        text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb }).replace(" par Mo", "/Mo"))
+        val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
+        text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline))
+        text(R.id.homeLine, if (!running) getString(R.string.home_line_off) else if (usable.isEmpty()) getString(R.string.home_promise_short) else getString(R.string.home_line_ready, sourcesWord + " · " + CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb })))
+        text(R.id.rowShareSub, getString(if (sellerOn) R.string.row_share_on else R.string.row_share_sub))
         text(R.id.homeNote, if (running && !node.isBluetoothOn()) getString(R.string.home_bluetooth_off) else "")
     }
 
@@ -374,29 +374,41 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun refreshMap() {
         val now = System.currentTimeMillis()
         val cells = cover.cells(); val zone = cover.zone(); val reach = cover.reachableIds()
-        v<CoverageMapView>(R.id.mapView).set(cells, zone)
+        val sources = cover.state.sources.values.sortedByDescending { it.lastSeen }
+        val statusOf = { s: CoverageModel.Source -> CoverageModel.cellStatus(listOf(s), now, reach) }
+        val nameOf = { s: CoverageModel.Source ->
+            if (s.kind == CoverageModel.SourceKind.WIFI && (s.name == "Wi-Fi" || s.name.isEmpty())) getString(R.string.map_wifi_connected)
+            else if (s.kind == CoverageModel.SourceKind.WIFI) "Wi-Fi " + s.name else s.name }
+        val marks = sources.map { CoverageMapView.Mark(it.id, nameOf(it), statusOf(it), now - it.lastSeen) }
+        v<CoverageMapView>(R.id.mapView).set(cells, zone, marks)
+        val located = CoverageModel.zoneIndex(zone) != null
+        text(R.id.mapHint, getString(if (located) R.string.map_grid_hint else R.string.map_radar_hint))
+        val nowCount = marks.count { it.status == Coverage.ZoneStatus.GREEN }
+        val recentCount = marks.count { it.status == Coverage.ZoneStatus.YELLOW }
+        text(R.id.mapNow, nowCount.toString()); text(R.id.mapRecent, recentCount.toString())
         val here = CoverageModel.hereStatus(cells, zone)
         text(R.id.mapHereTitle, CoverageModel.cellWord(here))
-        val known = cover.state.sources.size
         text(R.id.mapHereSub, when {
-            !cover.hasLocationPermission() -> getString(R.string.map_no_location)
-            zone == CoverageModel.NO_ZONE -> getString(R.string.map_no_fix)
-            else -> getString(R.string.map_around_sources, known)
+            !cover.hasLocationPermission() -> getString(R.string.map_place_sub)
+            !located -> getString(R.string.map_no_fix)
+            else -> getString(R.string.map_around_sources, sources.size)
         })
         show(R.id.btnMapLocation, !cover.hasLocationPermission())
         val list = v<LinearLayout>(R.id.mapList); list.removeAllViews()
-        val sources = cover.state.sources.values.sortedByDescending { it.lastSeen }.take(12)
         show(R.id.mapEmpty, sources.isEmpty())
-        for (s in sources) {
-            val st = CoverageModel.cellStatus(listOf(s), now, reach)
-            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16)) }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
-            val title = if (s.kind == CoverageModel.SourceKind.WIFI && (s.name == "Wi-Fi" || s.name.isEmpty())) getString(R.string.map_wifi_connected)
-                else if (s.kind == CoverageModel.SourceKind.WIFI) "Wi-Fi · " + s.name else s.name
-            card.addView(TextView(this).apply { text = title; setTextAppearance(R.style.H2) })
-            card.addView(TextView(this).apply { text = CoverageModel.cellWord(st) + " · " + CoverageModel.ageWord(now - s.lastSeen) + " · " + CoverageModel.priceWord(s.priceCentimesPerMb); setTextAppearance(R.style.Muted) })
-            card.setOnClickListener { sourceDialog(s, st, now) }
-            list.addView(card)
+        for (s in sources.take(12)) {
+            val st = statusOf(s)
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(18), dp(15), dp(16), dp(15)) }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(8); row.layoutParams = lp
+            val dot = View(this).apply { background = getDrawable(when (st) { Coverage.ZoneStatus.GREEN -> R.drawable.dot_ok; Coverage.ZoneStatus.YELLOW -> R.drawable.dot_warn; else -> R.drawable.dot_muted }) }
+            dot.layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+            texts.addView(TextView(this).apply { text = nameOf(s); setTextAppearance(R.style.H2) })
+            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(st) + " · " + CoverageModel.ageWord(now - s.lastSeen) + " · " + CoverageModel.priceWord(s.priceCentimesPerMb); setTextAppearance(R.style.Muted) })
+            val chevron = TextView(this).apply { text = getString(R.string.chevron); textSize = 24f; setTextColor(getColor(R.color.text_muted)) }
+            row.addView(dot); row.addView(texts); row.addView(chevron)
+            row.setOnClickListener { sourceDialog(s, st, now) }
+            list.addView(row)
         }
     }
 
