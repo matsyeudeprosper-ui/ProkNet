@@ -24,6 +24,38 @@ object BulkPlan {
     /** The technology carried in a BULK_OFFER. */
     const val TECH_L2CAP = 1
 
+    /**
+     * v0.10.1: **how a provider serves a customer's local link.**
+     *
+     * v0.10.0 claimed the home-Wi-Fi provider stays on its Wi-Fi and serves
+     * over Bluetooth, and then `setSelling` still ran the hotspot capability
+     * probe and, on a refusal, created a Wi-Fi Direct group. So the runtime
+     * did not obey the architecture. This is the one rule that decides it,
+     * and Wi-Fi Direct is not one of its answers: it is archived, chosen only
+     * by explicit developer controls, never here.
+     *
+     * A provider on mobile data keeps the proven LocalOnlyHotspot. A provider
+     * on home Wi-Fi with Bluetooth serves over Bluetooth and never touches the
+     * Wi-Fi radio. A provider on home Wi-Fi without Bluetooth has no automatic
+     * consumer path: NONE, reported honestly, not a silent Wi-Fi Direct group.
+     */
+    enum class SellerAccessPath { BLUETOOTH_BULK, HOTSPOT, NONE }
+
+    fun sellerAccessPath(upstreamIsWifi: Boolean, bulkSupported: Boolean, bluetoothOn: Boolean): SellerAccessPath = when {
+        !upstreamIsWifi -> SellerAccessPath.HOTSPOT
+        bulkSupported && bluetoothOn -> SellerAccessPath.BLUETOOTH_BULK
+        else -> SellerAccessPath.NONE
+    }
+
+    /** Does this path need the hotspot capability probe? Only the hotspot one does. */
+    fun needsHotspotProbe(p: SellerAccessPath): Boolean = p == SellerAccessPath.HOTSPOT
+
+    fun accessPathText(p: SellerAccessPath): String = when (p) {
+        SellerAccessPath.BLUETOOTH_BULK -> "serving over Bluetooth; staying on the home Wi-Fi, the Wi-Fi radio is not touched"
+        SellerAccessPath.HOTSPOT -> "serving over a Wi-Fi hotspot (mobile-data upstream)"
+        SellerAccessPath.NONE -> "no automatic local link: home Wi-Fi upstream and Bluetooth is off or unsupported"
+    }
+
     enum class Phase { IDLE, REQUESTED, LISTENING, OFFERED, CONNECTING, AUTH, UP, FAILED }
     enum class Side { NONE, HOST, CLIENT }
 

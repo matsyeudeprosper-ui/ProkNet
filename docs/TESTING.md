@@ -1768,3 +1768,34 @@ HTTPS worked, and Chrome loaded pages. Anything less is a partial result.
 - Seller Wi-Fi before and during: `wlan0` on the Freebox, upstream validated.
 - Buyer role CLIENT, VPN up, INTERNET OK, Chrome.
 - The `bluetooth bulk:` diagnostic block from both phones whatever happens.
+
+## 47. v0.10.1 the home-Wi-Fi seller stays on Wi-Fi and touches nothing else
+
+Before the buyer connects, the SELLER OUKITEL (Freebox, mobile data off,
+Bluetooth on, SELL on) must show:
+
+```
+SELLER ACCESS PATH = BLUETOOTH_BULK (...): serving over Bluetooth; staying on the home Wi-Fi, the Wi-Fi radio is not touched
+provider: PROVIDER READY, upstream Wi-Fi, validated
+```
+
+and must NOT show any of these:
+
+```
+SHARE CHECK ...: testing the hotspot ...
+SHARING BY WI-FI DIRECT ...
+WI-FI DIRECT GROUP FORMED ...
+```
+
+The diagnostic must show `wlan0` on the Freebox and no `p2p` interface. If a
+`SHARE CHECK ... testing` or any Wi-Fi Direct line appears under a normal
+SELL, that is the bug returning.
+
+Then run section 46 as before. The developer P2P lab still works when opened
+explicitly, and only then.
+
+### Checklist for the v0.10.1 report
+
+- The `SELLER ACCESS PATH = BLUETOOTH_BULK` line on the seller.
+- No hotspot probe, no Wi-Fi Direct line, no `p2p` interface before or during.
+- Then the section 46 result: `VERDICT: BIDIRECTIONAL`, VPN, DNS, HTTPS, Chrome.

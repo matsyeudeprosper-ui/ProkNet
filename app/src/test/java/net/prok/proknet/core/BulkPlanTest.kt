@@ -177,4 +177,42 @@ class BulkPlanTest {
             BulkPlan.State::class.java.declaredFields.map { it.name }.filter { !it.startsWith("$") }.toSet())
         assertTrue(s.authenticated)
     }
+
+    // ---- v0.10.1: a home-Wi-Fi seller stays on Wi-Fi and serves over Bluetooth, never Wi-Fi Direct ------
+
+    @Test
+    fun the_seller_access_path_never_chooses_wifi_direct_automatically() {
+        // home Wi-Fi upstream + Bluetooth available: Bluetooth bulk, and no hotspot probe
+        val bt = BulkPlan.sellerAccessPath(upstreamIsWifi = true, bulkSupported = true, bluetoothOn = true)
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, bt)
+        assertFalse("a Bluetooth seller does not touch the Wi-Fi radio", BulkPlan.needsHotspotProbe(bt))
+
+        // mobile data upstream: the proven hotspot path, which is the one that probes
+        val hs = BulkPlan.sellerAccessPath(upstreamIsWifi = false, bulkSupported = true, bluetoothOn = true)
+        assertEquals(BulkPlan.SellerAccessPath.HOTSPOT, hs)
+        assertTrue(BulkPlan.needsHotspotProbe(hs))
+
+        // home Wi-Fi but Bluetooth off or unsupported: NONE, never an automatic Wi-Fi Direct group
+        assertEquals(BulkPlan.SellerAccessPath.NONE, BulkPlan.sellerAccessPath(true, bulkSupported = true, bluetoothOn = false))
+        assertEquals(BulkPlan.SellerAccessPath.NONE, BulkPlan.sellerAccessPath(true, bulkSupported = false, bluetoothOn = true))
+        assertFalse(BulkPlan.needsHotspotProbe(BulkPlan.SellerAccessPath.NONE))
+
+        // NONE is honest, not silent
+        assertFalse(BulkPlan.SellerAccessPath.values().any { it.name.contains("WIFI_DIRECT") || it.name.contains("P2P") })
+        for (p in BulkPlan.SellerAccessPath.values()) assertTrue(BulkPlan.accessPathText(p).isNotEmpty())
+        assertFalse("the Bluetooth path text says it leaves the Wi-Fi radio alone",
+            BulkPlan.accessPathText(BulkPlan.SellerAccessPath.BLUETOOTH_BULK).contains("hotspot"))
+    }
+
+    @Test
+    fun a_remembered_hotspot_refusal_does_not_matter_to_a_bluetooth_seller() {
+        // the whole point: a phone that cannot host a hotspot on this network still serves over Bluetooth
+        val bt = BulkPlan.sellerAccessPath(upstreamIsWifi = true, bulkSupported = true, bluetoothOn = true)
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, bt)
+        assertFalse(BulkPlan.needsHotspotProbe(bt))
+        // and when the Wi-Fi network changes under it, the answer is the same: still Bluetooth, still no probe
+        val again = BulkPlan.sellerAccessPath(true, true, true)
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, again)
+        assertFalse(BulkPlan.needsHotspotProbe(again))
+    }
 }

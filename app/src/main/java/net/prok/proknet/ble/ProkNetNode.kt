@@ -92,7 +92,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
         override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
     }, Routing.TRANSPORT_WIFI_UP, mayHost = false)
-    private val transports: List<Transport> get() = listOf(wifi, ble)
+    /** v0.10.1: the active ProkNet transports. Bluetooth bulk is a real one now. */
+    private val transports: List<Transport> get() = listOf(wifi, bulk, ble)
 
     val queue = DeliveryQueue(store, identity, object : DeliveryQueue.Hooks {
         override fun reachablePeers(): List<Routing.PeerView> = this@ProkNetNode.reachablePeers()
@@ -188,10 +189,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "P2P REQUEST from prok-" + peerShort + " (it calls itself \"" + deviceName + "\") -> answering " +
             Wire.p2pStatusName(code) + (if (code == Wire.P2P_READY) ", my Wi-Fi Direct name is \"" + p2p.myDeviceName + "\", clients " + p2p.clientCount else ""))
         sendControl(peerShort, Wire.p2pStatus(code, p2p.myDeviceName)) {}
-        if (status == P2pPlan.GroupStatus.REBUILDING) {
-            DiagLog.w(tag, "a buyer is asking and my group is not up (" + p2p.phase + "): rebuilding it")
+        // v0.10.1: only rebuild a Wi-Fi Direct group if the DEVELOPER started one (p2pFallbackActive);
+        // normal SELL never has a group to rebuild, and never creates one automatically.
+        if (status == P2pPlan.GroupStatus.REBUILDING && p2pFallbackActive) {
+            DiagLog.w(tag, "a buyer is asking and my Wi-Fi Direct group is not up (" + p2p.phase + "): rebuilding it")
             p2pFallbackActive = false
-            startP2pFallback("a buyer is asking and the group was gone")
+            startP2pFallback("a buyer is asking and the developer group was gone")
         }
     }
 
@@ -299,6 +302,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     // ---- v0.10.0: Bluetooth bulk Internet -------------------------------------------------------------------
     /** Lab switch: buy over Bluetooth even from a provider on mobile data. */
     @Volatile var preferBluetooth = false
+    /** v0.10.1: Wi-Fi Direct is archived; only the developer P2P lab turns this on. */
+    @Volatile var p2pDeveloperEnabled = false
     @Volatile private var buyViaBulk = false
     @Volatile private var bulkSession = 0
 
@@ -881,6 +886,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     /** Developer test: this phone becomes the Wi-Fi Direct group owner and waits for a buyer. */
     fun p2pSell(): String? {
+        p2pDeveloperEnabled = true   // v0.10.1: the developer explicitly opts into the archived Wi-Fi Direct path
         if (!isRunning) return "start the node first"
         val r = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
         if (r != P2pPlan.Ready.OK) return P2pPlan.readyText(r)
@@ -889,6 +895,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     /** Developer test: look for a Wi-Fi Direct group to join. */
     fun p2pBuy(): String? {
+        p2pDeveloperEnabled = true
         if (!isRunning) return "start the node first"
         val r = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
         if (r != P2pPlan.Ready.OK) return P2pPlan.readyText(r)
@@ -935,7 +942,13 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * seller to give up. Nothing above the link changes: the group produces a socket, the socket is
      * adopted, and the tunnel runs as usual.
      */
+    /**
+     * v0.10.1: Wi-Fi Direct is ARCHIVED. This is reached only from the
+     * developer P2P lab or the developer rebuild path, never from a normal
+     * SELL / BUY / share-check / network-change / provider-request flow.
+     */
     private fun startP2pFallback(why: String) {
+        if (!p2pDeveloperEnabled) { DiagLog.w(tag, "refusing automatic Wi-Fi Direct (archived): " + why); return }
         if (p2pFallbackActive || !gateway.providing) return
         val ready = P2pPlan.ready(p2p.supported, wifi.wifiEnabled, p2p.p2pEnabled)
         if (ready != P2pPlan.Ready.OK) { DiagLog.w(tag, "no Wi-Fi Direct fallback: " + P2pPlan.readyText(ready)); return }
@@ -951,6 +964,38 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * mobile data needs no test. A phone selling its own Wi-Fi is tested ONCE per network: the hotspot
      * is started and closed immediately, before any customer can fail on it.
      */
+    /** v0.10.1: the seller access path this phone will offer, from the upstream and the Bluetooth radio. */
+    fun sellerAccessPath(): net.prok.proknet.core.BulkPlan.SellerAccessPath =
+        net.prok.proknet.core.BulkPlan.sellerAccessPath(
+            upstreamIsWifi = Tunnel.upstreamType(gateway.upstream) == Tunnel.UP_WIFI,
+            bulkSupported = bulk.supported, bluetoothOn = bulk.isBluetoothOn)
+
+    /**
+     * v0.10.1: SELL is on and the upstream is validated. Choose the local
+     * link path ONCE, here, and let it decide whether the hotspot probe even
+     * runs. A home-Wi-Fi Bluetooth seller does not touch the Wi-Fi radio and
+     * never resurrects Wi-Fi Direct.
+     */
+    private fun onSharingReady(why: String) {
+        if (!gateway.providing) return
+        val path = sellerAccessPath()
+        DiagLog.i(tag, "SELLER ACCESS PATH = " + path + " (" + why + "): " + net.prok.proknet.core.BulkPlan.accessPathText(path))
+        when (path) {
+            net.prok.proknet.core.BulkPlan.SellerAccessPath.HOTSPOT -> checkSharing(why)
+            net.prok.proknet.core.BulkPlan.SellerAccessPath.BLUETOOTH_BULK -> {
+                // no HotspotProbe, no Wi-Fi Direct: stay on the home Wi-Fi and wait for a BULK_REQUEST
+                shareCheck = ShareCheck.Result.NOT_NEEDED; shareDetail = "serving over Bluetooth"
+                refreshAdvert(); pushStatus()
+            }
+            net.prok.proknet.core.BulkPlan.SellerAccessPath.NONE -> {
+                shareCheck = ShareCheck.Result.UNKNOWN
+                shareDetail = "turn Bluetooth on to serve on this Wi-Fi network"
+                DiagLog.w(tag, "SELL on home Wi-Fi but Bluetooth is off/unsupported: no automatic local link (Wi-Fi Direct is archived and is not chosen automatically)")
+                refreshAdvert(); pushStatus()
+            }
+        }
+    }
+
     fun checkSharing(why: String, force: Boolean = false) {
         val type = Tunnel.upstreamType(gateway.upstream)
         val net = wifi.currentWifi()
@@ -966,7 +1011,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!ShareCheck.shouldProbe(type, remembered)) {
             shareCheck = remembered; shareDetail = capPrefs.getString("why:" + key, "") ?: ""
             DiagLog.i(tag, "SHARE CHECK " + remembered + " (remembered) for " + key + " on " + ShareCheck.describe(shareFreqMhz))
-            if (remembered == ShareCheck.Result.CANNOT_SHARE) startP2pFallback("hotspot known to be refused on this network")
+            // v0.10.1: a refused hotspot no longer resurrects Wi-Fi Direct. A home-Wi-Fi seller reaches
+            // this only when Bluetooth is unavailable, and NONE is reported honestly by onSharingReady.
             pushStatus(); return
         }
         if (!wifi.state.isIdle || gateway.session != null) { DiagLog.i(tag, "share check postponed (" + why + "): a Wi-Fi link is in use"); return }
@@ -976,9 +1022,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 shareCheck = ShareCheck.verdict(type, o.started)
                 shareDetail = o.detail
                 writeCap(key, shareCheck, o.detail, o.freqMhz)
-                DiagLog.i(tag, "SHARE CHECK " + shareCheck + " on " + ShareCheck.describe(o.freqMhz) + " [" + key + "]: " + o.detail +
-                    (if (shareCheck == ShareCheck.Result.CANNOT_SHARE) " - no hotspot on this network; trying Wi-Fi Direct instead" else ""))
-                if (shareCheck == ShareCheck.Result.CANNOT_SHARE) startP2pFallback("hotspot refused on this network")
+                DiagLog.i(tag, "SHARE CHECK " + shareCheck + " on " + ShareCheck.describe(o.freqMhz) + " [" + key + "]: " + o.detail)
                 pushStatus()
             }
         }
@@ -988,7 +1032,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun recheckSharingIfNetworkChanged() {
         if (!gateway.providing) return
         val net = wifi.currentWifi()
-        if (ShareCheck.key(net?.ssid, net?.bssid) != shareNetworkKey) checkSharing("upstream network changed")
+        // v0.10.1: a Bluetooth seller does not probe the hotspot when the Wi-Fi network changes
+        if (ShareCheck.key(net?.ssid, net?.bssid) != shareNetworkKey) onSharingReady("upstream network changed")
     }
 
     // ---- v0.9 live relay ----
@@ -1122,7 +1167,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (relay.relayMode) return "relay mode is on"
             sellPrice = price; sellMinPrice = minPrice; sellMaxMb = maxMb
             gateway.start()
-            main.postDelayed({ if (gateway.providing) checkSharing("sharing switched on") }, 1200)
+            main.postDelayed({ if (gateway.providing) onSharingReady("sharing switched on") }, 1200)
         } else {
             gateway.stop()
             bulk.cancel("sharing stopped")
@@ -1299,8 +1344,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val now = System.currentTimeMillis()
         val lastSeen = store.knownPeers().maxOfOrNull { it.lastSeen } ?: 0L
         val msSince = if (lastSeen > 0) now - lastSeen else -1L
+        // v0.10.1: an L2CAP negotiation, probe or session is a live link; the watchdog must not
+        // restart the radios in the middle of it
+        val bulkBusy = bulk.state.active || bulk.linkedPeer != null
         val linkBusy = wifi.linkedPeer != null || !wifi.state.isIdle || wifiUp.linkedPeer != null || !wifiUp.state.isIdle ||
-            p2p.groupFormed || p2p.phase == "CLEANING" || p2p.phase == "CREATING GROUP"
+            p2p.groupFormed || p2p.phase == "CLEANING" || p2p.phase == "CREATING GROUP" || bulkBusy
         return BleHealth.State(
             now = now, running = isRunning && ble.isRunning, bluetoothOn = ble.isBluetoothOn,
             advertising = ble.advertising, advertiseFailedAt = ble.advertiseFailedAt,
@@ -1414,6 +1462,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
         for (p in ble.visiblePeers()) if (p.inRange && p.hasId) out.add(Routing.PeerView(p.shortId, p.rssi))
         val w = wifi.linkedPeer
         if (w != null && wifi.canReach(w) && out.none { it.shortId == w }) out.add(Routing.PeerView(w, 0))
+        // v0.10.1: an authenticated Bluetooth bulk peer stays reachable through a scan gap
+        val b = bulk.linkedPeer
+        if (b != null && bulk.canReach(b) && out.none { it.shortId == b }) out.add(Routing.PeerView(b, 0))
         return out
     }
 

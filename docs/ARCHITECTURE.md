@@ -746,6 +746,42 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The runtime obeys the architecture (v0.10.1)
+
+v0.10.0 claimed the home-Wi-Fi provider stays on its Wi-Fi and serves over
+Bluetooth, and the runtime did not obey it. `setSelling` still ran the
+hotspot capability probe, and on a refusal `startP2pFallback` created a
+Wi-Fi Direct group. The archived transport could still appear under a normal
+SELL.
+
+One pure rule decides the seller's local link now, and Wi-Fi Direct is not
+one of its answers:
+
+```
+BulkPlan.sellerAccessPath(upstreamIsWifi, bulkSupported, bluetoothOn)
+  mobile-data upstream            -> HOTSPOT        (probes, as before)
+  home Wi-Fi + Bluetooth on       -> BLUETOOTH_BULK  (no probe, radio untouched)
+  home Wi-Fi + Bluetooth off/none -> NONE            (reported, never a silent group)
+```
+
+`onSharingReady` applies it when SELL comes up: only the HOTSPOT path runs
+`HotspotProbe`, the BLUETOOTH_BULK path advertises `FLAG_BULK_BT` and waits
+for a `BULK_REQUEST` without touching the Wi-Fi radio, and NONE is stated
+plainly. The two automatic `startP2pFallback` calls in the share check are
+gone.
+
+Wi-Fi Direct is now structurally developer-only: `startP2pFallback` refuses
+unless `p2pDeveloperEnabled` is set, and only the P2P lab entry points set
+it. No SELL, BUY, share-check, network-change or provider-request path can
+create a group.
+
+Two related fixes. The BLE watchdog's `linkBusy` now includes the bulk
+lifecycle (`bulk.state.active || bulk.linkedPeer != null`), so it never
+restarts the radios during a `BULK_REQUEST`, `LISTENING`, `CONNECTING`,
+`AUTH`, `PROBE` or `UP`. And `reachablePeers` keeps an authenticated bulk
+peer reachable through a BLE scan gap, next to the Wi-Fi one, so routing and
+the queue do not treat a live L2CAP peer as gone.
+
 ## Bluetooth bulk Internet (v0.10.0)
 
 Wi-Fi Direct is archived. Both topologies were measured on the real pair and
