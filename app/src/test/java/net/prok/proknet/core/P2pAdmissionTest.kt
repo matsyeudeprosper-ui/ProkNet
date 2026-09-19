@@ -432,4 +432,76 @@ class P2pAdmissionTest {
         assertEquals("", r.verdict)
         assertEquals(0, r.udpSent)
     }
+
+    // ---- v0.9.24: the reversed experiment must actually start, and must actually end ------------------
+
+    @Test
+    fun a_customer_that_owns_the_group_never_falls_back_to_the_hotspot() {
+        // the v0.9.23 run: the provider had dropped its own group, so its offer said p2p=false, and the
+        // customer sent a WIFI_REQUEST instead of creating its group
+        assertEquals(P2pAdmission.BuyPath.WIFI_DIRECT,
+            P2pAdmission.buyPath(P2pPlan.Topology.BUYER_GROUP_OWNER, offerP2p = false, linkUp = false, viaRelay = false))
+        assertEquals(P2pAdmission.BuyPath.WIFI_DIRECT,
+            P2pAdmission.buyPath(P2pPlan.Topology.BUYER_GROUP_OWNER, offerP2p = true, linkUp = false, viaRelay = false))
+        // production is unchanged: no provider group advertised means the hotspot path
+        assertEquals(P2pAdmission.BuyPath.HOTSPOT,
+            P2pAdmission.buyPath(P2pPlan.Topology.SELLER_GROUP_OWNER, offerP2p = false, linkUp = false, viaRelay = false))
+        assertEquals(P2pAdmission.BuyPath.WIFI_DIRECT,
+            P2pAdmission.buyPath(P2pPlan.Topology.SELLER_GROUP_OWNER, offerP2p = true, linkUp = false, viaRelay = false))
+        // an authenticated link that already exists is used, whatever the topology
+        assertEquals(P2pAdmission.BuyPath.LINK_UP,
+            P2pAdmission.buyPath(P2pPlan.Topology.BUYER_GROUP_OWNER, offerP2p = false, linkUp = true, viaRelay = false))
+        assertEquals(P2pAdmission.BuyPath.RELAY_INTRO,
+            P2pAdmission.buyPath(P2pPlan.Topology.SELLER_GROUP_OWNER, offerP2p = false, linkUp = true, viaRelay = true))
+    }
+
+    @Test
+    fun a_cancelled_reversed_purchase_stops_the_provider_guest_loop() {
+        val g = P2pAdmission.GuestSession()
+        assertFalse(g.active)
+        g.begin("0f7d57b3")
+        g.plan = P2pAdmission.Plan.GUEST_CONNECT
+        g.visibilityAt = 5_000L
+        assertTrue(g.active)
+        assertTrue("the ladder runs for the live customer", g.ticks("0f7d57b3", providing = true, linked = false, hasMember = false))
+        assertFalse("but never for somebody else", g.ticks("24e480e6", providing = true, linked = false, hasMember = false))
+
+        // the customer cancels: the session is cleared as one unit
+        g.clear()
+        assertFalse(g.active)
+        assertEquals("", g.peer)
+        assertEquals(null, g.plan)
+        assertEquals(0L, g.visibilityAt)
+        assertEquals(0L, g.connectAt)
+        assertFalse("the v0.9.23 loop that ran for minutes cannot run at all now", g.ticks("0f7d57b3", true, false, false))
+    }
+
+    @Test
+    fun a_new_reversed_purchase_starts_from_a_clean_state() {
+        val g = P2pAdmission.GuestSession()
+        val d = P2pAdmission.OwnerDecision()
+        // a previous attempt left state behind
+        g.begin("0f7d57b3"); g.plan = P2pAdmission.Plan.OWNER_INVITE; g.connectAt = 99L
+        d.plan = P2pAdmission.Plan.OWNER_INVITE; d.owner = P2pAdmission.Owner.OWNER; d.at = 1L; d.invitedAt = 2L; d.failed = true
+        assertFalse(d.clean)
+        // the next purchase begins
+        g.begin("0f7d57b3"); d.reset()
+        assertTrue(g.active)
+        assertEquals(null, g.plan)
+        assertEquals(0L, g.connectAt)
+        assertTrue(d.clean)
+        assertEquals(P2pAdmission.Owner.NOBODY, d.owner)
+    }
+
+    @Test
+    fun the_guest_loop_stops_by_itself_once_the_link_is_up_or_joined() {
+        val g = P2pAdmission.GuestSession()
+        g.begin("0f7d57b3")
+        assertFalse("no more ticks once a member is on the link", g.ticks("0f7d57b3", true, linked = false, hasMember = true))
+        assertFalse("nor once the authenticated link exists", g.ticks("0f7d57b3", true, linked = true, hasMember = false))
+        assertFalse("nor when this phone stopped sharing", g.ticks("0f7d57b3", providing = false, linked = false, hasMember = false))
+        // sharing itself is a separate fact: clearing the guest session says nothing about it
+        g.clear()
+        assertFalse(g.active)
+    }
 }

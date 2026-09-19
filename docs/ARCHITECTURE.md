@@ -746,6 +746,61 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The reversed experiment has to actually start, and actually end (v0.9.24)
+
+The v0.9.23 run reached the provider with the topology and then tested
+nothing, for two reasons that are both ours.
+
+### A customer that owns the group must not wait for the provider to own one
+
+```
+buyer   topology BUYER_GROUP_OWNER
+seller  TOPOLOGY = BUYER_GROUP_OWNER, telling the customer what this phone can see
+buyer   WIFI_REQUEST -> prok-24e480e6 over BLE          <- the hotspot path
+```
+
+The purchase decision was `if (offer.p2p) startP2pBuy() else requestWifi()`.
+A provider in BUYER_GROUP_OWNER mode drops its own group on purpose, so it
+stops advertising `p2p`, so the customer fell back to the hotspot request.
+A chicken-and-egg. `P2pAdmission.buyPath(topology, offerP2p, linkUp,
+viaRelay)` now decides:
+
+```
+authenticated link already up   -> use it (through the relay if that is how it was sold)
+BUYER_GROUP_OWNER selected      -> Wi-Fi Direct, whatever the offer says
+offer advertises a group        -> Wi-Fi Direct
+otherwise                       -> the hotspot request
+```
+
+Production is unchanged: the second line fires only when the customer chose
+the experiment in the lab. The log says `BUY decision: forcing Wi-Fi Direct
+because buyer owns the group` and `starting buyer-owned P2P group`.
+
+### The provider's reversed session ends as one unit
+
+After the customer had cancelled, the provider kept saying:
+
+```
+telling the customer what this phone can see: I cannot address the other phone
+```
+
+every few seconds, for minutes. The guest state was five loose fields that
+nothing cleared. It is now `P2pAdmission.GuestSession` (the customer, the
+plan, the two clocks) and `P2pAdmission.OwnerDecision` (the plan in force,
+who holds it, the invitation clock), each reset as one unit by
+`clearReversedSession`, which runs when:
+
+- the customer sends a cancel (the customer now sends one whenever it stops a
+  Wi-Fi Direct purchase),
+- a different customer takes over,
+- the customer goes back to the production topology,
+- the provider stops sharing.
+
+The guest ladder only ticks while `GuestSession.ticks(peer, providing,
+linked, hasMember)` holds, so a stale loop cannot survive into the next
+purchase. The Freebox connection is never touched by the cleanup: only the
+temporary Wi-Fi Direct client attempt belongs to the session.
+
 ## The clean 2.4 GHz answer, and the reversed topology (v0.9.23)
 
 v0.9.22 produced the first uncontaminated run of the whole experiment:

@@ -293,10 +293,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile var p2pTopology: P2pPlan.Topology = P2pPlan.Topology.SELLER_GROUP_OWNER
         private set
     /** Seller side: the customer whose group this phone is joining, in the reversed experiment. */
-    @Volatile private var p2pGuestPeer = ""
-    @Volatile private var p2pGuestVisibilityAt = 0L
-    @Volatile private var p2pGuestPlan: P2pAdmission.Plan? = null
-    @Volatile private var p2pGuestConnectAt = 0L
+    private val p2pGuest = P2pAdmission.GuestSession()
 
     /** Does THIS phone own the Wi-Fi Direct group for the session in hand? */
     private fun iOwnGroup(): Boolean = P2pPlan.ownsGroup(p2pTopology, gateway.providing)
@@ -316,12 +313,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
         val changed = t != p2pTopology
         p2pTopology = t
         DiagLog.i(tag, "TOPOLOGY = " + P2pPlan.topologyName(t) + " (asked by prok-" + peerShort + "): " + P2pPlan.topologyText(t))
+        if (t == P2pPlan.Topology.SELLER_GROUP_OWNER && p2pGuest.active) clearReversedSession(p2pGuest.peer, "the customer went back to the production topology")
         if (t == P2pPlan.Topology.BUYER_GROUP_OWNER) {
-            if (p2pGuestPeer == peerShort && !changed) return
-            p2pGuestPeer = peerShort
-            p2pGuestPlan = null; p2pGuestVisibilityAt = 0L; p2pGuestConnectAt = 0L
+            if (p2pGuest.peer == peerShort && !changed) return
+            if (p2pGuest.active && p2pGuest.peer != peerShort) clearReversedSession(p2pGuest.peer, "another customer took over")
+            p2pGuest.begin(peerShort)
+            p2pDecision.reset()
             p2pFallbackActive = false
-            DiagLog.i(tag, "REVERSED TOPOLOGY: dropping my own group and joining the customer group as a CLIENT, " +
+            DiagLog.i(tag, "REVERSED TOPOLOGY: joining customer group as CLIENT (dropping my own group), " +
                 "while staying on " + (wifi.currentWifi()?.let { (it.ssid ?: "?") + " " + ShareCheck.describe(it.freqMhz) } ?: "no Wi-Fi"))
             val err = p2p.startGuest(providing = true, topology = P2pPlan.topologyName(t))
             if (err != null) { DiagLog.e(tag, "cannot become a Wi-Fi Direct client: " + err); return }
@@ -330,21 +329,38 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     /**
+     * v0.9.24: the reversed session ends as one unit. The v0.9.23 run left the
+     * provider reporting what it could see every few seconds, for minutes,
+     * after the customer had cancelled. A stale guest loop must never survive
+     * into the next purchase, and the Freebox connection is not touched: only
+     * the temporary Wi-Fi Direct client attempt belongs to the session.
+     */
+    private fun clearReversedSession(peerShort: String, why: String) {
+        if (!p2pGuest.active || p2pGuest.peer != peerShort) return
+        p2pGuest.clear()
+        p2pDecision.reset()
+        p2pGuestName = ""
+        if (!p2p.plane.hasMember && wifi.linkedPeer == null) p2p.stop()
+        DiagLog.i(tag, "REVERSED TOPOLOGY session cleared for prok-" + peerShort + " (" + why + ")" +
+            " | still sharing: " + gateway.providing + ", upstream " + Tunnel.upstreamName(Tunnel.upstreamType(gateway.upstream)))
+        pushStatus()
+    }
+
+    /**
      * Seller as the GUEST of the customer's group. A mirror of the customer's
      * ladder: say what this phone can see, then obey the plan the owner sends.
      */
     private fun sellerGuestStep(peerShort: String) {
-        if (!gateway.providing || p2pGuestPeer != peerShort) return
-        if (wifi.linkedPeer != null || p2p.plane.hasMember) return
+        if (!p2pGuest.ticks(peerShort, gateway.providing, wifi.linkedPeer != null, p2p.plane.hasMember)) return
         val now = System.currentTimeMillis()
         val sight = P2pAdmission.look(p2p.realPeers(), p2pGuestName)
-        if (now - p2pGuestVisibilityAt >= P2pAdmission.VISIBILITY_EVERY_MS) {
-            p2pGuestVisibilityAt = now
+        if (now - p2pGuest.visibilityAt >= P2pAdmission.VISIBILITY_EVERY_MS) {
+            p2pGuest.visibilityAt = now
             DiagLog.i(tag, "telling the customer what this phone can see: I " + sight.describe())
             sendControl(peerShort, Wire.p2pVisibility(sight.canSee, p2p.myDeviceName)) {}
         }
-        if (p2pGuestPlan == P2pAdmission.Plan.GUEST_CONNECT && sight.canSee && now >= p2pGuestConnectAt) {
-            p2pGuestConnectAt = now + P2pAdmission.ASSOCIATION_TIMEOUT_MS
+        if (p2pGuest.plan == P2pAdmission.Plan.GUEST_CONNECT && sight.canSee && now >= p2pGuest.connectAt) {
+            p2pGuest.connectAt = now + P2pAdmission.ASSOCIATION_TIMEOUT_MS
             DiagLog.i(tag, "joining the customer group: \"" + sight.name + "\" (" + sight.address + ")")
             p2p.connectTo(sight.address) { ok, why -> if (!ok) DiagLog.w(tag, "join refused: " + why) }
         }
@@ -367,11 +383,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile private var p2pAssociationAt = 0L
     /** Seller side: the customer's own P2P name, the plan in force, and when it was taken. */
     @Volatile private var p2pGuestName = ""
-    @Volatile private var p2pPlanChosen: P2pAdmission.Plan? = null
-    @Volatile private var p2pPlanOwner = P2pAdmission.Owner.NOBODY
-    @Volatile private var p2pPlanAt = 0L
-    @Volatile private var p2pInvitedAt = 0L
-    @Volatile private var p2pPlanFailed = false
+    /** Group owner side: the plan in force and the invitation clock, reset as one unit. */
+    private val p2pDecision = P2pAdmission.OwnerDecision()
 
     /**
      * Seller: the customer says what it can see. Together with what THIS
@@ -383,37 +396,37 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (c.deviceName.isNotBlank()) p2pGuestName = c.deviceName
         val mine = P2pAdmission.look(p2p.realPeers(), p2pGuestName)
         val now = System.currentTimeMillis()
-        val since = if (p2pPlanAt == 0L) Long.MAX_VALUE else now - p2pPlanAt
+        val since = if (p2pDecision.at == 0L) Long.MAX_VALUE else now - p2pDecision.at
         // v0.9.21: a provider owns its group BEFORE any customer arrives, so the existence of the group
         // proves nothing. Admission is over when somebody has actually joined.
         val hasMember = p2p.plane.hasMember
         val ownsGroup = p2p.groupFormed && p2p.role == P2pPlan.Role.GROUP_OWNER
         val fresh = P2pAdmission.plan(c.canSee, mine.canSee)
-        val plan = P2pAdmission.heldPlan(p2pPlanChosen, p2pPlanOwner, since, p2pPlanFailed, hasMember, fresh)
-        if (plan != p2pPlanChosen) {
-            p2pPlanChosen = plan
-            p2pPlanOwner = P2pAdmission.owner(plan)
-            p2pPlanAt = now
-            p2pPlanFailed = false
+        val plan = P2pAdmission.heldPlan(p2pDecision.plan, p2pDecision.owner, since, p2pDecision.failed, hasMember, fresh)
+        if (plan != p2pDecision.plan) {
+            p2pDecision.plan = plan
+            p2pDecision.owner = P2pAdmission.owner(plan)
+            p2pDecision.at = now
+            p2pDecision.failed = false
             DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(plan) + ": " + P2pAdmission.planText(plan))
         }
         DiagLog.i(tag, "admission: the customer \"" + p2pGuestName.ifEmpty { "?" } + "\" " +
             (if (c.canSee) "can address me" else "cannot address me") + ", and I " + mine.describe() +
             " | group formed=" + p2p.groupFormed + " role=" + p2p.role + " hasMember=" + hasMember +
-            " owner=" + p2pPlanOwner + " -> " + P2pAdmission.planName(plan))
+            " owner=" + p2pDecision.owner + " -> " + P2pAdmission.planName(plan))
         sendControl(peerShort, Wire.p2pJoinPlan(when (plan) {
             P2pAdmission.Plan.GUEST_CONNECT -> Wire.JOIN_PLAN_GUEST_CONNECT
             P2pAdmission.Plan.OWNER_INVITE -> Wire.JOIN_PLAN_OWNER_INVITE
             P2pAdmission.Plan.WAIT -> Wire.JOIN_PLAN_WAIT
         })) {}
-        val invitedAgo = if (p2pInvitedAt == 0L) Long.MAX_VALUE else now - p2pInvitedAt
+        val invitedAgo = if (p2pDecision.invitedAt == 0L) Long.MAX_VALUE else now - p2pDecision.invitedAt
         if (P2pAdmission.mayInvite(plan, mine, ownsGroup, hasMember, invitedAgo)) {
-            p2pInvitedAt = now
+            p2pDecision.invitedAt = now
             DiagLog.i(tag, "INVITING the customer into my group: \"" + mine.name + "\" (" + mine.address + ")")
             val err = p2p.invite(mine.address, mine.name)
             if (err != null) {
                 DiagLog.e(tag, "the invitation could not be sent: " + err)
-                p2pPlanFailed = true
+                p2pDecision.failed = true
                 sendControl(peerShort, Wire.wifiCancel(Wire.CANCEL_P2P, err)) {}
             }
         } else if (plan == P2pAdmission.Plan.OWNER_INVITE) {
@@ -428,14 +441,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Buyer: the provider decided. Both sides obey the same plan. */
     private fun onP2pJoinPlan(peerShort: String, c: Wire.Control.P2pJoinPlan) {
         // v0.9.23: the seller obeys the plan too when the customer owns the group
-        if (gateway.providing && p2pGuestPeer == peerShort) {
+        if (gateway.providing && p2pGuest.peer == peerShort) {
             val p = when (c.plan) {
                 Wire.JOIN_PLAN_GUEST_CONNECT -> P2pAdmission.Plan.GUEST_CONNECT
                 Wire.JOIN_PLAN_OWNER_INVITE -> P2pAdmission.Plan.OWNER_INVITE
                 else -> P2pAdmission.Plan.WAIT
             }
-            if (p != p2pGuestPlan) DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(p) + ": " + P2pAdmission.planText(p))
-            p2pGuestPlan = p
+            if (p != p2pGuest.plan) DiagLog.i(tag, "JOIN PLAN = " + P2pAdmission.planName(p) + ": " + P2pAdmission.planText(p))
+            p2pGuest.plan = p
             main.post { sellerGuestStep(peerShort) }
             return
         }
@@ -517,6 +530,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "TOPOLOGY = " + P2pPlan.topologyName(p2pTopology) + ": " + P2pPlan.topologyText(p2pTopology))
         sendControl(peerShort, Wire.p2pTopology(
             if (p2pTopology == P2pPlan.Topology.BUYER_GROUP_OWNER) Wire.TOPOLOGY_BUYER_GROUP_OWNER else Wire.TOPOLOGY_SELLER_GROUP_OWNER)) {}
+        if (mine) DiagLog.i(tag, "starting buyer-owned P2P group")
         val err = if (mine) p2p.startGroupOwner(providing = false, topology = P2pPlan.topologyName(p2pTopology))
                   else p2p.startGuest(providing = false, topology = P2pPlan.topologyName(p2pTopology))
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
@@ -574,7 +588,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // v0.9.23 experiment: this phone owns the group and decides the plan in onP2pVisibility.
             // There is nothing to ask a provider about and nothing to join.
             if (!p2p.plane.hasMember && p2pAssociationAt == 0L && p2pReachableMs >= P2pAdmission.SEARCH_GIVE_UP_MS) {
-                val why = P2pAdmission.failReason(p2pPlanChosen, 0)
+                val why = P2pAdmission.failReason(p2pDecision.plan, 0)
                 DiagLog.e(tag, why + " | I own the group, waiting for the provider to join it")
                 failBuy(why, why)
                 return
@@ -924,9 +938,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         } else {
             gateway.stop()
             p2pMemberAddress = ""; p2pMemberPeer = ""
-            p2pPlanChosen = null; p2pPlanOwner = P2pAdmission.Owner.NOBODY; p2pPlanAt = 0L; p2pInvitedAt = 0L
-            p2pGuestName = ""; p2pPlanFailed = false
-            p2pGuestPeer = ""; p2pGuestPlan = null; p2pGuestVisibilityAt = 0L; p2pGuestConnectAt = 0L
+            p2pDecision.reset(); p2pGuestName = ""; p2pGuest.clear()
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
         }
         refreshAdvert(); pushStatus()
@@ -947,9 +959,18 @@ class ProkNetNode(private val context: Context) : TransportListener {
         buyViaRelay = offer.viaRelay
         clearLastFailure()
         DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
-        if (wifi.canReach(peer.shortId)) return if (offer.viaRelay) awaitIntroduction(peer.shortId) else tunnel.start(buyPrice)
-        if (offer.p2p) return startP2pBuy(peer.shortId)    // v0.9.9: this seller is reachable through its Wi-Fi Direct group
-        return requestWifi(peer)
+        val path = P2pAdmission.buyPath(p2pTopology, offer.p2p, wifi.canReach(peer.shortId), offer.viaRelay)
+        return when (path) {
+            P2pAdmission.BuyPath.RELAY_INTRO -> awaitIntroduction(peer.shortId)
+            P2pAdmission.BuyPath.LINK_UP -> tunnel.start(buyPrice)
+            P2pAdmission.BuyPath.WIFI_DIRECT -> {
+                if (p2pTopology == P2pPlan.Topology.BUYER_GROUP_OWNER)
+                    DiagLog.i(tag, "BUY decision: forcing Wi-Fi Direct because buyer owns the group (the offer " +
+                        (if (offer.p2p) "advertises" else "does not advertise") + " a provider group, which does not matter here)")
+                startP2pBuy(peer.shortId)      // v0.9.9: the provider's group, or v0.9.23: our own
+            }
+            P2pAdmission.BuyPath.HOTSPOT -> requestWifi(peer)
+        }
     }
 
     // ---- ledger ----
@@ -1048,7 +1069,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     fun stopInternet(reason: String) {
-        if (buyViaP2p) { buyViaP2p = false; p2p.stop(); onSessionTornDown("buyer stopped a Wi-Fi Direct attempt") }
+        if (buyViaP2p) {
+            // v0.9.24: tell the provider, so a reversed session on its side ends with ours
+            buyerWanted?.let { peer -> if (transportFor(peer) != null) sendControl(peer, Wire.wifiCancel(Wire.CANCEL_GENERIC, "customer stopped: " + reason.take(60))) {} }
+            buyViaP2p = false; p2p.stop(); onSessionTornDown("buyer stopped a Wi-Fi Direct attempt")
+        }
         buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
         tunnel.stop(reason)
         net.prok.proknet.vpn.ProkVpnService.stop(context)
@@ -1406,6 +1431,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             c is Wire.Control.P2pMember -> onP2pMember(peerShort, c)
             c is Wire.Control.P2pTransport -> onP2pTransport(peerShort, c)
             c is Wire.Control.WifiCancel && buyViaP2p && buyerWanted == peerShort -> onP2pRefused(peerShort, c)
+            c is Wire.Control.WifiCancel && gateway.providing && p2pGuest.active && p2pGuest.peer == peerShort ->
+                clearReversedSession(peerShort, "the customer cancelled: " + c.detail.ifEmpty { Wire.cancelReasonText(c.reason) })
             c is Wire.Control.WifiRequest -> wifi.onControl(peerShort, body)
             upWants -> wifiUp.onControl(peerShort, body)
             else -> wifi.onControl(peerShort, body)

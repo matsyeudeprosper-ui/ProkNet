@@ -1538,3 +1538,56 @@ TCP accepted / TCP connected / verdict / failure stage
 This is an experiment, not a fix. It may fail, and a failure is still an
 answer: it would mean the OUKITEL cannot carry a Wi-Fi Direct data path in
 either role while it stays on its home Wi-Fi.
+
+## 42. v0.9.24 the reversed topology, second attempt
+
+Section 41 still applies. Two things it could not show last time must now
+appear.
+
+**On the BUYER, with the lab toggle on BUYER OWNS THE GROUP:**
+
+```
+TOPOLOGY = BUYER_GROUP_OWNER: the customer owns the Wi-Fi Direct group and the
+provider joins it, keeping its home Wi-Fi
+BUY decision: forcing Wi-Fi Direct because buyer owns the group
+starting buyer-owned P2P group
+WI-FI DIRECT GROUP FORMED: role GROUP_OWNER ... local 192.168.49.1
+```
+
+There must be **no `WIFI_REQUEST`** in that purchase. If there is one, the
+buyer took the hotspot path and the experiment did not run.
+
+**On the SELLER:**
+
+```
+TOPOLOGY = BUYER_GROUP_OWNER (asked by prok-XXXX)
+REVERSED TOPOLOGY: joining customer group as CLIENT (dropping my own group), while staying on Freebox ...
+telling the customer what this phone can see: I can address "OnePlus..." at 1e:...
+JOIN PLAN = ...
+WI-FI DIRECT GROUP FORMED: role CLIENT ... p2p0=192.168.49.x
+```
+
+and at that moment: `wlan0 = 192.168.1.x` still present, `p2p0` present, and
+`provider: ... upstream Wi-Fi, validated`.
+
+**Then cancel on the buyer, and check the seller:**
+
+```
+REVERSED TOPOLOGY session cleared for prok-XXXX (the customer cancelled: ...)
+| still sharing: true, upstream Wi-Fi
+```
+
+After that line there must be NO further `telling the customer what this
+phone can see`. If the line keeps coming, the v0.9.23 stale loop is back.
+
+**Then buy again** from the same two phones without restarting anything: the
+seller must go through `TOPOLOGY` and `REVERSED TOPOLOGY: joining` again from
+scratch.
+
+Only once both roles are really present does the probe verdict count:
+
+```
+LINK PROBE verdict: ...     (from BOTH phones)
+```
+
+Copy the LAST P2P TEST RESULT block from both phones whatever happens.

@@ -244,6 +244,55 @@ object P2pAdmission {
     fun mayInvite(plan: Plan, sellerSight: Sight, ownsGroup: Boolean, hasMember: Boolean, invitedMsAgo: Long): Boolean =
         plan == Plan.OWNER_INVITE && sellerSight.canSee && ownsGroup && !hasMember && invitedMsAgo >= ASSOCIATION_TIMEOUT_MS
 
+    // ---- v0.9.24: which transport a purchase starts on --------------------------------------------------
+
+    enum class BuyPath { LINK_UP, RELAY_INTRO, WIFI_DIRECT, HOTSPOT }
+
+    /**
+     * The v0.9.23 run never tested the reversed topology because of this
+     * decision. A provider in BUYER_GROUP_OWNER mode drops its own group on
+     * purpose, so it stops advertising `p2p` in its offer, and the customer
+     * then fell back to the hotspot request. A customer that OWNS the group
+     * must not wait for the provider to advertise one.
+     */
+    fun buyPath(topology: P2pPlan.Topology, offerP2p: Boolean, linkUp: Boolean, viaRelay: Boolean): BuyPath = when {
+        linkUp -> if (viaRelay) BuyPath.RELAY_INTRO else BuyPath.LINK_UP
+        topology == P2pPlan.Topology.BUYER_GROUP_OWNER -> BuyPath.WIFI_DIRECT
+        offerP2p -> BuyPath.WIFI_DIRECT
+        else -> BuyPath.HOTSPOT
+    }
+
+    /**
+     * Provider side of the reversed topology: the one customer whose group
+     * this phone is joining. The v0.9.23 run left it alive after the customer
+     * had cancelled, and the provider kept reporting what it could see, every
+     * few seconds, for minutes. It is cleared as one unit, on cancel, on stop,
+     * and when a different customer arrives.
+     */
+    class GuestSession {
+        @Volatile var peer: String = ""
+        @Volatile var plan: Plan? = null
+        @Volatile var visibilityAt: Long = 0L
+        @Volatile var connectAt: Long = 0L
+        val active: Boolean get() = peer.isNotEmpty()
+        fun begin(peer: String) { clear(); this.peer = peer }
+        fun clear() { peer = ""; plan = null; visibilityAt = 0L; connectAt = 0L }
+        /** May the guest ladder run a tick for [peer]? */
+        fun ticks(peer: String, providing: Boolean, linked: Boolean, hasMember: Boolean): Boolean =
+            active && this.peer == peer && providing && !linked && !hasMember
+    }
+
+    /** Group owner side: the plan in force, who holds it, and the invitation clock. Reset as one unit. */
+    class OwnerDecision {
+        @Volatile var plan: Plan? = null
+        @Volatile var owner: Owner = Owner.NOBODY
+        @Volatile var at: Long = 0L
+        @Volatile var invitedAt: Long = 0L
+        @Volatile var failed: Boolean = false
+        val clean: Boolean get() = plan == null && owner == Owner.NOBODY && at == 0L && invitedAt == 0L && !failed
+        fun reset() { plan = null; owner = Owner.NOBODY; at = 0L; invitedAt = 0L; failed = false }
+    }
+
     // ---- how a purchase ends, truthfully -------------------------------------------------------------
 
     /**
