@@ -1,42 +1,36 @@
-# CLAUDE_REPORT - ProkNet v0.12.2 "the sonar"
+# CLAUDE_REPORT - ProkNet v0.12.3 "the sphere, second pass"
 
 Date: 2026-09-19
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 236/236 tests pass, released. Accueil and Carte redrawn
-from scratch on my own design; nothing under the screens changed. The
-one-tap hardware regression (TESTING section 50) remains the pending test.**
+Status: **built, 236/236 tests pass, released. Visual only. The one-tap
+hardware regression (TESTING section 50) remains the pending test.**
 
 ## 1. Why
 
-Mike: "The home screen and map still sucks as design. Forget my
-description of it and come up with your own version." The v0.12.1 home was
-a giant filled ball inside an empty frame; the map was a green square with
-a dot.
+Mike, on v0.12.2: "Better but not quite. Was that the best you have?" It
+was not: a pale flat disc in three even circles, truncated tiles, one
+blue everywhere.
 
-## 2. The design
+## 2. What changed
 
-One metaphor the product can honour: a sonar.
-
-- Accueil: "Besoin d'Internet ?", a compact lit sphere (150 dp) at the
-  centre of thin rings on a soft glow, drawn by `PulseButtonView`; while a
-  request is alive, rings sweep outward and fade. One quiet line under it.
-  Three tiles: Autour de vous (usable sources now), Meilleur prix, Dernière
-  fois (from persisted requests). Two door rows with chevrons: Partager mon
-  Internet, Carte. The status card is unchanged.
-- Carte: a sonar of real sightings. You at the centre; each known source a
-  dot placed by recency (fresh near the centre, old at the edge), coloured
-  by status, labelled, tappable. Two tiles (Disponible maintenant / Vu
-  récemment), an "around you" card with an honest sentence and the
-  location button inside it, then source rows with a status dot. Once a
-  position exists, the cell grid replaces the sonar.
-- Stat tiles auto-size so amounts never wrap.
+`ui/PulseButtonView.kt`, redrawn in a software layer:
+- the sphere: four-stop radial gradient from a tight near-white specular
+  through the brand blue to a deep navy edge, a thin white rim, a blurred
+  halo, a blurred drop shadow beneath, a soft text shadow;
+- ambient light instead of a bullseye: blue high-left, violet low-right,
+  two scan arcs whose stroke fades around the circle;
+- the usable sources as green glowing dots on the first arc (`sources`,
+  from the home refresh); while searching they drift and a radar wedge
+  turns.
+Layout and strings: tile captions Sources / Prix / Dernière on one line,
+values auto-sized 12-18 sp; shorter door-row subtitles.
 
 ## 3. Build
 
-Build 47, versionName 0.12.2, SHA256 `c16a343e124b34b7fa87f86fd78d3d40fbb411e2422014536abd9e9899d0293c`.
-Commit `22b3809` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.2
+Build 48, versionName 0.12.3, SHA256 `67e6164e4d413f77adbfe14d2477efd07b25930532789d6b671fd68de1a5bd7e`.
+Commit `cca5b04` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.3
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
@@ -44,14 +38,10 @@ C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 
 ## 4. Files changed
 
-New `ui/PulseButtonView.kt`, `res/drawable/dot_warn.xml`. Rewritten
-`ui/CoverageMapView.kt`. Patched `res/layout/activity_main.xml` (HOME and
-MAP blocks, auto-size stats), `ui/MainActivity.kt` (sonar wiring, tiles,
-door rows, map refresh with marks), `res/values/strings.xml` (+21),
-`build.gradle.kts`.
+`ui/PulseButtonView.kt`, `res/layout/activity_main.xml` (tiles),
+`res/values/strings.xml` (5 strings), `ui/MainActivity.kt` (one line:
+`sources`), `build.gradle.kts`.
 
 ## 5. The test
 
-Unchanged: TESTING section 50. OUKITEL: Gagner, COMMENCER À PARTAGER.
-OnePlus, mobile data OFF: OBTENIR INTERNET, wait for "Internet connecté
-✅", Wikipedia. Then Carte on both, screenshots.
+Unchanged: TESTING section 50.
