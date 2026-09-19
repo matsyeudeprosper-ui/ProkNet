@@ -570,4 +570,54 @@ class P2pAdmissionTest {
         assertTrue(providing)
         assertTrue(upstreamValidated)
     }
+
+    // ---- v0.9.26: the admission plane is dormant while the owner creates its group -------------------
+
+    @Test
+    fun an_owner_admits_nobody_until_its_group_exists() {
+        val t = P2pPlan.Topology.BUYER_GROUP_OWNER
+        // the v0.9.25 run: createGroup accepted, formed=false, role NONE, and a JOIN PLAN was decided
+        assertFalse("no plan while creating", P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.CREATING_GROUP, groupFormed = false, role = P2pPlan.Role.NONE))
+        assertFalse("nor while still cleaning", P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.CLEANING, false, P2pPlan.Role.NONE))
+        assertFalse("nor when the stage says owner but the group is not there", P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.GROUP_OWNER, false, P2pPlan.Role.NONE))
+        // the group exists with this phone as its owner: admission opens
+        assertTrue(P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.GROUP_OWNER, groupFormed = true, role = P2pPlan.Role.GROUP_OWNER))
+        assertTrue(P2pAdmission.ADMISSION_DEFERRED.isNotEmpty())
+    }
+
+    @Test
+    fun the_seller_guest_keeps_reporting_while_the_owner_is_still_creating() {
+        // the provider as a guest never creates a group, so it is not gated by creation at all
+        val t = P2pPlan.Topology.BUYER_GROUP_OWNER
+        assertTrue(P2pAdmission.admissionAllowed(t, providing = true, stage = P2pPlan.Stage.DISCOVERING, groupFormed = false, role = P2pPlan.Role.NONE))
+        val g = P2pAdmission.GuestSession()
+        g.begin("0f7d57b3")
+        assertTrue("its visibility loop stays alive while it waits", g.ticks("0f7d57b3", providing = true, linked = false, hasMember = false))
+    }
+
+    @Test
+    fun a_visibility_received_before_formation_is_worth_the_same_afterwards() {
+        // the guest said "I can address you" while the owner was creating: deferred, then evaluated
+        val t = P2pPlan.Topology.BUYER_GROUP_OWNER
+        val guestCanSeeOwner = true
+        val ownerSeesGuest = false
+        assertFalse(P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.CREATING_GROUP, false, P2pPlan.Role.NONE))
+        // after formation the same two facts produce the same plan they always would
+        assertTrue(P2pAdmission.admissionAllowed(t, false, P2pPlan.Stage.GROUP_OWNER, true, P2pPlan.Role.GROUP_OWNER))
+        assertEquals(P2pAdmission.Plan.GUEST_CONNECT, P2pAdmission.plan(guestCanSeeOwner, ownerSeesGuest))
+        assertEquals(P2pAdmission.Plan.OWNER_INVITE, P2pAdmission.plan(false, true))
+        assertEquals(P2pAdmission.Plan.WAIT, P2pAdmission.plan(false, false))
+    }
+
+    @Test
+    fun production_admission_is_gated_the_same_way_and_behaves_the_same() {
+        val t = P2pPlan.Topology.SELLER_GROUP_OWNER
+        // the provider owns its group: it decides once the group exists, as it always has
+        assertTrue(P2pAdmission.admissionAllowed(t, providing = true, stage = P2pPlan.Stage.GROUP_OWNER, groupFormed = true, role = P2pPlan.Role.GROUP_OWNER))
+        // and a provider whose group is still coming up defers, which is the v0.9.11 REBUILDING rule
+        assertFalse(P2pAdmission.admissionAllowed(t, providing = true, stage = P2pPlan.Stage.CREATING_GROUP, groupFormed = false, role = P2pPlan.Role.NONE))
+        // the customer that joins is never creating anything
+        assertTrue(P2pAdmission.admissionAllowed(t, providing = false, stage = P2pPlan.Stage.DISCOVERING, groupFormed = false, role = P2pPlan.Role.NONE))
+        assertTrue(P2pAdmission.admissionAllowed(t, providing = false, stage = P2pPlan.Stage.CLIENT, groupFormed = true, role = P2pPlan.Role.CLIENT))
+    }
 }

@@ -746,6 +746,49 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The admission plane is dormant while the owner creates its group (v0.9.26)
+
+v0.9.25 held `formed=false` correctly inside the link, and the admission
+layer above it carried on regardless:
+
+```
+12:03:48  createGroup attempt 3 accepted
+12:03:48  group creation pending: formed=false is normal while CREATING_GROUP
+12:03:49  admission: ... group formed=false role=NONE -> GUEST_CONNECT
+12:03:55  starting peer discovery from a clean state
+12:04:03  GROUP CREATE FAILED
+```
+
+A rule that lives in one entry point is not a rule. `onConnectionInfo` knew
+that creation owns the radio; `onP2pVisibility` did not, decided a plan,
+sent it, and its follow-up resumed discovery against `createGroup()`.
+
+### One gate
+
+```
+admissionAllowed(topology, providing, stage, groupFormed, role)
+  owner of the group:  stage == GROUP_OWNER && groupFormed && role == GROUP_OWNER
+  guest:               stage != CREATING_GROUP
+```
+
+Every admission action asks it: a visibility report, a join plan, the owner's
+wait step, the search clock, and through those the invitation, the connect
+and discovery. While it says no, a visibility report is remembered and
+answered with `admission deferred: buyer-owned group is still being created`,
+and nothing else moves. The moment the group forms, the deferred report is
+evaluated as if it had just arrived, so the guest's useful loop is never
+interrupted and nothing it said is lost.
+
+### A second net under discovery
+
+`P2pLink.keepDiscovering` refuses outright while the stage is
+CREATING_GROUP, whoever calls it and whyever, logging
+`not starting discovery: group creation owns the radio`. Even a caller that
+forgets the rule cannot scan against a pending creation.
+
+The v0.9.24 seller cleanup and the v0.9.25 formation retry ladder are
+untouched.
+
 ## Creating a group is its own stage (v0.9.25)
 
 v0.9.24 took the right path and then Android was fought at its own game:

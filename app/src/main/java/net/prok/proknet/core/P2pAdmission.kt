@@ -293,6 +293,32 @@ object P2pAdmission {
         fun reset() { plan = null; owner = Owner.NOBODY; at = 0L; invitedAt = 0L; failed = false }
     }
 
+    // ---- v0.9.26: the admission plane is dormant while this phone creates its group ----------------------
+
+    /**
+     * The v0.9.25 run held `formed=false` correctly inside the link and still
+     * decided a JOIN PLAN, sent it, and restarted discovery from the
+     * admission layer while `createGroup` was pending:
+     *
+     * ```
+     * 12:03:48  createGroup attempt 3 accepted
+     * 12:03:49  admission: ... group formed=false role=NONE -> GUEST_CONNECT
+     * 12:03:55  starting peer discovery from a clean state
+     * 12:04:03  GROUP CREATE FAILED
+     * ```
+     *
+     * A rule that lives in one entry point is not a rule. This gate is the
+     * rule, and every admission action asks it: a phone that OWNS the group
+     * may admit anybody only once that group exists, with it as the owner. A
+     * guest never creates a group, so a guest is gated only by not being in
+     * the middle of creating one.
+     */
+    fun admissionAllowed(topology: P2pPlan.Topology, providing: Boolean, stage: P2pPlan.Stage, groupFormed: Boolean, role: P2pPlan.Role): Boolean =
+        if (P2pPlan.ownsGroup(topology, providing)) stage == P2pPlan.Stage.GROUP_OWNER && groupFormed && role == P2pPlan.Role.GROUP_OWNER
+        else stage != P2pPlan.Stage.CREATING_GROUP
+
+    const val ADMISSION_DEFERRED = "admission deferred: buyer-owned group is still being created"
+
     // ---- how a purchase ends, truthfully -------------------------------------------------------------
 
     /**

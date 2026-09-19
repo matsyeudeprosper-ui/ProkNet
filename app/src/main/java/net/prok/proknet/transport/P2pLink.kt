@@ -697,6 +697,11 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
      */
     private fun keepDiscovering(why: String) {
         if (discovering) return
+        // v0.9.26: a hard net under every caller. Nothing scans while createGroup() is pending.
+        if (life.stage == P2pPlan.Stage.CREATING_GROUP) {
+            DiagLog.i(tag, "not starting discovery: group creation owns the radio (" + why + ")")
+            return
+        }
         // v0.9.22: an accepted connect() or invite() owns the radio until it forms membership, is
         // refused, or runs out of time. Android's own mid-join `formed=false` is none of those.
         if (associationPending) {

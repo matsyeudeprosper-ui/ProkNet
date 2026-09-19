@@ -396,10 +396,25 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * Seller: the customer says what it can see. Together with what THIS
      * phone can see, that is the whole admission decision.
      */
+    /** v0.9.26: the last visibility that arrived while this phone was still creating its group. */
+    @Volatile private var p2pDeferredVisibility: Pair<String, Wire.Control.P2pVisibility>? = null
+
+    private fun admissionAllowed(): Boolean =
+        P2pAdmission.admissionAllowed(p2pTopology, gateway.providing, p2p.stage, p2p.groupFormed, p2p.role)
+
     private fun onP2pVisibility(peerShort: String, c: Wire.Control.P2pVisibility) {
         // v0.9.23: the GROUP OWNER decides, whichever phone that is in this topology
         if (!iOwnGroup()) { DiagLog.i(tag, "prok-" + peerShort + " reported its visibility; this phone does not own the group, so it decides nothing"); return }
         if (c.deviceName.isNotBlank()) p2pGuestName = c.deviceName
+        // v0.9.26: no plan, no message, no invitation, no discovery until our group exists. Remember
+        // what the guest said and act on it the moment the group forms.
+        if (!admissionAllowed()) {
+            p2pDeferredVisibility = Pair(peerShort, c)
+            DiagLog.i(tag, P2pAdmission.ADMISSION_DEFERRED + " (stage " + p2p.stage + ", formed " + p2p.groupFormed +
+                ", role " + p2p.role + "; remembered that \"" + p2pGuestName.ifEmpty { "?" } + "\" " + (if (c.canSee) "can" else "cannot") + " address me)")
+            return
+        }
+        p2pDeferredVisibility = null
         val mine = P2pAdmission.look(p2p.realPeers(), p2pGuestName)
         val now = System.currentTimeMillis()
         val since = if (p2pDecision.at == 0L) Long.MAX_VALUE else now - p2pDecision.at
@@ -446,6 +461,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     /** Buyer: the provider decided. Both sides obey the same plan. */
     private fun onP2pJoinPlan(peerShort: String, c: Wire.Control.P2pJoinPlan) {
+        if (!admissionAllowed()) { DiagLog.i(tag, "a join plan arrived while this phone is creating its group: ignored"); return }
         // v0.9.23: the seller obeys the plan too when the customer owns the group
         if (gateway.providing && p2pGuest.peer == peerShort) {
             val p = when (c.plan) {
@@ -532,6 +548,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
         p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L; p2pAssociationAt = 0L; p2pOwnerFormedAt = 0L
+        p2pDeferredVisibility = null
         val mine = P2pPlan.ownsGroup(p2pTopology, false)
         DiagLog.i(tag, "TOPOLOGY = " + P2pPlan.topologyName(p2pTopology) + ": " + P2pPlan.topologyText(p2pTopology))
         sendControl(peerShort, Wire.p2pTopology(
@@ -601,6 +618,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (p2p.stage == P2pPlan.Stage.FAILED) {
                 val why = p2p.lastError.ifEmpty { P2pPlan.GROUP_CREATE_FAIL_REASON }
                 failBuy(why, why)
+                return
+            }
+            if (!admissionAllowed()) {
+                // creation owns the radio and the clocks: no discovery, no search, no association yet
+                main.postDelayed({ p2pWaitStep(peerShort) }, 4000)
                 return
             }
             val searched = P2pPlan.searchedMs(p2pTopology, false, p2pOwnerFormedAt, p2pWaitStart, System.currentTimeMillis())
@@ -727,6 +749,13 @@ class ProkNetNode(private val context: Context) : TransportListener {
             val owner = p2p.role == P2pPlan.Role.GROUP_OWNER
             p2pGroupFormedAt = if (owner && buyViaP2p) 0L else System.currentTimeMillis()
             if (owner) p2pOwnerFormedAt = System.currentTimeMillis()
+            // v0.9.26: the group exists: act on the visibility the guest sent while we were creating it
+            val deferred = p2pDeferredVisibility
+            if (owner && deferred != null && admissionAllowed()) {
+                p2pDeferredVisibility = null
+                DiagLog.i(tag, "the group exists now: evaluating the visibility prok-" + deferred.first + " sent while it was being created")
+                main.post { onP2pVisibility(deferred.first, deferred.second) }
+            }
             DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo +
                 " | " + p2p.plane.describe())
         } else {

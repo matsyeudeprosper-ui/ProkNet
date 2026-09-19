@@ -1635,3 +1635,41 @@ with `wlan0 = 192.168.1.13` still present and the upstream still validated.
 Then, and only then, the probe verdict from both phones.
 
 Copy the LAST P2P TEST RESULT block from both phones whatever happens.
+
+## 44. v0.9.26 nothing moves while the owner creates its group
+
+Section 43 still applies, with one stricter rule for the window between
+`createGroup ... accepted` and `GROUP FORMED` on the BUYER.
+
+In that window the ONLY lines allowed are:
+
+```
+group creation pending: formed=false is normal while CREATING_GROUP
+admission deferred: buyer-owned group is still being created (... remembered that "C1 Pro" can/cannot address me)
+not starting discovery: group creation owns the radio (...)
+no group formed within 15s ... retrying group creation attempt N/3
+```
+
+These must NOT appear in that window:
+
+```
+JOIN PLAN = ...
+admission: ... -> ...
+starting peer discovery from a clean state
+INVITING ...
+ASSOCIATION started ...
+```
+
+If any of them does, copy the lines with their timestamps: it means a caller
+got past the gate.
+
+After `GROUP FORMED`, the deferred report is used at once:
+
+```
+the group exists now: evaluating the visibility prok-... sent while it was being created
+admission: the customer "C1 Pro" ... | group formed=true role=GROUP_OWNER ... -> GUEST_CONNECT | OWNER_INVITE | WAIT
+```
+
+The seller keeps its loop the whole time: `telling the customer what this
+phone can see` every eight seconds, on the Freebox, upstream validated. That
+is correct and must not stop.
