@@ -374,7 +374,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun onProbe(peerShort: String, verdict: net.prok.proknet.core.BulkPlan.Verdict, report: String) {
             main.post {
                 if (buyViaBulk && buyerWanted == peerShort) {
-                    if (net.prok.proknet.core.BulkPlan.probePassed(verdict)) {
+                    if (net.prok.proknet.core.BulkPlan.afterProbe(verdict) == net.prok.proknet.core.BulkPlan.AfterProbe.START_CONTRACT) {
                         DiagLog.i(tag, "Bluetooth bulk link carried the payload both ways: proposing the contract")
                         if (tunnel.session == null && tunnel.contract == null) tunnel.start(buyPrice)
                     } else {
@@ -1097,6 +1097,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun buyerFarEnd(): String? = relay.providerShort ?: wifi.linkedPeer ?: bulk.linkedPeer
 
     /** The authenticated link to the provider is up, on either bulk transport. */
+    /** v0.11: the link is up and the quick link check is still running; the user reads "Vérification de la connexion…". */
+    fun linkChecking(): Boolean = buyViaBulk && bulk.state.phase == net.prok.proknet.core.BulkPlan.Phase.UP &&
+        bulk.lastVerdict == net.prok.proknet.core.BulkPlan.Verdict.NOT_RUN
+
     fun buyerLinkUp(): Boolean {
         val w = wifi.linkedPeer
         if (w != null && wifi.canReach(w)) return true
@@ -1410,6 +1414,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
         bulk.tunnelSink = tunnelSink
         bulk.hooks = bulkHooks
         bulk.start(this)
+        // v0.11: a normal start removes any Wi-Fi Direct group left by earlier developer tests
+        // (the OUKITEL still showed p2p-wlan0-0 192.168.49.1). wlan0 is not touched.
+        if (!p2pDeveloperEnabled) p2p.clearStaleGroup()
         main.postDelayed({ refreshAdvert() }, 1500)
         isRunning = true
         queue.start()

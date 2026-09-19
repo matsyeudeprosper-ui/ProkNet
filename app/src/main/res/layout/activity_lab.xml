@@ -65,7 +65,7 @@
         <Button android:id="@+id/btnRelayLab" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="Relay Lab" />
         <Button android:id="@+id/btnBulkLab" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:text="BT Lab" />
+            android:layout_height="wrap_content" android:text="BT diagnostics" />
     </LinearLayout>
 
     <TextView

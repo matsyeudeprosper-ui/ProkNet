@@ -1859,3 +1859,47 @@ its consequence.
 
 Bluetooth Internet is claimed only when a copied BUYER summary shows
 `Internet: YES` with both directions `PASS`, and Chrome loaded a page.
+
+## 49. v0.11.0 the normal app, no Developer screen
+
+This is the hardware regression of the consumer UI over the path proven
+in section 48. Do not open Developer on either phone.
+
+OUKITEL (seller): on the Freebox, mobile data off, Bluetooth on. Open
+ProkNet -> Partager mon Internet -> keep the price -> Commencer le
+partage. The screen must say "Vous partagez votre Internet", "Disponible
+pour les personnes à proximité", and under it "Source : Wi-Fi (Freebox) ✅"
+with the price. It must NOT show any warning about Wi-Fi, Location or the
+hotspot.
+
+OnePlus (buyer): mobile data off, not on the Freebox, Bluetooth on. Open
+ProkNet -> Internet -> tap the offer (price, signal, "Wi-Fi") -> Connecter.
+The screen walks by itself:
+
+```
+Connexion…
+Vérification de la connexion…
+Démarrage d'Internet…          (a sentence, CONTINUER, then Android's VPN prompt, first time only)
+Internet connecté ✅
+```
+
+Then open Wikipedia in Chrome. The seller meanwhile shows "Quelqu'un
+utilise votre Internet" with the data and the earnings.
+
+Then tap Arrêter on the buyer, and on the seller Arrêter le partage. Run
+it a second time: the VPN must start without asking.
+
+If something fails, the buyer screen shows ONE sentence (for example "La
+connexion à proximité est trop faible. Rapprochez les téléphones et
+réessayez."). Report the sentence. The technical detail is under
+Développeur -> Copy diagnostic, for us, not for you.
+
+For us, the seller log at start must show `consumer start: removing any
+stale Wi-Fi Direct group` and the diagnostic must list no `p2p-wlan0-0`
+interface while the session is running.
+
+### Claim rule
+
+The normal UI is regression-proven when both phones reach "Internet
+connecté ✅" / "Quelqu'un utilise votre Internet" with Wikipedia loaded,
+twice, with no Developer screen opened.

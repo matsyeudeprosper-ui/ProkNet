@@ -268,5 +268,9 @@ object BulkPlan {
     /** The Internet stack may start only on a link that carried the payload both ways. */
     fun probePassed(v: Verdict): Boolean = v == Verdict.BIDIRECTIONAL
 
+    /** v0.11: the customer does nothing after the check. A passed probe starts the contract; anything else ends the attempt. */
+    enum class AfterProbe { START_CONTRACT, END_ATTEMPT }
+    fun afterProbe(v: Verdict): AfterProbe = if (probePassed(v)) AfterProbe.START_CONTRACT else AfterProbe.END_ATTEMPT
+
     const val PROBE_FAIL_REASON = "the Bluetooth bulk link did not carry bytes in both directions"
 }

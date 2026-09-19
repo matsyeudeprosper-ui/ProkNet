@@ -146,7 +146,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     // ---- refresh (everything derives from the node through ProductState) -------------------------
 
     private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.buyPhase(), node.buyerLinkUp(),
-        node.tunnel.state, ProkVpnService.running, buyError())
+        node.tunnel.state, ProkVpnService.running, buyError(), checking = node.linkChecking())
 
     /** Why the last attempt failed, until the user closes the card. The link layer's reason counts too. */
     private fun buyError(): String = if (lostDismissed) "" else node.tunnel.lastError.ifEmpty { node.lastBuyError }
@@ -156,18 +156,27 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     } catch (e: Exception) { true }
 
-    /** A seller cannot serve anybody without Wi-Fi and Location: Android needs both for the hotspot. */
-    private fun sellerWarning(): String = when {
-        // v0.9.9: the hotspot is refused here but the direct link took over, so say nothing alarming
-        node.p2pFallbackActive -> getString(R.string.share_wifi_direct)
-        // v0.9.6: tested on THIS network. Not a global rule, and mobile data still works.
-        node.canShareWhileOnWifi() == false -> getString(R.string.share_wifi_impossible)
-        node.shareCheck == net.prok.proknet.core.ShareCheck.Result.UNKNOWN && node.sellOn &&
-            net.prok.proknet.core.ShareCheck.needed(net.prok.proknet.core.Tunnel.upstreamType(node.gateway.upstream)) -> getString(R.string.share_wifi_checking)
-        !node.wifi.wifiEnabled -> getString(R.string.seller_needs_wifi)
-        !locationOn() -> getString(R.string.seller_needs_location)
-        else -> ""
+    /**
+     * The hotspot needs Wi-Fi and Location and may be refused on a network; the
+     * Bluetooth path (v0.11, the proven one on home Wi-Fi) needs none of that.
+     */
+    private fun sellerWarning(): String {
+        val path = node.sellerAccessPath()
+        return when {
+            // v0.9.9: the developer's direct link took over, so say nothing alarming
+            node.p2pFallbackActive -> getString(R.string.share_wifi_direct)
+            !ProductState.sellerNeedsHotspotWarnings(path) ->
+                if (path == net.prok.proknet.core.BulkPlan.SellerAccessPath.NONE && node.gateway.upstreamReady) getString(R.string.share_needs_bluetooth) else ""
+            // v0.9.6: tested on THIS network. Not a global rule, and mobile data still works.
+            node.canShareWhileOnWifi() == false -> getString(R.string.share_wifi_impossible)
+            node.shareCheck == net.prok.proknet.core.ShareCheck.Result.UNKNOWN && node.sellOn &&
+                net.prok.proknet.core.ShareCheck.needed(net.prok.proknet.core.Tunnel.upstreamType(node.gateway.upstream)) -> getString(R.string.share_wifi_checking)
+            !node.wifi.wifiEnabled -> getString(R.string.seller_needs_wifi)
+            !locationOn() -> getString(R.string.seller_needs_location)
+            else -> ""
+        }
     }
+    private fun sellerSource(): String = ProductState.sellerSourceLine(node.sellerAccessPath(), Tunnel.upstreamType(node.gateway.upstream), node.wifi.currentWifi()?.ssid)
     private fun sellerState(): ProductState.Seller = ProductState.seller(node.sellOn, node.gateway.state)
     private fun buyerOn(): Boolean = node.buyerWanted != null || node.tunnel.session != null || node.tunnel.contract != null
 
@@ -222,7 +231,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         when {
             sellerOn -> {
                 text(R.id.shareTitle, ProductState.sellerTitle(s)); text(R.id.shareHint, sellerWarning().ifEmpty { ProductState.sellerHint(s) })
-                text(R.id.shareTerms, ProductState.priceLine(node.sellPrice) + " · " + ProductState.minimumLine(node.sellMinPrice) + " · " + ProductState.limitLine(node.sellMaxMb))
+                text(R.id.shareTerms, (if (node.gateway.upstreamReady) sellerSource() + "\n" else "") +
+                    ProductState.priceLine(node.sellPrice) + " · " + ProductState.minimumLine(node.sellMinPrice) + " · " + ProductState.limitLine(node.sellMaxMb))
                 val g = node.gateway; val cur = g.session
                 text(R.id.shareData, ProductState.data(g.totalSoldBytes + (cur?.let { it.bytesUp + it.bytesDown } ?: 0L)))
                 text(R.id.shareEarned, ProductState.cfaShort(g.totalEarnedCentimes + Market.split(g.agreedCost(), node.feePct).sellerNet))
@@ -330,7 +340,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val peer: Peer = node.peers().firstOrNull { it.shortId == o.sellerShort } ?: run { toast(getString(R.string.toast_provider_gone)); pendingOffer = null; refresh(); return }
         if (!peer.offer().selling) { toast(getString(R.string.toast_provider_stopped)); pendingOffer = null; refresh(); return }
         if (!node.hasKey(peer.shortId)) { toast(getString(R.string.toast_need_key)); return }
-        if (!node.wifi.wifiEnabled) { toast(getString(R.string.toast_need_wifi)); return }
+        // v0.11: a Bluetooth-capable provider on home Wi-Fi is reached over Bluetooth; only the hotspot path needs Wi-Fi here
+        if (ProductState.buyerNeedsWifi(o.bulkBt, o.upstreamType) && !node.wifi.wifiEnabled) { toast(getString(R.string.toast_need_wifi)); return }
         DiagLog.i(tag, "CONNECT pressed: prok-" + peer.shortId + " " + o.pricePerMb + " CFA/MB")
         lostDismissed = false
         if (!node.buy(peer)) { toast(getString(R.string.toast_cannot_connect)); return }
@@ -448,7 +459,14 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun startVpnWithConsent() {
         try {
             val intent = android.net.VpnService.prepare(this)
-            if (intent != null) { DiagLog.i(tag, "VPN consent needed"); startActivityForResult(intent, 6) } else onVpnConsent(RESULT_OK)
+            if (intent == null) { onVpnConsent(RESULT_OK); return }
+            // v0.11: one plain sentence before Android's own prompt. Once granted, Android returns null here
+            // on later connections and the VPN starts without asking.
+            DiagLog.i(tag, "VPN consent needed: explaining first")
+            AlertDialog.Builder(this).setTitle(R.string.vpn_explain_title).setMessage(R.string.vpn_explain)
+                .setPositiveButton(R.string.continue_btn) { _, _ -> try { startActivityForResult(intent, 6) } catch (e: Exception) { DiagLog.e(tag, "VPN prepare", e) } }
+                .setNegativeButton(R.string.close) { _, _ -> onVpnConsent(RESULT_CANCELED) }
+                .setCancelable(false).show()
         } catch (e: Exception) { DiagLog.e(tag, "VPN prepare", e) }
     }
 

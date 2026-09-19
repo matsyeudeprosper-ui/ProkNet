@@ -379,6 +379,19 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         return null
     }
 
+    /**
+     * v0.11: consumer-mode start. Wi-Fi Direct is archived, but a group from an
+     * earlier developer test can survive on the phone. Walk the same confirmed
+     * cleanup (cancel, stop discovery, close sockets, remove group) so the
+     * phone serves over Bluetooth from a clean state. Only the p2p interface is
+     * touched; the home Wi-Fi on wlan0 is not.
+     */
+    fun clearStaleGroup() {
+        if (!supported) return
+        DiagLog.i(tag, "consumer start: removing any stale Wi-Fi Direct group left by earlier tests (wlan0 untouched)")
+        stop()
+    }
+
     /** Stop everything and only say IDLE once Android has confirmed each step. */
     fun stop() {
         if (!ensureChannel() && manager == null) { life.stop(); while (life.step != P2pPlan.Step.DONE) life.done(life.step); changed("stop with no p2p"); return }

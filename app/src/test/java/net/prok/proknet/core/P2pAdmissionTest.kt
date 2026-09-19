@@ -2,6 +2,7 @@ package net.prok.proknet.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -632,5 +633,35 @@ class P2pAdmissionTest {
         // and with no purchase running the gate is irrelevant: nothing is stored
         val g = P2pAdmission.GuestSession()
         assertFalse(g.active)
+    }
+
+    // ---- v0.11: the normal product's transport choice, with no preference from the user -------------------
+
+    @Test
+    fun the_normal_purchase_picks_bluetooth_for_a_wifi_provider_and_the_hotspot_for_mobile_data() {
+        val prod = P2pPlan.Topology.SELLER_GROUP_OWNER
+        // the proven pair: provider on home Wi-Fi advertising Bluetooth -> Bluetooth bulk, automatically
+        assertEquals(P2pAdmission.BuyPath.BLUETOOTH_BULK,
+            P2pAdmission.buyPath(prod, offerP2p = false, linkUp = false, viaRelay = false, offerBulkBt = true, sellerOnWifi = true, preferBluetooth = false))
+        // a mobile-data provider keeps the hotspot path, even if it could do Bluetooth
+        assertEquals(P2pAdmission.BuyPath.HOTSPOT,
+            P2pAdmission.buyPath(prod, offerP2p = false, linkUp = false, viaRelay = false, offerBulkBt = true, sellerOnWifi = false, preferBluetooth = false))
+        assertEquals(P2pAdmission.BuyPath.HOTSPOT,
+            P2pAdmission.buyPath(prod, offerP2p = false, linkUp = false, viaRelay = false, offerBulkBt = false, sellerOnWifi = false, preferBluetooth = false))
+        // an authenticated link that already exists is reused
+        assertEquals(P2pAdmission.BuyPath.LINK_UP,
+            P2pAdmission.buyPath(prod, offerP2p = false, linkUp = true, viaRelay = false, offerBulkBt = true, sellerOnWifi = true, preferBluetooth = false))
+        // the normal flow never picks Wi-Fi Direct: no provider advertises a group any more (v0.10.1 removed the automatic path)
+        for (bt in listOf(true, false)) for (wifi in listOf(true, false)) for (up in listOf(true, false))
+            assertNotEquals(P2pAdmission.BuyPath.WIFI_DIRECT,
+                P2pAdmission.buyPath(prod, offerP2p = false, linkUp = up, viaRelay = false, offerBulkBt = bt, sellerOnWifi = wifi, preferBluetooth = false))
+        // the provider side of the same rule
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, BulkPlan.sellerAccessPath(upstreamIsWifi = true, bulkSupported = true, bluetoothOn = true))
+        assertEquals(BulkPlan.SellerAccessPath.HOTSPOT, BulkPlan.sellerAccessPath(upstreamIsWifi = false, bulkSupported = true, bluetoothOn = true))
+        // and the customer does nothing after the quick check: a pass starts the contract, anything else ends the attempt
+        assertEquals(BulkPlan.AfterProbe.START_CONTRACT, BulkPlan.afterProbe(BulkPlan.Verdict.BIDIRECTIONAL))
+        assertEquals(BulkPlan.AfterProbe.END_ATTEMPT, BulkPlan.afterProbe(BulkPlan.Verdict.PARTIAL))
+        assertEquals(BulkPlan.AfterProbe.END_ATTEMPT, BulkPlan.afterProbe(BulkPlan.Verdict.NO_DATA))
+        assertEquals(BulkPlan.AfterProbe.END_ATTEMPT, BulkPlan.afterProbe(BulkPlan.Verdict.NOT_RUN))
     }
 }

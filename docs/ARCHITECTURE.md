@@ -746,6 +746,67 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The consumer path (v0.11.0)
+
+The proven two-phone path is the normal product now. Nothing under it
+changed; this milestone is the rules the normal screens obey, made pure
+and tested, so a person never chooses a transport or reads a protocol
+word.
+
+**Seller.** Partager -> price -> Commencer. `BulkPlan.sellerAccessPath`
+(v0.10.1) picks the local link: home Wi-Fi with Bluetooth -> Bluetooth,
+mobile data -> the hotspot, home Wi-Fi without Bluetooth -> NONE with the
+sentence "Activez le Bluetooth". `ProductState.sellerNeedsHotspotWarnings`
+keeps the hotspot warnings (Wi-Fi on, Location on, "this network refuses
+a hotspot") off the Bluetooth path, where they were wrong.
+`ProductState.sellerSourceLine` prints "Source : Wi-Fi (Freebox) ✅" and
+no protocol. The screen then reads "Vous partagez votre Internet /
+Disponible pour les personnes à proximité", and "Quelqu'un utilise votre
+Internet" with data and earnings once a customer is on.
+
+**Buyer.** Internet -> the offer card (price, signal, source) ->
+Connecter. `P2pAdmission.buyPath` (v0.10.0) chooses: an authenticated link
+is reused; a Bluetooth-capable provider on Wi-Fi -> Bluetooth; a
+mobile-data provider -> the hotspot; Wi-Fi Direct never, since no normal
+provider advertises a group any more. `ProductState.buyerNeedsWifi` stops
+CONNECT from demanding Wi-Fi on the customer for the Bluetooth path.
+
+**Four words.** `ProductState.buyer` gained `CHECKING`, fed by
+`ProkNetNode.linkChecking()` (link up, quick check running). The user
+reads exactly: Connexion… -> Vérification de la connexion… -> Démarrage
+d'Internet… (contract and tunnel share the word) -> Internet connecté ✅.
+A test walks the real `BulkPlan.buyPhase` strings through it and checks
+no title or hint contains L2CAP, PSM, BULK, GATT, probe or 256.
+
+**Automatic continuation.** `BulkPlan.afterProbe(verdict)` is the rule the
+node's hook applies: BIDIRECTIONAL -> start the contract, anything else
+-> end the attempt. The VPN is requested by the existing
+`TunnelClient.onSessionUp -> vpnRequested` path; MainActivity now shows
+one sentence ("Prok a besoin de votre autorisation pour faire passer
+Internet par le fournisseur à proximité" / CONTINUER) before Android's
+own prompt, and once granted Android returns no intent and later sessions
+start the VPN without asking.
+
+**Failures.** `ProductState.lostHint` maps the probe failure to "La
+connexion à proximité est trop faible. Rapprochez les téléphones et
+réessayez.", Bluetooth off to "Le Bluetooth est éteint. Activez-le pour
+vous connecter.", a provider that lost its upstream to "Le fournisseur a
+perdu son Internet.", and everything unmapped to "Impossible de se
+connecter à ce fournisseur. Réessayez.". The technical text stays in
+Developer -> diagnostics.
+
+**Stale Wi-Fi Direct group.** The proven OUKITEL diagnostic still listed
+`p2p-wlan0-0 192.168.49.1` from earlier developer tests. `ProkNetNode.start`
+now calls `P2pLink.clearStaleGroup()` unless the developer P2P lab is on:
+the same Android-confirmed walk as STOP (cancel connect, stop discovery,
+close sockets, remove group), which `P2pPlan.Life.start` runs "always,
+even when this phone believes it is idle". Only the p2p interface is
+touched; wlan0 and the Freebox are not. Cleanup only; no Wi-Fi Direct
+debugging.
+
+**Developer BT diagnostics** (the v0.10.2 test screen) stays under
+Developer, renamed "BT diagnostics".
+
 ## The sequential probe (v0.10.2)
 
 The v0.10.1 phones settled the question the probe existed for: Bluetooth

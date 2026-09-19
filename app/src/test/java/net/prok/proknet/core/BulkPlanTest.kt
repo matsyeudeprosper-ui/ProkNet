@@ -114,7 +114,7 @@ class BulkPlanTest {
         assertFalse(BulkPlan.probePassed(BulkPlan.Verdict.NO_DATA))
         assertFalse("a socket that connected is not a link that carries", BulkPlan.probePassed(BulkPlan.verdict(ok, null)))
         assertEquals(28L, ok.kbps())
-        assertTrue(ProductState.lostHint(BulkPlan.PROBE_FAIL_REASON).contains("Bluetooth"))
+        assertTrue(ProductState.lostHint(BulkPlan.PROBE_FAIL_REASON).contains("trop faible"))
         for (v in BulkPlan.Verdict.values()) assertTrue(BulkPlan.verdictText(v).isNotEmpty())
         // the 256 KB target is what the phones measured they can do in well under a timeout
         assertEquals(262_144, BulkPlan.PROBE_BYTES)

@@ -52,7 +52,7 @@
 
     <!-- active session -->
     <string name="state_finding">Recherche d\'un fournisseur…</string>
-    <string name="connected">Connecté</string>
+    <string name="connected">Internet connecté \u2705</string>
     <string name="data_used">Données utilisées</string>
     <string name="cost_so_far">Coût actuel</string>
     <string name="stop">Arrêter</string>
@@ -156,6 +156,10 @@
     <string name="share_wifi_checking">V\u00e9rification du partage sur ce r\u00e9seau Wi-Fi\u2026</string>
     <string name="toast_need_wifi">Activez le Wi-Fi sur votre téléphone pour vous connecter.</string>
     <string name="toast_need_vpn">Prok a besoin de votre accord pour donner Internet à vos applications</string>
+    <string name="share_needs_bluetooth">Activez le Bluetooth : il sert à connecter vos clients sur ce réseau Wi-Fi.</string>
+    <string name="vpn_explain_title">Autorisation nécessaire</string>
+    <string name="vpn_explain">Prok a besoin de votre autorisation pour faire passer Internet par le fournisseur à proximité.</string>
+    <string name="continue_btn">CONTINUER</string>
 
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>

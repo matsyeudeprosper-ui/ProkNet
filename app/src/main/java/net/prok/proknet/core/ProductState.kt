@@ -13,7 +13,7 @@ object ProductState {
 
     // ---- buyer ("Get Internet") -------------------------------------------------------------------
 
-    enum class Buyer { IDLE, FINDING, CONNECTING, SECURING, STARTING, ONLINE, LOST }
+    enum class Buyer { IDLE, FINDING, CONNECTING, CHECKING, SECURING, STARTING, ONLINE, LOST }
 
     /**
      * @param wanted     the user pressed CONNECT and has not stopped
@@ -22,8 +22,9 @@ object ProductState {
      * @param tunnel     TunnelClient.state (DISCONNECTED, AGREEING, CONNECTING, TUNNEL UP, INTERNET OK, INTERNET LOST)
      * @param vpnUp      the VPN service holds the tunnel interface
      * @param lastError  TunnelClient.lastError ("" if none)
+     * @param checking   v0.11: the link is up and the quick link check runs (the user reads "Vérification de la connexion…")
      */
-    fun buyer(wanted: Boolean, wifiPhase: String, wifiUp: Boolean, tunnel: String, vpnUp: Boolean, lastError: String): Buyer {
+    fun buyer(wanted: Boolean, wifiPhase: String, wifiUp: Boolean, tunnel: String, vpnUp: Boolean, lastError: String, checking: Boolean = false): Buyer {
         if (tunnel == "INTERNET LOST") return Buyer.LOST
         if (tunnel == "INTERNET OK") return Buyer.ONLINE
         if (tunnel == "TUNNEL UP") return if (vpnUp) Buyer.ONLINE else Buyer.STARTING
@@ -32,7 +33,7 @@ object ProductState {
         if (!wanted) return if (lastError.isNotEmpty()) Buyer.LOST else Buyer.IDLE
         // wanted, tunnel not started yet: the Wi-Fi link is being built
         if (lastError.isNotEmpty()) return Buyer.LOST          // v0.9: the session failed while the link stayed up (e.g. the relay lost its seller)
-        if (wifiUp) return Buyer.SECURING
+        if (wifiUp) return if (checking) Buyer.CHECKING else Buyer.SECURING
         return when {
             wifiPhase.startsWith("DOWN") -> Buyer.LOST
             wifiPhase.startsWith("JOINING") || wifiPhase == "TCP" || wifiPhase == "AUTH" -> Buyer.CONNECTING
@@ -44,7 +45,9 @@ object ProductState {
         Buyer.IDLE -> "Non connecté"
         Buyer.FINDING -> "Recherche d'un fournisseur…"
         Buyer.CONNECTING -> "Connexion…"
-        Buyer.SECURING -> "Sécurisation de la connexion…"
+        Buyer.CHECKING -> "Vérification de la connexion…"
+        // v0.11: the contract is part of "starting Internet" for the user; one word for both
+        Buyer.SECURING -> "Démarrage d'Internet…"
         Buyer.STARTING -> "Démarrage d'Internet…"
         Buyer.ONLINE -> "Vous êtes en ligne"
         Buyer.LOST -> "Connexion perdue"
@@ -54,7 +57,7 @@ object ProductState {
     fun buyerHint(b: Buyer, wifiPhase: String, vpnConsentPending: Boolean, lastError: String = ""): String = when {
         b == Buyer.CONNECTING && wifiPhase.contains("CONNECT", ignoreCase = true) -> "Android va demander de rejoindre un réseau : appuyez sur CONNECTER"
         b == Buyer.STARTING && vpnConsentPending -> "Android va demander d'autoriser la connexion : appuyez sur OK"
-        b == Buyer.FINDING -> "Gardez les deux téléphones proches"
+        b == Buyer.FINDING || b == Buyer.CHECKING -> "Gardez les deux téléphones proches"
         b == Buyer.LOST -> lostHint(lastError)
         else -> ""
     }
@@ -69,11 +72,14 @@ object ProductState {
         lastError.isEmpty() -> "Réessayez"
         // v0.10: the Bluetooth bulk link, in its own words
         any(lastError, "did not carry bytes in both directions") ->
-            "La liaison Bluetooth entre les deux t\u00e9l\u00e9phones ne passe pas les donn\u00e9es dans les deux sens. Rapprochez-les et r\u00e9essayez."
+            "La connexion \u00e0 proximit\u00e9 est trop faible. Rapprochez les t\u00e9l\u00e9phones et r\u00e9essayez."
         any(lastError, "did not offer a Bluetooth bulk channel", "never connected to the Bluetooth channel", "Bluetooth channel could not be connected", "handshake did not complete over Bluetooth", "Bluetooth bulk:") ->
             "La liaison Bluetooth avec le fournisseur n'a pas pu \u00eatre \u00e9tablie. V\u00e9rifiez que le Bluetooth est activ\u00e9 sur les deux t\u00e9l\u00e9phones et r\u00e9essayez."
         any(lastError, "Bluetooth is off") ->
-            "Activez le Bluetooth sur ce t\u00e9l\u00e9phone, puis r\u00e9essayez."
+            "Le Bluetooth est \u00e9teint. Activez-le pour vous connecter."
+        // v0.11: the provider lost its own Internet; nothing on this phone is wrong
+        any(lastError, "lost its upstream", "upstream lost", "provider lost") ->
+            "Le fournisseur a perdu son Internet."
         // v0.9.27: the framework on THIS phone asked for time. Not the provider, which may be perfectly free.
         P2pCreation.isFrameworkBusy(lastError) ->
             "Le Wi-Fi Direct de ce t\u00e9l\u00e9phone est encore occup\u00e9. Attendez quelques secondes puis r\u00e9essayez."
@@ -112,14 +118,35 @@ object ProductState {
         any(lastError, "not joined", "dialog", "unavailable") ->
             "Le réseau n'a pas été rejoint. Réessayez et appuyez sur CONNECTER dans la fenêtre Android."
         RADIO_WORDS.any { lastError.contains(it, ignoreCase = true) } -> "Rapprochez-vous du fournisseur et réessayez"
-        else -> "Impossible d'établir la connexion. Réessayez."
+        else -> "Impossible de se connecter \u00e0 ce fournisseur. R\u00e9essayez."
+    }
+
+    // ---- v0.11: the consumer never chooses a transport; these are the rules the screens obey ----------------
+
+    /**
+     * A customer needs Wi-Fi only for the hotspot path. A provider that advertises
+     * Bluetooth from its home Wi-Fi is reached over Bluetooth, and the CONNECT button
+     * must not demand Wi-Fi for it.
+     */
+    fun buyerNeedsWifi(offerBulkBt: Boolean, offerUpstreamType: Int): Boolean = !(offerBulkBt && offerUpstreamType == Tunnel.UP_WIFI)
+
+    /** The hotspot warnings (Wi-Fi on, Location on, "cannot share this network") apply only to the hotspot path. */
+    fun sellerNeedsHotspotWarnings(path: BulkPlan.SellerAccessPath): Boolean = path == BulkPlan.SellerAccessPath.HOTSPOT
+
+    /** "Source : Wi-Fi (Freebox) ✅" - what the provider shares, without a word of protocol. */
+    fun sellerSourceLine(path: BulkPlan.SellerAccessPath, upstreamType: Int, ssid: String?): String {
+        val name = upstreamWord(upstreamType) + (if (upstreamType == Tunnel.UP_WIFI && !ssid.isNullOrEmpty()) " (" + ssid + ")" else "")
+        return when (path) {
+            BulkPlan.SellerAccessPath.BLUETOOTH_BULK, BulkPlan.SellerAccessPath.HOTSPOT -> "Source : " + name + " \u2705"
+            BulkPlan.SellerAccessPath.NONE -> if (upstreamType == Tunnel.UP_WIFI) "Source : " + name + " \u2014 activez le Bluetooth pour partager" else "Source : " + name
+        }
     }
 
     private fun any(text: String, vararg words: String) = words.any { text.contains(it, ignoreCase = true) }
 
     private val RADIO_WORDS = listOf("link closed", "not in range", "out of range", "network lost", "network unavailable", "hotspot", "wi-fi is off", "could not reach", "signal")
 
-    val Buyer.busy: Boolean get() = this == Buyer.FINDING || this == Buyer.CONNECTING || this == Buyer.SECURING || this == Buyer.STARTING
+    val Buyer.busy: Boolean get() = this == Buyer.FINDING || this == Buyer.CONNECTING || this == Buyer.CHECKING || this == Buyer.SECURING || this == Buyer.STARTING
     val Buyer.active: Boolean get() = busy || this == Buyer.ONLINE
 
     // ---- seller ("Share Internet") ---------------------------------------------------------------

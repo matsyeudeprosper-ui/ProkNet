@@ -63,7 +63,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.27 | BUSY is not an attempt: a creation state machine with two counters, a verified framework reset between real attempts, every creation failure typed as GROUP_CREATE_FAIL, and a screen that never blames the provider for this phone's own Wi-Fi Direct | built, 203 JVM tests pass; Wi-Fi Direct then archived (see below) |
 | v0.10.0 | Bluetooth bulk Internet: the provider keeps its home Wi-Fi and serves over a Bluetooth L2CAP channel, the same signed handshake / tunnel / VPN on top, a 1 MB probe each way before the tunnel, no hotspot and no Wi-Fi Direct | built, 211 JVM tests pass; runtime still ran the old sharing machinery (fixed in v0.10.1) |
 | v0.10.1 | The runtime obeys the architecture: a home-Wi-Fi Bluetooth seller chooses the Bluetooth path directly, runs no hotspot probe, and never creates a Wi-Fi Direct group automatically; the watchdog and reachability know the bulk link | **phones proved it**: seller stayed on the Freebox, no probe, no Wi-Fi Direct, L2CAP + signed auth + BULK UP; the 1 MB full-duplex probe was too aggressive (one direction killed at 700-960 KB) |
-| v0.10.2 | Sequential probe: 256 KB buyer -> seller, confirmed, then 256 KB seller -> buyer, confirmed; PARTIAL / NO_DATA / PASS per direction instead of "carried nothing"; a two-button test screen with COPY TEST RESULT | built, 218 JVM tests pass, hardware test pending |
+| v0.10.2 | Sequential probe: 256 KB buyer -> seller, confirmed, then 256 KB seller -> buyer, confirmed; PARTIAL / NO_DATA / PASS per direction instead of "carried nothing"; a two-button test screen with COPY TEST RESULT | **HARDWARE PROVEN 2026-09-19 on the OUKITEL (Android 15) / OnePlus (Android 14) pair**: Freebox Wi-Fi -> seller -> Bluetooth L2CAP -> buyer -> ProkNet VPN -> real Internet. Signed auth, 256 KB PASS both ways, contract, session, VPN, DNS, HTTPS (TLS 1.3, HTTP 200), accounting/checkpoint, Wikipedia in Chrome |
+| v0.11.0 | Consumer integration: the proven two-phone path from the normal app. Seller: Partager -> Commencer. Buyer: Internet -> offer -> Connecter -> "Internet connecté ✅". Transport chosen by rule, never by the user; VPN explained in one sentence; failures in one sentence; stale developer Wi-Fi Direct group removed at start | built, 222 JVM tests pass, hardware regression of the normal UI pending |
 
 ### v0.1 - what it does
 
@@ -178,6 +179,18 @@ Two Android phones with mobile data and Wi-Fi OFF can:
   Internet is still buyer -> seller -> Internet only.
 
 Not here: Mobile Money, custody, automatic cashout, multi-hop Internet.
+
+## Proven
+
+**Two-phone home-Wi-Fi sharing over Bluetooth: HARDWARE PROVEN on this
+device pair** (2026-09-19, v0.10.2 build 43). OUKITEL C1 Pro, Android 15,
+seller on the Freebox; OnePlus Nord CE 2 Lite, Android 14, buyer with
+mobile data off. Bluetooth L2CAP authenticated with both signatures,
+256 KB PASS buyer -> seller and seller -> buyer, contract agreed, session
+started, VPN up, DNS working, HTTPS working (TLS 1.3, HTTP 200),
+accounting and checkpoint working, Wikipedia loaded in Chrome with the
+ProkNet VPN as the phone's Internet path. Not generalised to every Android
+device: proven on this pair.
 
 ## Decided
 
