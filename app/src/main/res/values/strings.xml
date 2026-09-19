@@ -10,8 +10,8 @@
     <!-- home -->
     <string name="brand_initial">P</string>
     <string name="brand">Prok</string>
-    <string name="node_on">Marche</string>
-    <string name="node_off">Arrêt</string>
+    <string name="node_on">Actif</string>
+    <string name="node_off">En pause</string>
     <string name="home_ready">Prêt</string>
     <string name="home_off">Prok est arrêté</string>
     <string name="home_start_hint">Appuyez sur Obtenir Internet ou Partager Internet pour démarrer</string>
@@ -202,7 +202,9 @@
     <string name="map_empty">ProkNet n\'a encore rien observé ici. Gardez l\'application ouverte près d\'un fournisseur ou d\'un Wi-Fi.</string>
     <string name="map_location_title">Position approximative</string>
     <string name="map_location_explain">ProkNet utilise votre position approximative (à 500 m près) pour se souvenir où Internet a été vu. Jamais votre position exacte, jamais d\'historique de vos déplacements.</string>
-    <string name="map_no_location">Position inconnue : autorisez la position approximative pour placer les observations.</string>
+    <string name="map_no_location">Vu par ce téléphone, sans position. Autorisez la position approximative pour placer les observations sur la carte.</string>
+    <string name="map_here">Autour de vous</string>
+    <string name="map_wifi_connected">Wi-Fi connecté</string>
     <string name="map_no_fix">Position pas encore connue.</string>
     <string name="map_around_sources">Autour de vous · %1$d source(s) connue(s)</string>
     <string name="map_last_seen">Dernière observation : %1$s</string>

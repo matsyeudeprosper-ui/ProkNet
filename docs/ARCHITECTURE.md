@@ -746,6 +746,34 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The design system (v0.12.1)
+
+The first v0.12 screens were flat: plain circle, plain cards, a legend
+with light text on light pills, and a map card that said "Internet
+disponible" under "Position inconnue". v0.12.1 is a visual pass with no
+new library and no code change under the screens.
+
+- `values/colors.xml` and `values-night/colors.xml` carry the same names:
+  `bg`, `card`, `card_alt`, `stroke`, `text`, `text_muted`, `brand`,
+  `brand_deep`, `glow`, `glow_soft`, `ok`, `warn`, `danger`, `chip_bg`,
+  `nav_*`, `divider`, and the fixed map pastels with `legend_text` dark so
+  the legend reads in both themes. Night is a deep navy with one blue.
+- `styles.xml`: H1 30 / H2 19 / Body 15 / Muted 13 / Caption 11 caps
+  spaced / Big 36 / Stat 22; buttons 58 dp, primary is a gradient,
+  secondary is a bordered chip surface, danger is flat.
+- Drawables: `bg_card` (bordered, 22 dp), `bg_card_alt` (soft gradient),
+  `bg_card_accent` (brand border for the live status), `bg_hero` (a glow
+  fading into the background behind the button), `bg_big_button` (two
+  translucent glow rings around a radially lit sphere, pressed state),
+  `bg_nav` (top-rounded bar), `bg_pill_*` (legend), `dot_ok` / `dot_muted`
+  (the status chip).
+- `CoverageMapView` draws the phone as a glowing dot, cells with a small
+  gap and soft radius, and chooses dark or theme text depending on the
+  fill.
+- Words: the chip says "Actif" / "En pause"; the map card says "Vu par ce
+  téléphone, sans position" when there is no position; an unnamed
+  connected network is "Wi-Fi connecté".
+
 ## One tap, and the phone as a sensor (v0.12.0)
 
 **The promise.** No Internet? Open ProkNet, tap once. The home screen is

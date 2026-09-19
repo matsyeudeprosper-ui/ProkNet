@@ -1,18 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v0.12.1 design system, night: deep navy, one blue, soft glows. -->
 <resources>
-    <color name="bg">#0F1218</color>
-    <color name="card">#1A1F29</color>
-    <color name="card_alt">#1F2738</color>
-    <color name="text">#F2F4F8</color>
-    <color name="text_muted">#9AA3B2</color>
-    <color name="brand">#4F8BFF</color>
+    <color name="bg">#0A0E1A</color>
+    <color name="card">#131A2B</color>
+    <color name="card_alt">#182238</color>
+    <color name="stroke">#232D45</color>
+    <color name="text">#F5F7FB</color>
+    <color name="text_muted">#8E9AB5</color>
+    <color name="brand">#4C8DFF</color>
+    <color name="brand_deep">#2B63E8</color>
     <color name="on_brand">#FFFFFF</color>
-    <color name="ok">#3CCB7F</color>
-    <color name="warn">#F0B429</color>
-    <color name="danger">#F25C5C</color>
-    <color name="chip_bg">#26304A</color>
-    <color name="nav_bg">#151922</color>
-    <color name="nav_active">#4F8BFF</color>
-    <color name="nav_inactive">#6C7684</color>
-    <color name="divider">#2A303C</color>
+    <color name="glow">#334C8DFF</color>
+    <color name="glow_soft">#164C8DFF</color>
+    <color name="ok">#2FD08A</color>
+    <color name="warn">#F6C34A</color>
+    <color name="danger">#FF6B6B</color>
+    <color name="chip_bg">#1B2540</color>
+    <color name="nav_bg">#0E1424</color>
+    <color name="nav_active">#7FB0FF</color>
+    <color name="nav_inactive">#5F6C88</color>
+    <color name="divider">#1F2941</color>
+    <color name="map_green">#7FE0B0</color>
+    <color name="map_yellow">#F6D07C</color>
+    <color name="map_red">#F2B8B8</color>
+    <color name="map_unknown">#1B2540</color>
+    <color name="legend_text">#0E1424</color>
 </resources>

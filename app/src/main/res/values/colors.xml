@@ -1,18 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v0.12.1 design system, light. The night palette lives in values-night/colors.xml with the same names. -->
 <resources>
-    <color name="bg">#F4F6FA</color>
+    <color name="bg">#F4F6FB</color>
     <color name="card">#FFFFFF</color>
     <color name="card_alt">#EEF3FF</color>
-    <color name="text">#14181F</color>
-    <color name="text_muted">#66707F</color>
-    <color name="brand">#1B5FE0</color>
+    <color name="stroke">#E3E8F2</color>
+    <color name="text">#0E1424</color>
+    <color name="text_muted">#66718A</color>
+    <color name="brand">#2B63E8</color>
+    <color name="brand_deep">#1E4FC4</color>
     <color name="on_brand">#FFFFFF</color>
-    <color name="ok">#1E9E5A</color>
-    <color name="warn">#E0A100</color>
-    <color name="danger">#D93B3B</color>
-    <color name="chip_bg">#E3EAF7</color>
+    <color name="glow">#262B63E8</color>
+    <color name="glow_soft">#122B63E8</color>
+    <color name="ok">#16A56A</color>
+    <color name="warn">#D99A00</color>
+    <color name="danger">#E04848</color>
+    <color name="chip_bg">#E8EEFB</color>
     <color name="nav_bg">#FFFFFF</color>
-    <color name="nav_active">#1B5FE0</color>
-    <color name="nav_inactive">#8A93A3</color>
-    <color name="divider">#E1E5EC</color>
+    <color name="nav_active">#2B63E8</color>
+    <color name="nav_inactive">#8C96AB</color>
+    <color name="divider">#E3E8F2</color>
+    <!-- map cells and legend pills: fixed pastels with dark text, readable in both themes -->
+    <color name="map_green">#7FE0B0</color>
+    <color name="map_yellow">#F6D07C</color>
+    <color name="map_red">#F2B8B8</color>
+    <color name="map_unknown">#E8EEFB</color>
+    <color name="legend_text">#0E1424</color>
 </resources>

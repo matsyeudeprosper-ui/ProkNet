@@ -265,6 +265,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun refreshHome(b: ProductState.Buyer, s: ProductState.Seller, running: Boolean) {
         text(R.id.chipNode, getString(if (running) R.string.node_on else R.string.node_off))
+        v<TextView>(R.id.chipNode).setCompoundDrawablesRelativeWithIntrinsicBounds(if (running) R.drawable.dot_ok else R.drawable.dot_muted, 0, 0, 0)
         val now = System.currentTimeMillis()
         val r = request
         val sellerOn = s != ProductState.Seller.OFF
@@ -355,13 +356,13 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         show(R.id.netNoOffers, offers.isEmpty())
         text(R.id.netOffersHint, getString(if (!node.isRunning) R.string.offers_node_off else if (offers.isEmpty()) R.string.offers_searching else R.string.offers_tap))
         for (o in offers) {
-            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(18), dp(16), dp(18), dp(16)) }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
+            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(22), dp(20), dp(22), dp(20)) }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(12); card.layoutParams = lp
             card.addView(TextView(this).apply { text = offerTitle(o) + (if (o.viaRelay) getString(R.string.offer_via_relay) else ""); setTextAppearance(R.style.H2) })
             if (o.pricePerMb > 0) card.addView(TextView(this).apply { text = ProductState.priceLine(o.pricePerMb); setTextAppearance(R.style.Big) })
             card.addView(TextView(this).apply { text = ProductState.signalWord(o.rssi) + (if (o.validated) getString(R.string.offer_checked) else ""); setTextAppearance(R.style.Muted) })
-            val btn = Button(this).apply { text = getString(R.string.connect_big); setBackgroundResource(R.drawable.bg_primary); setTextColor(getColor(R.color.on_brand)); isAllCaps = false; stateListAnimator = null }
-            val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)); blp.topMargin = dp(12); btn.layoutParams = blp
+            val btn = Button(this).apply { text = getString(R.string.connect_big); setBackgroundResource(R.drawable.bg_primary); setTextColor(getColor(R.color.on_brand)); isAllCaps = false; stateListAnimator = null; textSize = 16f; typeface = android.graphics.Typeface.DEFAULT_BOLD }
+            val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)); blp.topMargin = dp(16); btn.layoutParams = blp
             btn.setOnClickListener { pendingOffer = o; refresh() }
             card.addView(btn)
             list.addView(card)
@@ -388,9 +389,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         show(R.id.mapEmpty, sources.isEmpty())
         for (s in sources) {
             val st = CoverageModel.cellStatus(listOf(s), now, reach)
-            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(16), dp(14), dp(16), dp(14)) }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(8); card.layoutParams = lp
-            card.addView(TextView(this).apply { text = CoverageModel.kindWord(s.kind) + " · " + s.name; setTextAppearance(R.style.H2) })
+            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16)) }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
+            val title = if (s.kind == CoverageModel.SourceKind.WIFI && (s.name == "Wi-Fi" || s.name.isEmpty())) getString(R.string.map_wifi_connected)
+                else if (s.kind == CoverageModel.SourceKind.WIFI) "Wi-Fi · " + s.name else s.name
+            card.addView(TextView(this).apply { text = title; setTextAppearance(R.style.H2) })
             card.addView(TextView(this).apply { text = CoverageModel.cellWord(st) + " · " + CoverageModel.ageWord(now - s.lastSeen) + " · " + CoverageModel.priceWord(s.priceCentimesPerMb); setTextAppearance(R.style.Muted) })
             card.setOnClickListener { sourceDialog(s, st, now) }
             list.addView(card)
@@ -497,8 +500,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         for (ss in sessions) {
             val entry = ledger.firstOrNull { it.sessionHex == ss.sessionHex && it.recipient != Market.PROK_ID }
             val buyer = ss.role == "buyer"
-            val card = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(16), dp(14), dp(16), dp(14)) }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(8); card.layoutParams = lp
+            val card = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16)) }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
             left.addView(TextView(this).apply { text = getString(if (buyer) R.string.activity_used else R.string.activity_shared); setTextAppearance(R.style.H2) })
             left.addView(TextView(this).apply { text = ProductState.data(signedBytes(ss)) + " · " + paymentWord(ss, entry); setTextAppearance(R.style.Muted) })
