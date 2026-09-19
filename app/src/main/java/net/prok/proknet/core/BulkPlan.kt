@@ -64,7 +64,8 @@ object BulkPlan {
     const val ACCEPT_TIMEOUT_MS = 30_000L       // provider waits for the customer to connect to its PSM
     const val CONNECT_TIMEOUT_MS = 20_000L      // customer's socket connect
     const val AUTH_TIMEOUT_MS = 15_000L         // the signed handshake
-    const val PROBE_TIMEOUT_MS = 40_000L        // both 1 MB directions
+    const val PROBE_RECEIVE_TIMEOUT_MS = 30_000L   // the receiver's patience for one 256 KB direction
+    const val PROBE_REPORT_TIMEOUT_MS = 36_000L    // the sender waits a little longer, so the receiver's partial report arrives first
 
     data class State(
         val phase: Phase,
@@ -168,32 +169,100 @@ object BulkPlan {
         Phase.FAILED -> "DOWN (" + s.error + ")"
     }
 
-    // ---- the bulk probe: real bytes both ways before anything is believed ----------------------------------
+    // ---- the bulk probe: real bytes both ways, ONE direction at a time ------------------------------------
+    //
+    // v0.10.2. The phones proved the 1 MB full-duplex probe was the problem,
+    // not the link: both directions carried real data, but they shared one
+    // Bluetooth channel and one 40 s clock, so one direction finished and the
+    // other reached 700-960 KB and was killed. Now the buyer sends 256 KB,
+    // the seller confirms it, THEN the seller sends 256 KB and the buyer
+    // confirms it. Direction 2 never starts before direction 1 is confirmed,
+    // and a direction that carried part of the payload says so.
 
-    const val PROBE_BYTES = 1_048_576
+    const val PROBE_BYTES = 262_144
     const val PROBE_CHUNK = 8_192
 
-    data class Direction(val bytes: Long, val ms: Long, val ok: Boolean) {
-        fun kbps(): Long = if (ms <= 0) 0 else bytes * 1000 / 1024 / ms
-        fun describe(): String = if (!ok) "FAILED after " + bytes + " B" else "%,d B OK, %d KB/s".format(bytes, kbps())
+    enum class ProbeStep { NOT_STARTED, BUYER_TO_SELLER, SELLER_TO_BUYER, COMPLETE }
+
+    fun probeStepText(s: ProbeStep): String = when (s) {
+        ProbeStep.NOT_STARTED -> "PROBE not started"
+        ProbeStep.BUYER_TO_SELLER -> "PROBE BUYER_TO_SELLER"
+        ProbeStep.SELLER_TO_BUYER -> "PROBE SELLER_TO_BUYER"
+        ProbeStep.COMPLETE -> "PROBE COMPLETE"
     }
 
-    enum class Verdict { NOT_RUN, BIDIRECTIONAL, ONLY_A_TO_B, ONLY_B_TO_A, NEITHER }
+    /** Who sends in a step: the buyer (client) first, then the seller (host). Nobody sends outside a step. */
+    fun probeSender(step: ProbeStep, isHost: Boolean): Boolean = when (step) {
+        ProbeStep.BUYER_TO_SELLER -> !isHost
+        ProbeStep.SELLER_TO_BUYER -> isHost
+        else -> false
+    }
 
-    fun verdict(aToB: Direction?, bToA: Direction?): Verdict = when {
-        aToB == null && bToA == null -> Verdict.NOT_RUN
-        aToB?.ok == true && bToA?.ok == true -> Verdict.BIDIRECTIONAL
-        aToB?.ok == true -> Verdict.ONLY_A_TO_B
-        bToA?.ok == true -> Verdict.ONLY_B_TO_A
-        else -> Verdict.NEITHER
+    fun nextProbeStep(step: ProbeStep): ProbeStep = when (step) {
+        ProbeStep.NOT_STARTED -> ProbeStep.BUYER_TO_SELLER
+        ProbeStep.BUYER_TO_SELLER -> ProbeStep.SELLER_TO_BUYER
+        else -> ProbeStep.COMPLETE
+    }
+
+    /** 0 B is NO_DATA, part of the payload is PARTIAL, the whole payload is PASS. */
+    enum class DirectionResult { NO_DATA, PARTIAL, PASS }
+
+    fun judge(bytes: Long, target: Int = PROBE_BYTES): DirectionResult = when {
+        bytes <= 0 -> DirectionResult.NO_DATA
+        bytes < target -> DirectionResult.PARTIAL
+        else -> DirectionResult.PASS
+    }
+
+    data class Direction(val bytes: Long, val ms: Long, val target: Int = PROBE_BYTES, val timedOut: Boolean = false) {
+        val result: DirectionResult get() = judge(bytes, target)
+        val ok: Boolean get() = result == DirectionResult.PASS
+        fun kbps(): Long = if (ms <= 0) 0 else bytes * 1000 / 1024 / ms
+        fun describe(): String = "%,d / %,d B %s".format(bytes, target, result) +
+            (if (ok) ", %d KB/s".format(kbps()) else if (timedOut && bytes <= 0) " (timeout, no receipt report)" else if (timedOut) " (timeout)" else "")
+    }
+
+    enum class Verdict { NOT_RUN, BIDIRECTIONAL, PARTIAL, NO_DATA }
+
+    /** The verdict is the result of the first direction that did not pass. */
+    fun verdict(buyerToSeller: Direction?, sellerToBuyer: Direction?): Verdict {
+        if (buyerToSeller == null && sellerToBuyer == null) return Verdict.NOT_RUN
+        if (buyerToSeller?.ok == true && sellerToBuyer?.ok == true) return Verdict.BIDIRECTIONAL
+        val failing = listOfNotNull(buyerToSeller, sellerToBuyer).firstOrNull { !it.ok }
+        return if (failing?.result == DirectionResult.PARTIAL) Verdict.PARTIAL else Verdict.NO_DATA
+    }
+
+    /** Which direction failed, in words. Null when both passed. */
+    fun failingDirection(buyerToSeller: Direction?, sellerToBuyer: Direction?): String? = when {
+        buyerToSeller == null || !buyerToSeller.ok -> "buyer -> seller"
+        sellerToBuyer == null || !sellerToBuyer.ok -> "seller -> buyer"
+        else -> null
     }
 
     fun verdictText(v: Verdict): String = when (v) {
         Verdict.NOT_RUN -> "not run"
         Verdict.BIDIRECTIONAL -> "BIDIRECTIONAL"
-        Verdict.ONLY_A_TO_B -> "only buyer -> seller carried bytes"
-        Verdict.ONLY_B_TO_A -> "only seller -> buyer carried bytes"
-        Verdict.NEITHER -> "NEITHER direction carried the payload"
+        Verdict.PARTIAL -> "PARTIAL"
+        Verdict.NO_DATA -> "NO_DATA"
+    }
+
+    /** "PARTIAL, buyer -> seller timed out" instead of claiming a direction carried nothing. */
+    fun verdictText(v: Verdict, buyerToSeller: Direction?, sellerToBuyer: Direction?): String {
+        val dir = failingDirection(buyerToSeller, sellerToBuyer) ?: return verdictText(v)
+        return when (v) {
+            Verdict.PARTIAL -> "PARTIAL, " + dir + " timed out"
+            Verdict.NO_DATA -> "NO_DATA, " + dir + " carried nothing"
+            else -> verdictText(v)
+        }
+    }
+
+    /** One plain sentence for the person holding the phone. */
+    fun failureSentence(v: Verdict, buyerToSeller: Direction?, sellerToBuyer: Direction?): String {
+        val dir = failingDirection(buyerToSeller, sellerToBuyer)?.replaceFirstChar { it.uppercase() } ?: return "Connection test failed."
+        return when (v) {
+            Verdict.PARTIAL -> "Connection test failed. " + dir + " was too slow."
+            Verdict.NO_DATA -> "Connection test failed. " + dir + " carried no data."
+            else -> "Connection test failed."
+        }
     }
 
     /** The Internet stack may start only on a link that carried the payload both ways. */

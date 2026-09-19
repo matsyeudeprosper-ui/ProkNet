@@ -746,6 +746,62 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The sequential probe (v0.10.2)
+
+The v0.10.1 phones settled the question the probe existed for: Bluetooth
+L2CAP between the OUKITEL and the OnePlus carries real data BOTH ways.
+Seller -> buyer moved the full 1 MB; buyer -> seller moved 696, 802 and
+966 KB across three runs and was then killed. The probe was the problem:
+both phones pushed 1 MB at once through one ~30-34 KB/s channel under one
+40 s clock, so the directions competed, one finished, the other got close
+and timed out, and the verdict said "only seller -> buyer carried bytes",
+which was false.
+
+The probe is sequential now, and smaller:
+
+```
+PROBE BUYER_TO_SELLER   buyer sends 256 KB, seller confirms the full receipt
+PROBE SELLER_TO_BUYER   seller sends 256 KB, buyer confirms the full receipt
+PROBE COMPLETE          VERDICT: BIDIRECTIONAL -> contract -> tunnel -> VPN
+```
+
+`BulkPlan.probeSender(step, isHost)` says who sends in a step and nobody
+sends outside one, so there is no full-duplex contention to measure.
+Direction 2 does not start until direction 1 is confirmed by a receipt
+report. Each direction has its own clock: the receiver waits 30 s, the
+sender 36 s, so a receiver that times out reports what DID arrive and
+both phones show the same numbers.
+
+Every probe state change, including the byte count, runs on the main
+thread: a receipt report and the next direction's first frames come from
+the same read thread in order, and posting both keeps that order. The
+counter of the old design lived on the read thread and could be reset by
+a direction change in flight.
+
+Verdicts stopped lying. Per direction: 0 B is `NO_DATA`, part of the
+payload is `PARTIAL`, the whole payload is `PASS`. The link verdict is the
+result of the first direction that did not pass, named:
+`PARTIAL, buyer -> seller timed out`, with the bytes next to it.
+
+`bad frame length 0` and `EOFException` were seen after the old timeout
+cancelled the link mid-transfer. They are not chased in this version; if
+they survive a clean sequential probe they get their own investigation.
+
+## The test screen (v0.10.2)
+
+The person testing is not a developer. `BtLabText` is a pure module: a
+`Snapshot` of the node in, one plain sentence out, tested on the JVM. The
+seller sees `Internet source: Wi-Fi`, `Bluetooth: Ready`, one button
+START SHARING, then `Waiting for another phone...`, `Phone connected /
+Testing connection...`, `Bluetooth connection works both ways / Internet
+sharing starting...`. The buyer sees `Seller found`, one button CONNECT,
+then `Connecting...`, `Checking both directions...`, `Starting
+Internet...`, `INTERNET WORKING`. The screen starts the node and asks for
+the permissions by itself, runs the HTTPS test through the seller by
+itself once the tunnel is up, and asks for the VPN by itself. A failure is
+one sentence. COPY TEST RESULT copies a short summary a reader can judge
+without the log, then the full diagnostic.
+
 ## The runtime obeys the architecture (v0.10.1)
 
 v0.10.0 claimed the home-Wi-Fi provider stays on its Wi-Fi and serves over

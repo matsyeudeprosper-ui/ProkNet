@@ -102,24 +102,77 @@ class BulkPlanTest {
     }
 
     @Test
-    fun the_probe_passes_only_on_real_bytes_both_ways() {
-        val mb = BulkPlan.PROBE_BYTES.toLong()
-        val ok = BulkPlan.Direction(mb, 5_000, true)
-        val bad = BulkPlan.Direction(120_000, 0, false)
+    fun the_probe_passes_only_on_the_whole_payload_both_ways() {
+        val full = BulkPlan.PROBE_BYTES.toLong()
+        val ok = BulkPlan.Direction(full, 9_000)
+        val part = BulkPlan.Direction(243_712, 30_000, timedOut = true)
+        val none = BulkPlan.Direction(0, 0, timedOut = true)
         assertEquals(BulkPlan.Verdict.NOT_RUN, BulkPlan.verdict(null, null))
         assertEquals(BulkPlan.Verdict.BIDIRECTIONAL, BulkPlan.verdict(ok, ok))
-        assertEquals(BulkPlan.Verdict.ONLY_A_TO_B, BulkPlan.verdict(ok, bad))
-        assertEquals(BulkPlan.Verdict.ONLY_B_TO_A, BulkPlan.verdict(bad, ok))
-        assertEquals(BulkPlan.Verdict.NEITHER, BulkPlan.verdict(bad, bad))
-        assertEquals(BulkPlan.Verdict.NEITHER, BulkPlan.verdict(null, bad))
         assertTrue(BulkPlan.probePassed(BulkPlan.Verdict.BIDIRECTIONAL))
-        assertFalse("a socket that connected is not a link that carries", BulkPlan.probePassed(BulkPlan.Verdict.ONLY_A_TO_B))
-        assertFalse(BulkPlan.probePassed(BulkPlan.Verdict.NEITHER))
-        assertEquals(204L, ok.kbps())
-        assertTrue(ok.describe().contains("OK"))
-        assertTrue(bad.describe().contains("FAILED"))
-        for (v in BulkPlan.Verdict.values()) assertTrue(BulkPlan.verdictText(v).isNotEmpty())
+        assertFalse(BulkPlan.probePassed(BulkPlan.Verdict.PARTIAL))
+        assertFalse(BulkPlan.probePassed(BulkPlan.Verdict.NO_DATA))
+        assertFalse("a socket that connected is not a link that carries", BulkPlan.probePassed(BulkPlan.verdict(ok, null)))
+        assertEquals(28L, ok.kbps())
         assertTrue(ProductState.lostHint(BulkPlan.PROBE_FAIL_REASON).contains("Bluetooth"))
+        for (v in BulkPlan.Verdict.values()) assertTrue(BulkPlan.verdictText(v).isNotEmpty())
+        // the 256 KB target is what the phones measured they can do in well under a timeout
+        assertEquals(262_144, BulkPlan.PROBE_BYTES)
+        assertTrue(BulkPlan.PROBE_REPORT_TIMEOUT_MS > BulkPlan.PROBE_RECEIVE_TIMEOUT_MS)
+        assertTrue(part.describe().contains("PARTIAL"))
+        assertTrue(none.describe().contains("no receipt report"))
+    }
+
+    @Test
+    fun a_partial_payload_is_reported_as_partial_not_as_nothing() {
+        // the v0.10.1 phones: seller -> buyer full, buyer -> seller 696-966 KB of 1 MB then killed. That is PARTIAL.
+        val full = BulkPlan.Direction(BulkPlan.PROBE_BYTES.toLong(), 9_000)
+        val part = BulkPlan.Direction(243_712, 30_000, timedOut = true)
+        assertEquals(BulkPlan.DirectionResult.NO_DATA, BulkPlan.judge(0))
+        assertEquals(BulkPlan.DirectionResult.PARTIAL, BulkPlan.judge(1))
+        assertEquals(BulkPlan.DirectionResult.PARTIAL, BulkPlan.judge(BulkPlan.PROBE_BYTES - 1L))
+        assertEquals(BulkPlan.DirectionResult.PASS, BulkPlan.judge(BulkPlan.PROBE_BYTES.toLong()))
+        assertEquals(BulkPlan.DirectionResult.PASS, BulkPlan.judge(BulkPlan.PROBE_BYTES + 5L))
+
+        val v = BulkPlan.verdict(part, full)
+        assertEquals(BulkPlan.Verdict.PARTIAL, v)
+        assertEquals("PARTIAL, buyer -> seller timed out", BulkPlan.verdictText(v, part, full))
+        assertEquals("Connection test failed. Buyer -> seller was too slow.", BulkPlan.failureSentence(v, part, full))
+        assertEquals("243,712 / 262,144 B PARTIAL (timeout)", part.describe())
+
+        // the other way round, and a direction that carried nothing
+        assertEquals("PARTIAL, seller -> buyer timed out", BulkPlan.verdictText(BulkPlan.verdict(full, part), full, part))
+        val none = BulkPlan.Direction(0, 0, timedOut = true)
+        assertEquals(BulkPlan.Verdict.NO_DATA, BulkPlan.verdict(full, none))
+        assertEquals("NO_DATA, seller -> buyer carried nothing", BulkPlan.verdictText(BulkPlan.Verdict.NO_DATA, full, none))
+        assertEquals("Connection test failed. Seller -> buyer carried no data.", BulkPlan.failureSentence(BulkPlan.Verdict.NO_DATA, full, none))
+        // direction 2 never ran because direction 1 failed: the verdict names direction 1
+        assertEquals("PARTIAL, buyer -> seller timed out", BulkPlan.verdictText(BulkPlan.verdict(part, null), part, null))
+        assertNull(BulkPlan.failingDirection(full, full))
+    }
+
+    @Test
+    fun the_probe_runs_one_direction_at_a_time_buyer_first() {
+        // the buyer (client) sends first; the seller (host) only after it confirmed the buyer's payload
+        assertEquals(BulkPlan.ProbeStep.BUYER_TO_SELLER, BulkPlan.nextProbeStep(BulkPlan.ProbeStep.NOT_STARTED))
+        assertEquals(BulkPlan.ProbeStep.SELLER_TO_BUYER, BulkPlan.nextProbeStep(BulkPlan.ProbeStep.BUYER_TO_SELLER))
+        assertEquals(BulkPlan.ProbeStep.COMPLETE, BulkPlan.nextProbeStep(BulkPlan.ProbeStep.SELLER_TO_BUYER))
+        assertEquals(BulkPlan.ProbeStep.COMPLETE, BulkPlan.nextProbeStep(BulkPlan.ProbeStep.COMPLETE))
+        assertTrue(BulkPlan.probeSender(BulkPlan.ProbeStep.BUYER_TO_SELLER, isHost = false))
+        assertFalse(BulkPlan.probeSender(BulkPlan.ProbeStep.BUYER_TO_SELLER, isHost = true))
+        assertTrue(BulkPlan.probeSender(BulkPlan.ProbeStep.SELLER_TO_BUYER, isHost = true))
+        assertFalse(BulkPlan.probeSender(BulkPlan.ProbeStep.SELLER_TO_BUYER, isHost = false))
+        // nobody sends outside a step: no full-duplex contention is possible
+        for (host in listOf(true, false)) {
+            assertFalse(BulkPlan.probeSender(BulkPlan.ProbeStep.NOT_STARTED, host))
+            assertFalse(BulkPlan.probeSender(BulkPlan.ProbeStep.COMPLETE, host))
+        }
+        // in every step exactly one side sends
+        for (s in listOf(BulkPlan.ProbeStep.BUYER_TO_SELLER, BulkPlan.ProbeStep.SELLER_TO_BUYER))
+            assertTrue(BulkPlan.probeSender(s, true) != BulkPlan.probeSender(s, false))
+        assertEquals("PROBE BUYER_TO_SELLER", BulkPlan.probeStepText(BulkPlan.ProbeStep.BUYER_TO_SELLER))
+        assertEquals("PROBE SELLER_TO_BUYER", BulkPlan.probeStepText(BulkPlan.ProbeStep.SELLER_TO_BUYER))
+        assertEquals("PROBE COMPLETE", BulkPlan.probeStepText(BulkPlan.ProbeStep.COMPLETE))
     }
 
     @Test

@@ -57,7 +57,7 @@ class BluetoothBulkTransport(
         fun onBulkUp(peerShort: String, isHost: Boolean)
         /** The link is gone. */
         fun onBulkDown(peerShort: String?, reason: String)
-        /** The 1 MB each way probe finished (or timed out). */
+        /** The sequential probe finished: both directions confirmed, or one of them failed / timed out. */
         fun onProbe(peerShort: String, verdict: BulkPlan.Verdict, report: String)
         fun onChanged()
     }
@@ -93,13 +93,18 @@ class BluetoothBulkTransport(
     private var link: StreamLink? = null
     private var timer: Runnable? = null
 
-    // ---- the probe ------------------------------------------------------------------------------------------
-    @Volatile private var probeSendStart = 0L
+    // ---- the probe: 256 KB one direction at a time (v0.10.2) ----------------------------------------------------
+    @Volatile var probeStep: BulkPlan.ProbeStep = BulkPlan.ProbeStep.NOT_STARTED
+        private set
+    @Volatile var probeBuyerToSeller: BulkPlan.Direction? = null
+        private set
+    @Volatile var probeSellerToBuyer: BulkPlan.Direction? = null
+        private set
     @Volatile private var probeRecvStart = 0L
     @Volatile private var probeRecvBytes = 0L
-    @Volatile private var probeOut: BulkPlan.Direction? = null       // what the PEER received from us
-    @Volatile private var probeIn: BulkPlan.Direction? = null        // what we received from the peer
+    @Volatile private var probeSendStart = 0L
     @Volatile private var probeDone = false
+    private var probeTimer: Runnable? = null
     @Volatile var lastProbe: String = "not run"
         private set
     @Volatile var lastVerdict: BulkPlan.Verdict = BulkPlan.Verdict.NOT_RUN
@@ -243,7 +248,7 @@ class BluetoothBulkTransport(
         try { server?.close() } catch (_: Exception) {}; server = null
         try { pendingSocket?.close() } catch (_: Exception) {}; pendingSocket = null
         link?.close(); link = null
-        probeDone = false; probeOut = null; probeIn = null; probeRecvBytes = 0L
+        resetProbe()
     }
 
     private fun armTimer(phase: BulkPlan.Phase, session: Int) {
@@ -295,63 +300,133 @@ class BluetoothBulkTransport(
         }
     }
 
-    // ---- the probe: 1 MB each way, both reported separately -----------------------------------------------------------
+    // ---- the probe: buyer -> seller first, confirmed, then seller -> buyer, confirmed ----------------------------
+    //
+    // Every state change here runs on the main thread, including the byte
+    // count, so a direction change can never race the frames of the next one.
 
-    /** Send [BulkPlan.PROBE_BYTES] to the peer and wait for both directions to be judged. */
+    private fun resetProbe() {
+        clearProbeTimer()
+        probeStep = BulkPlan.ProbeStep.NOT_STARTED
+        probeBuyerToSeller = null; probeSellerToBuyer = null
+        probeRecvBytes = 0L; probeRecvStart = 0L; probeDone = false
+    }
+
+    /** Start the sequential probe. Both sides call this on BULK UP; the step decides who sends. */
     fun startProbe() {
-        val l = link ?: return
-        val peer = state.peer
-        probeDone = false; probeOut = null; probeIn = null; probeRecvBytes = 0L; probeRecvStart = 0L
+        if (link == null) return
+        resetProbe()
         lastProbe = "running"; lastVerdict = BulkPlan.Verdict.NOT_RUN
-        DiagLog.i(tag, "BULK PROBE start: sending " + BulkPlan.PROBE_BYTES + " B to prok-" + peer)
-        probeSendStart = System.currentTimeMillis()
-        io.execute {
-            val chunk = ByteArray(BulkPlan.PROBE_CHUNK) { (it and 0xFF).toByte() }
-            var left = BulkPlan.PROBE_BYTES
-            while (left > 0 && l.isOpen) {
-                val n = minOf(left, chunk.size)
-                if (!l.writeRaw(Wire.FRAME_BULK_PROBE, if (n == chunk.size) chunk else chunk.copyOf(n))) break
-                left -= n
-            }
-            DiagLog.i(tag, "BULK PROBE: " + (BulkPlan.PROBE_BYTES - left) + " B queued to prok-" + peer + " in " + (System.currentTimeMillis() - probeSendStart) + " ms")
+        enterStep(BulkPlan.ProbeStep.BUYER_TO_SELLER, null)
+    }
+
+    /** Move to [step]. [confirmFirst] is a receipt report that must go out before any payload of ours. */
+    private fun enterStep(step: BulkPlan.ProbeStep, confirmFirst: ByteArray?) {
+        val l = link ?: return
+        probeStep = step
+        probeRecvBytes = 0L; probeRecvStart = 0L
+        if (step == BulkPlan.ProbeStep.COMPLETE) {
+            if (confirmFirst != null) io.execute { l.writeRaw(Wire.FRAME_BULK_PROBE_DONE, confirmFirst) }
+            finishProbe("both directions confirmed")
+            return
         }
-        main.postDelayed({ finishProbe("timeout") }, BulkPlan.PROBE_TIMEOUT_MS)
+        val sending = BulkPlan.probeSender(step, l.isHost)
+        DiagLog.i(tag, BulkPlan.probeStepText(step) + ": " + (if (sending) "sending " + BulkPlan.PROBE_BYTES + " B to" else "waiting for " + BulkPlan.PROBE_BYTES + " B from") + " prok-" + state.peer)
+        armProbeTimer(step, if (sending) BulkPlan.PROBE_REPORT_TIMEOUT_MS else BulkPlan.PROBE_RECEIVE_TIMEOUT_MS)
+        if (sending) {
+            probeSendStart = System.currentTimeMillis()
+            io.execute {
+                if (confirmFirst != null) l.writeRaw(Wire.FRAME_BULK_PROBE_DONE, confirmFirst)
+                val chunk = ByteArray(BulkPlan.PROBE_CHUNK) { (it and 0xFF).toByte() }
+                var left = BulkPlan.PROBE_BYTES
+                while (left > 0 && l.isOpen && probeStep == step && !probeDone) {
+                    val n = minOf(left, chunk.size)
+                    if (!l.writeRaw(Wire.FRAME_BULK_PROBE, if (n == chunk.size) chunk else chunk.copyOf(n))) break
+                    left -= n
+                }
+                DiagLog.i(tag, BulkPlan.probeStepText(step) + ": " + (BulkPlan.PROBE_BYTES - left) + " B queued in " + (System.currentTimeMillis() - probeSendStart) + " ms")
+            }
+        } else if (confirmFirst != null) io.execute { l.writeRaw(Wire.FRAME_BULK_PROBE_DONE, confirmFirst) }
     }
 
     private fun onProbeFrame(peer: String, type: Int, p: ByteArray) {
-        val l = link ?: return
         when (type) {
-            Wire.FRAME_BULK_PROBE -> {
-                if (probeRecvStart == 0L) probeRecvStart = System.currentTimeMillis()
-                probeRecvBytes += p.size
-                if (probeRecvBytes >= BulkPlan.PROBE_BYTES && probeIn == null) {
-                    val ms = System.currentTimeMillis() - probeRecvStart
-                    probeIn = BulkPlan.Direction(probeRecvBytes, ms, true)
-                    l.writeRaw(Wire.FRAME_BULK_PROBE_DONE, Wire.bulkProbeDone(probeRecvBytes, ms))
-                    DiagLog.i(tag, "BULK PROBE: received " + probeRecvBytes + " B from prok-" + peer + " in " + ms + " ms")
-                    main.post { if (probeOut != null) finishProbe("both directions reported") }
-                }
-            }
-            Wire.FRAME_BULK_PROBE_DONE -> {
-                val r = Wire.parseBulkProbeDone(p) ?: return
-                probeOut = BulkPlan.Direction(r.first, r.second, r.first >= BulkPlan.PROBE_BYTES)
-                DiagLog.i(tag, "BULK PROBE: prok-" + peer + " received " + r.first + " B from us in " + r.second + " ms")
-                main.post { if (probeIn != null) finishProbe("both directions reported") }
-            }
+            Wire.FRAME_BULK_PROBE -> { val n = p.size; main.post { onProbeBytes(n) } }
+            Wire.FRAME_BULK_PROBE_DONE -> { val r = Wire.parseBulkProbeDone(p) ?: return; main.post { onDirectionReported(r.first, r.second) } }
         }
     }
+
+    /** Main thread: payload bytes arrived. Only the receiver of the current step counts them. */
+    private fun onProbeBytes(n: Int) {
+        val l = link ?: return
+        val step = probeStep
+        if (probeDone || step == BulkPlan.ProbeStep.NOT_STARTED || step == BulkPlan.ProbeStep.COMPLETE || BulkPlan.probeSender(step, l.isHost)) return
+        if (probeRecvStart == 0L) probeRecvStart = System.currentTimeMillis()
+        probeRecvBytes += n
+        if (probeRecvBytes < BulkPlan.PROBE_BYTES) return
+        val d = BulkPlan.Direction(probeRecvBytes, System.currentTimeMillis() - probeRecvStart)
+        record(step, d)
+        DiagLog.i(tag, BulkPlan.probeStepText(step) + ": received " + d.describe() + " from prok-" + state.peer + ", confirming")
+        clearProbeTimer()
+        enterStep(BulkPlan.nextProbeStep(step), Wire.bulkProbeDone(d.bytes, d.ms))
+    }
+
+    /** Main thread: the peer reported what it received from us in the current step. */
+    private fun onDirectionReported(bytes: Long, ms: Long) {
+        val l = link ?: return
+        val step = probeStep
+        if (probeDone || !BulkPlan.probeSender(step, l.isHost)) return
+        val d = BulkPlan.Direction(bytes, ms, timedOut = bytes < BulkPlan.PROBE_BYTES)
+        record(step, d)
+        DiagLog.i(tag, BulkPlan.probeStepText(step) + ": prok-" + state.peer + " received " + d.describe() + " from us")
+        clearProbeTimer()
+        if (!d.ok) { finishProbe("the peer reported " + d.result) ; return }
+        enterStep(BulkPlan.nextProbeStep(step), null)
+    }
+
+    private fun onProbeTimeout(step: BulkPlan.ProbeStep) {
+        if (probeDone || probeStep != step) return
+        val l = link ?: return
+        probeTimer = null
+        if (BulkPlan.probeSender(step, l.isHost)) {
+            record(step, BulkPlan.Direction(0, 0, timedOut = true))
+            finishProbe("timeout: no receipt report from the peer")
+        } else {
+            val d = BulkPlan.Direction(probeRecvBytes, if (probeRecvStart == 0L) 0 else System.currentTimeMillis() - probeRecvStart, timedOut = true)
+            record(step, d)
+            // tell the sender what did arrive, so both phones show the same numbers
+            io.execute { l.writeRaw(Wire.FRAME_BULK_PROBE_DONE, Wire.bulkProbeDone(d.bytes, d.ms)) }
+            finishProbe("timeout: " + d.describe())
+        }
+    }
+
+    private fun record(step: BulkPlan.ProbeStep, d: BulkPlan.Direction) {
+        if (step == BulkPlan.ProbeStep.BUYER_TO_SELLER) probeBuyerToSeller = d else if (step == BulkPlan.ProbeStep.SELLER_TO_BUYER) probeSellerToBuyer = d
+    }
+
+    private fun armProbeTimer(step: BulkPlan.ProbeStep, ms: Long) {
+        clearProbeTimer()
+        val r = Runnable { onProbeTimeout(step) }
+        probeTimer = r
+        main.postDelayed(r, ms)
+    }
+
+    private fun clearProbeTimer() { probeTimer?.let { main.removeCallbacks(it) }; probeTimer = null }
 
     private fun finishProbe(why: String) {
         if (probeDone) return
         probeDone = true
-        val out = probeOut ?: BulkPlan.Direction(0, 0, false)
-        val inn = probeIn ?: BulkPlan.Direction(probeRecvBytes, 0, false)
-        val me = if (link?.isHost == true) "seller" else "buyer"
-        val other = if (link?.isHost == true) "buyer" else "seller"
-        val v = BulkPlan.verdict(out, inn)
+        clearProbeTimer()
+        val b2s = probeBuyerToSeller
+        val s2b = probeSellerToBuyer
+        val v = BulkPlan.verdict(b2s, s2b)
         lastVerdict = v
-        lastProbe = me + " -> " + other + ": " + out.describe() + " | " + other + " -> " + me + ": " + inn.describe() + " | VERDICT: " + BulkPlan.verdictText(v) + (if (why == "timeout") " (timeout)" else "")
-        DiagLog.i(tag, "BLUETOOTH BULK PROBE\n  " + me + " -> " + other + ": " + out.describe() + "\n  " + other + " -> " + me + ": " + inn.describe() + "\n  VERDICT: " + BulkPlan.verdictText(v))
+        if (BulkPlan.probePassed(v)) probeStep = BulkPlan.ProbeStep.COMPLETE
+        lastProbe = "buyer -> seller: " + (b2s?.describe() ?: "not run") + " | seller -> buyer: " + (s2b?.describe() ?: "not run") +
+            " | VERDICT: " + BulkPlan.verdictText(v, b2s, s2b)
+        DiagLog.i(tag, (if (BulkPlan.probePassed(v)) BulkPlan.probeStepText(BulkPlan.ProbeStep.COMPLETE) else "PROBE ENDED (" + why + ")") +
+            "\n  buyer -> seller: " + (b2s?.describe() ?: "not run") + "\n  seller -> buyer: " + (s2b?.describe() ?: "not run") +
+            "\n  VERDICT: " + BulkPlan.verdictText(v, b2s, s2b))
         val peer = state.peer
         hooks?.onProbe(peer, v, lastProbe)
         main.post { hooks?.onChanged() }

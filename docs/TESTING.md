@@ -1799,3 +1799,63 @@ explicitly, and only then.
 - The `SELLER ACCESS PATH = BLUETOOTH_BULK` line on the seller.
 - No hotspot probe, no Wi-Fi Direct line, no `p2p` interface before or during.
 - Then the section 46 result: `VERDICT: BIDIRECTIONAL`, VPN, DNS, HTTPS, Chrome.
+
+## 48. v0.10.2 the two-button Bluetooth test
+
+Both phones: install the APK, open Developer -> BT Lab. Nothing else to
+set up; the screen starts the node and asks for permissions by itself.
+
+OUKITEL (seller): stay on the Freebox, mobile data off, Bluetooth on. The
+screen must show `Internet source: Wi-Fi ✅` and `Bluetooth: Ready ✅`.
+Tap START SHARING. It says `Waiting for another phone...`.
+
+OnePlus (buyer): mobile data off, not on the Freebox, Bluetooth on. Wait
+for `Seller found ✅`, tap CONNECT, then wait. The screen walks by itself:
+
+```
+Connecting...
+Checking both directions...
+Starting Internet...          (accept the VPN if the phone asks)
+Testing Internet...
+INTERNET WORKING ✅
+```
+
+The seller meanwhile shows `Phone connected ✅ / Testing connection...`,
+then `Bluetooth connection works both ways ✅ / Internet sharing
+starting...`, then `Sharing Internet ✅`.
+
+On both phones tap COPY TEST RESULT and paste it here. The summary comes
+first:
+
+```
+ProkNet Bluetooth Test
+
+Phone role: BUYER
+Bluetooth connected: YES
+Authentication: YES
+Buyer -> seller: PASS 262144/262144 B
+Seller -> buyer: PASS 262144/262144 B
+Contract: YES
+VPN: YES
+DNS: YES
+HTTPS: YES
+Internet: YES
+```
+
+then open Chrome on the buyer and load a page. A failure is one sentence
+on the screen (`Connection test failed. Buyer -> seller was too slow.`)
+and the summary shows the direction and the bytes, e.g. `Buyer -> seller:
+PARTIAL 243712/262144 B`, `Failure stage: PROBE`.
+
+What the log must show, for us: `PROBE BUYER_TO_SELLER`, then `received
+262,144 / 262,144 B PASS ... confirming` on the seller, then `PROBE
+SELLER_TO_BUYER`, then `PROBE COMPLETE` with `VERDICT: BIDIRECTIONAL`.
+Direction 2 must never start before direction 1 is confirmed. If `bad
+frame length 0` or `EOFException` still appear AFTER a clean sequential
+probe, they get investigated next; if they only follow a timeout, they are
+its consequence.
+
+### Claim rule
+
+Bluetooth Internet is claimed only when a copied BUYER summary shows
+`Internet: YES` with both directions `PASS`, and Chrome loaded a page.

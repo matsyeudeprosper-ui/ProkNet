@@ -366,7 +366,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private val bulkHooks = object : net.prok.proknet.transport.BluetoothBulkTransport.Hooks {
         override fun onBulkUp(peerShort: String, isHost: Boolean) {
             main.post {
-                DiagLog.i(tag, "BULK UP with prok-" + peerShort + " (" + (if (isHost) "host" else "client") + "): running the 1 MB probe each way before anything else")
+                DiagLog.i(tag, "BULK UP with prok-" + peerShort + " (" + (if (isHost) "host" else "client") + "): running the probe, 256 KB buyer -> seller then 256 KB seller -> buyer")
                 bulk.startProbe()
                 pushStatus()
             }
@@ -378,7 +378,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
                         DiagLog.i(tag, "Bluetooth bulk link carried the payload both ways: proposing the contract")
                         if (tunnel.session == null && tunnel.contract == null) tunnel.start(buyPrice)
                     } else {
-                        failBuy(net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON + " (" + net.prok.proknet.core.BulkPlan.verdictText(verdict) + ")",
+                        failBuy(net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON + " (" + report + ")",
                             net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON)
                     }
                 }
