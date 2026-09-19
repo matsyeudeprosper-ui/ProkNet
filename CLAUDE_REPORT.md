@@ -1,44 +1,42 @@
-# CLAUDE_REPORT - ProkNet v0.12.1 "the design pass"
+# CLAUDE_REPORT - ProkNet v0.12.2 "the sonar"
 
 Date: 2026-09-19
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 236/236 tests pass, released. Visual only; nothing under
-the screens changed. The one-tap hardware regression (TESTING section 50)
-is still the pending test.**
+Status: **built, 236/236 tests pass, released. Accueil and Carte redrawn
+from scratch on my own design; nothing under the screens changed. The
+one-tap hardware regression (TESTING section 50) remains the pending test.**
 
 ## 1. Why
 
-Mike's screenshots of v0.12.0: a flat circle, flat cards, a legend with
-light text on light pills, and the Carte card saying "Internet disponible"
-right above "Position inconnue". It did not look like a product.
+Mike: "The home screen and map still sucks as design. Forget my
+description of it and come up with your own version." The v0.12.1 home was
+a giant filled ball inside an empty frame; the map was a green square with
+a dot.
 
-## 2. What changed
+## 2. The design
 
-One design system, no new library:
+One metaphor the product can honour: a sonar.
 
-- Palette in light and night with the same token names (deep navy night,
-  one brand blue, soft glows, fixed pastel map colours with dark legend
-  text so the legend reads everywhere).
-- Type scale (H1 30, H2 19, Body 15, Muted 13, Caption 11 caps, Big 36,
-  Stat 22) and three button styles (gradient primary, bordered secondary,
-  flat danger, 58 dp).
-- Drawables: bordered rounded cards, an accent card for live status, a
-  hero glow behind the button, the one-tap button as two glow rings around
-  a radially lit sphere with a pressed state, a top-rounded nav bar,
-  legend pills, status dots.
-- The map view: glowing "me" dot, gapped cells, text colour chosen against
-  the fill.
-- Words: "Actif" / "En pause" chip with a dot; the Carte card now says "Vu
-  par ce téléphone, sans position. Autorisez la position approximative
-  pour placer les observations sur la carte."; an unnamed connected
-  network reads "Wi-Fi connecté".
+- Accueil: "Besoin d'Internet ?", a compact lit sphere (150 dp) at the
+  centre of thin rings on a soft glow, drawn by `PulseButtonView`; while a
+  request is alive, rings sweep outward and fade. One quiet line under it.
+  Three tiles: Autour de vous (usable sources now), Meilleur prix, Dernière
+  fois (from persisted requests). Two door rows with chevrons: Partager mon
+  Internet, Carte. The status card is unchanged.
+- Carte: a sonar of real sightings. You at the centre; each known source a
+  dot placed by recency (fresh near the centre, old at the edge), coloured
+  by status, labelled, tappable. Two tiles (Disponible maintenant / Vu
+  récemment), an "around you" card with an honest sentence and the
+  location button inside it, then source rows with a status dot. Once a
+  position exists, the cell grid replaces the sonar.
+- Stat tiles auto-size so amounts never wrap.
 
 ## 3. Build
 
-Build 46, versionName 0.12.1, SHA256 `209300f9ab571b8c8bd5233b7df65f10d963d4bb0ba73aa22cfba0cda4786866`.
-Commit `ee60b5e` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.1
+Build 47, versionName 0.12.2, SHA256 `c16a343e124b34b7fa87f86fd78d3d40fbb411e2422014536abd9e9899d0293c`.
+Commit `22b3809` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.12.2
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
@@ -46,17 +44,14 @@ C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 
 ## 4. Files changed
 
-`res/values/colors.xml`, `res/values-night/colors.xml`,
-`res/values/styles.xml`, `res/values-night/styles.xml`, 15 drawables under
-`res/drawable/` (`bg_card`, `bg_card_alt`, `bg_card_accent`, `bg_chip`,
-`bg_primary`, `bg_secondary`, `bg_danger`, `bg_hero`, `bg_nav`,
-`bg_big_button`, `bg_pill_ok/warn/muted`, `dot_ok`, `dot_muted`),
-`res/layout/activity_main.xml`, `ui/CoverageMapView.kt`,
-`ui/MainActivity.kt` (card paddings, chip dot, source titles),
-`res/values/strings.xml` (4 strings), `build.gradle.kts`.
+New `ui/PulseButtonView.kt`, `res/drawable/dot_warn.xml`. Rewritten
+`ui/CoverageMapView.kt`. Patched `res/layout/activity_main.xml` (HOME and
+MAP blocks, auto-size stats), `ui/MainActivity.kt` (sonar wiring, tiles,
+door rows, map refresh with marks), `res/values/strings.xml` (+21),
+`build.gradle.kts`.
 
 ## 5. The test
 
 Unchanged: TESTING section 50. OUKITEL: Gagner, COMMENCER À PARTAGER.
 OnePlus, mobile data OFF: OBTENIR INTERNET, wait for "Internet connecté
-✅", Wikipedia. Then Carte on both, screenshots if anything looks wrong.
+✅", Wikipedia. Then Carte on both, screenshots.
