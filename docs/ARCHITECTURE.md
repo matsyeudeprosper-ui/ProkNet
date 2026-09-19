@@ -746,6 +746,58 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Creating a group is its own stage (v0.9.25)
+
+v0.9.24 took the right path and then Android was fought at its own game:
+
+```
+createGroup accepted (default band), waiting for the group to form
+connection: formed=false role=NONE groupOwner=null
+keeping Wi-Fi Direct discovery alive: the group is gone, this phone can look for peers again
+starting peer discovery from a clean state
+discoverPeers failed: BUSY (framework busy)
+```
+
+After an ACCEPTED `createGroup()`, Android is allowed to report
+`groupFormed = false` while the group is still being created. That is
+"pending", not "gone". Starting peer discovery in that window collides with
+the creation, gets BUSY in a loop, and the group never forms.
+
+### CREATING_GROUP owns the radio
+
+`P2pPlan.onFormedFalse(stage, createAccepted)` answers HOLD while a creation
+is in flight and GONE otherwise. On HOLD nothing happens except one log line:
+no radio release, no discovery, no search-failure logic. Only three events
+end a creation: `formed = true`, an explicit `createGroup` refusal, or its
+own clock.
+
+### An accepted group that never forms has its own clock
+
+The old code retried only refusals. Each acceptance now arms
+`GROUP_FORMATION_TIMEOUT_MS` (15 s). `P2pPlan.onFormationTimeout(stage,
+formed, attempt, max)` answers FORMED, IGNORE, RETRY or FAIL: a retry removes
+the half-made group and creates again, and the third silence is
+`GROUP_CREATE_FAIL`, a stage of its own with its own French sentence. It is
+never reported as peer visibility, because admission never began.
+
+### The owner's stages are separate
+
+```
+GROUP_CREATION   until the owner's group exists
+SEARCH           from formation, until an association is accepted
+ASSOCIATION      from acceptance
+TRANSPORT        from membership
+```
+
+`P2pPlan.searchedMs(...)` counts the search only from the moment the owner's
+group formed, so creation time never consumes the search deadline, and the
+owner's transport clock starts at membership rather than at formation. And an
+owner never asks the provider whether the provider's group is ready: that
+ladder belongs to SELLER_GROUP_OWNER only.
+
+The seller side of v0.9.24 (joining as a client while keeping the Freebox,
+and the one-unit cleanup) is untouched.
+
 ## The reversed experiment has to actually start, and actually end (v0.9.24)
 
 The v0.9.23 run reached the provider with the topology and then tested

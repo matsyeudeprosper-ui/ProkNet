@@ -1591,3 +1591,47 @@ LINK PROBE verdict: ...     (from BOTH phones)
 ```
 
 Copy the LAST P2P TEST RESULT block from both phones whatever happens.
+
+## 43. v0.9.25 the owner's group has to exist first
+
+Section 42 still applies. The first proof is now only this, on the BUYER:
+
+```
+BUY decision: forcing Wi-Fi Direct because buyer owns the group
+starting buyer-owned P2P group
+createGroup attempt 1 accepted (default band), waiting for the group to form
+group creation pending: formed=false is normal while CREATING_GROUP (attempt 1/3)
+GROUP FORMED after createGroup attempt 1: role GROUP_OWNER
+WI-FI DIRECT GROUP FORMED: role GROUP_OWNER ... local 192.168.49.1
+GROUP CHANNEL: ...
+local P2P address=192.168.49.1
+keeping Wi-Fi Direct discovery alive: starting peer discovery for reversed admission
+```
+
+Between `createGroup ... accepted` and `GROUP FORMED` there must be **no**
+`keeping Wi-Fi Direct discovery alive: the group is gone` and **no**
+`asking prok-... whether its Wi-Fi Direct group is ready`.
+
+If the group does not form, the buyer must show the retries and the specific
+ending, not a peer-visibility one:
+
+```
+no group formed within 15s of createGroup attempt 1 being accepted: retrying group creation attempt 2/3
+...
+GROUP CREATE FAILED: Android accepted createGroup three times but no Wi-Fi Direct group formed
+PURCHASE FAILED at stage GROUP_CREATE_FAIL
+```
+
+Only once `role GROUP_OWNER` and `192.168.49.1` are present on the buyer does
+the seller side count:
+
+```
+TOPOLOGY = BUYER_GROUP_OWNER
+REVERSED TOPOLOGY: joining customer group as CLIENT ... while staying on Freebox
+WI-FI DIRECT GROUP FORMED: role CLIENT ... p2p0=192.168.49.x
+```
+
+with `wlan0 = 192.168.1.13` still present and the upstream still validated.
+Then, and only then, the probe verdict from both phones.
+
+Copy the LAST P2P TEST RESULT block from both phones whatever happens.

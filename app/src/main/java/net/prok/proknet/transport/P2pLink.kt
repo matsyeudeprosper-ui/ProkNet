@@ -66,6 +66,10 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
 
     private val tag = "P2P"
     private val CREATE_ATTEMPTS = 3
+    /** v0.9.25: createGroup() was accepted and the group has not formed yet. */
+    @Volatile private var createAccepted = false
+    private var createAttempt = 0
+    private var formationTimer: Runnable? = null
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
     private val life = P2pPlan.Life()
@@ -408,7 +412,13 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         DiagLog.i(tag, "creating a fresh Wi-Fi Direct group (attempt " + attempt + "/" + CREATE_ATTEMPTS + "): " +
             (if (useBand) P2pPlan.groupBandText(band, sta) else P2pPlan.groupBandText(0, sta)))
         val listener = object : WifiP2pManager.ActionListener {
-            override fun onSuccess() { DiagLog.i(tag, "createGroup accepted (" + (if (useBand) "2.4 GHz requested" else "default band") + "), waiting for the group to form"); refreshAll() }
+            override fun onSuccess() {
+                DiagLog.i(tag, "createGroup attempt " + attempt + " accepted (" + (if (useBand) "2.4 GHz requested" else "default band") + "), waiting for the group to form")
+                createAccepted = true
+                createAttempt = attempt
+                armFormationTimeout(attempt)
+                refreshAll()
+            }
             override fun onFailure(reason: Int) {
                 if (useBand) {
                     DiagLog.w(tag, "the 2.4 GHz group was refused (" + reasonName(reason) + "): creating a default group instead")
@@ -433,6 +443,52 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             DiagLog.w(tag, "the band request could not be built (" + e + "): creating a default group instead")
             if (useBand) main.post { if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt, withBand = false) }
             else fail("createGroup: " + LinkIo.describe(e))
+        }
+    }
+
+    /**
+     * v0.9.25: an accepted `createGroup()` that never forms is not a refusal,
+     * and the old code only retried refusals. Each acceptance gets its own
+     * clock; when it runs out with the group still not formed the group is
+     * removed and created again, and the third such silence is a specific
+     * failure, not a peer-visibility one.
+     */
+    private fun armFormationTimeout(attempt: Int) {
+        formationTimer?.let { main.removeCallbacks(it) }
+        val r = Runnable { onFormationTimeout(attempt) }
+        formationTimer = r
+        main.postDelayed(r, P2pPlan.GROUP_FORMATION_TIMEOUT_MS)
+    }
+
+    private fun cancelFormationTimeout() {
+        formationTimer?.let { main.removeCallbacks(it) }
+        formationTimer = null
+        createAccepted = false
+    }
+
+    private fun onFormationTimeout(attempt: Int) {
+        formationTimer = null
+        when (P2pPlan.onFormationTimeout(life.stage, life.groupFormed, attempt, CREATE_ATTEMPTS)) {
+            P2pPlan.Formation.FORMED, P2pPlan.Formation.IGNORE -> createAccepted = false
+            P2pPlan.Formation.RETRY -> {
+                createAccepted = false
+                DiagLog.w(tag, "no group formed within " + (P2pPlan.GROUP_FORMATION_TIMEOUT_MS / 1000) + "s of createGroup attempt " + attempt +
+                    " being accepted: retrying group creation attempt " + (attempt + 1) + "/" + CREATE_ATTEMPTS)
+                val m = manager; val c = channel
+                if (m == null || c == null) { createGroup(attempt + 1); return }
+                try {
+                    m.removeGroup(c, object : WifiP2pManager.ActionListener {
+                        override fun onSuccess() { DiagLog.i(tag, "the half-made group was removed"); if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }
+                        override fun onFailure(reason: Int) { DiagLog.i(tag, "nothing to remove (" + reasonName(reason) + ")"); if (life.stage == P2pPlan.Stage.CREATING_GROUP) createGroup(attempt + 1) }
+                    })
+                } catch (e: Exception) { createGroup(attempt + 1) }
+            }
+            P2pPlan.Formation.FAIL -> {
+                createAccepted = false
+                DiagLog.e(tag, "GROUP CREATE FAILED: " + P2pPlan.GROUP_CREATE_FAIL_REASON)
+                lastTest.failureStage = "GROUP_CREATE_FAIL"
+                fail(P2pPlan.GROUP_CREATE_FAIL_REASON)
+            }
         }
     }
 
@@ -592,6 +648,12 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
         DiagLog.i(tag, "connection: formed=" + formed + " role=" + life.role + " groupOwner=" + go +
             " | my Wi-Fi network before=" + (staBefore.ifEmpty { "none" }) + " now=" + (staAfter.ifEmpty { "none" }))
         if (!formed) {
+            // v0.9.25: after an ACCEPTED createGroup(), formed=false means "still being created", not
+            // "gone". Starting discovery here fought Android's own creation and got BUSY in a loop.
+            if (P2pPlan.onFormedFalse(life.stage, createAccepted) == P2pPlan.Creation.HOLD) {
+                DiagLog.i(tag, "group creation pending: formed=false is normal while CREATING_GROUP (attempt " + createAttempt + "/" + CREATE_ATTEMPTS + ")")
+                changed(); return
+            }
             // v0.9.22: Android reports groupFormed=false in the middle of its own join choreography.
             // While an accepted association is in flight that is not the end of anything.
             if (associationPending) {
@@ -602,13 +664,17 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
             if (life.want != P2pPlan.Want.NONE) keepDiscovering("the group is gone, this phone can look for peers again")
             changed(); return
         }
+        if (createAccepted) { cancelFormationTimeout(); DiagLog.i(tag, "GROUP FORMED after createGroup attempt " + createAttempt + ": role " + life.role) }
         // v0.9.16: a sleeping radio is where the owner downlink was being lost
         radio.acquire("a Wi-Fi Direct group exists on this phone")
         if (staBefore.isNotEmpty() && staAfter != staBefore) DiagLog.e(tag, "the Wi-Fi Direct group KILLED this phone's Wi-Fi connection (" + staBefore + " -> " + (staAfter.ifEmpty { "none" }) + ")")
         goAddress = go ?: goAddress
         observePlane("connection info")
         when (life.role) {
-            P2pPlan.Role.GROUP_OWNER -> keepDiscovering("group owner waiting for a guest")
+            P2pPlan.Role.GROUP_OWNER -> {
+                DiagLog.i(tag, "local P2P address=" + plane.localAddress.ifEmpty { "not readable yet" })
+                keepDiscovering(if (providesInternet) "group owner waiting for a guest" else "starting peer discovery for reversed admission")
+            }
             P2pPlan.Role.CLIENT -> {
                 val target = P2pPlan.socketTarget(life.role, go)
                 if (target == null) { fail("no group owner address"); return }
@@ -787,6 +853,7 @@ class P2pLink(private val context: Context, private val hooks: Hooks) {
     }
 
     private fun dropPlane(why: String) {
+        cancelFormationTimeout()
         endAssociation(why, failed = true)
         radio.release(why)
         closeListener(why)

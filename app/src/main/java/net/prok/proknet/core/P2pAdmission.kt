@@ -299,7 +299,7 @@ object P2pAdmission {
      * v0.9.23: the stage a session died in. Each one means something
      * different to the customer and to whoever reads the log.
      */
-    enum class FailStage { NONE, SEARCH, ASSOCIATION, TRANSPORT, TUNNEL, INTERNET }
+    enum class FailStage { NONE, GROUP_CREATE, SEARCH, ASSOCIATION, TRANSPORT, TUNNEL, INTERNET }
 
     /** Neither phone could ever address the other. */
     const val BLIND_FAIL_REASON = "neither phone could address the other over Wi-Fi Direct"
@@ -323,6 +323,7 @@ object P2pAdmission {
     /** Which stage a failure reason belongs to, for the log and the saved test record. */
     fun stageOf(reason: String): FailStage = when {
         reason.isEmpty() -> FailStage.NONE
+        reason == P2pPlan.GROUP_CREATE_FAIL_REASON || reason.contains("no Wi-Fi Direct group formed") -> FailStage.GROUP_CREATE
         reason == BLIND_FAIL_REASON -> FailStage.SEARCH
         reason == INVITE_FAIL_REASON || reason == JOIN_FAIL_REASON -> FailStage.ASSOCIATION
         reason.contains("transport", ignoreCase = true) || reason.contains("local link", ignoreCase = true) -> FailStage.TRANSPORT
@@ -332,7 +333,8 @@ object P2pAdmission {
     }
 
     fun stageName(s: FailStage): String = when (s) {
-        FailStage.NONE -> "NONE"; FailStage.SEARCH -> "SEARCH_FAIL"; FailStage.ASSOCIATION -> "ASSOCIATION_FAIL"
+        FailStage.NONE -> "NONE"; FailStage.GROUP_CREATE -> "GROUP_CREATE_FAIL"
+        FailStage.SEARCH -> "SEARCH_FAIL"; FailStage.ASSOCIATION -> "ASSOCIATION_FAIL"
         FailStage.TRANSPORT -> "TRANSPORT_FAIL"; FailStage.TUNNEL -> "TUNNEL_FAIL"; FailStage.INTERNET -> "INTERNET_FAIL"
     }
 }

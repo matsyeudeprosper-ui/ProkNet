@@ -67,6 +67,9 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.9.25: this phone could not create its own Wi-Fi Direct group
+        any(lastError, "no Wi-Fi Direct group formed") ->
+            "Ce t\u00e9l\u00e9phone n'a pas pu cr\u00e9er sa connexion directe. \u00c9teignez et rallumez le Wi-Fi, puis r\u00e9essayez."
         // v0.9.21: each admission ending says which stage failed, and each gets its own sentence
         any(lastError, "invitation did not complete") ->
             "Le fournisseur vous a invit\u00e9 mais la connexion directe n'a pas abouti. Rapprochez les t\u00e9l\u00e9phones et r\u00e9essayez."

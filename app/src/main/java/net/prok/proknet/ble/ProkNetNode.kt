@@ -202,6 +202,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun onP2pDataPlane(plane: net.prok.proknet.core.P2pDataPlane.Plane) {
         DiagLog.i(tag, "DATA PLANE " + plane.generationText() + ": " + plane.describe() + " | usable " + plane.usable)
         if (!plane.usable) return
+        if (buyViaP2p && plane.role == P2pPlan.Role.GROUP_OWNER && p2pGroupFormedAt == 0L) {
+            p2pGroupFormedAt = System.currentTimeMillis()
+            DiagLog.i(tag, "MEMBER JOINED my group: the transport now has " + (P2pPlan.TRANSPORT_GIVE_UP_MS / 1000) + "s to come up")
+        }
         // SELLER: the customer may have announced itself before Android reported the client count, or
         // the other way round. Whichever came second, the transport is armed and announced here.
         if (gateway.providing && plane.role == P2pPlan.Role.GROUP_OWNER && p2pMemberAddress.isNotEmpty()) {
@@ -381,6 +385,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * applies; afterwards only this one does.
      */
     @Volatile private var p2pAssociationAt = 0L
+    /** v0.9.25: when this phone's OWN group formed, the moment the admission search may start. */
+    @Volatile private var p2pOwnerFormedAt = 0L
     /** Seller side: the customer's own P2P name, the plan in force, and when it was taken. */
     @Volatile private var p2pGuestName = ""
     /** Group owner side: the plan in force and the invitation clock, reset as one unit. */
@@ -525,7 +531,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         p2pWaitStart = System.currentTimeMillis()
         p2pReachableMs = 0L; p2pUnreachableMs = 0L; p2pPausedLogged = false; p2pLastAskAt = 0L
         p2pStatus = null; p2pSellerName = ""; p2pConnectAttempts = 0; p2pNextConnectAt = 0L; p2pGroupFormedAt = 0L
-        p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L; p2pAssociationAt = 0L
+        p2pAnnounced = 0; p2pJoinPlan = null; p2pVisibilityAt = 0L; p2pAssociationAt = 0L; p2pOwnerFormedAt = 0L
         val mine = P2pPlan.ownsGroup(p2pTopology, false)
         DiagLog.i(tag, "TOPOLOGY = " + P2pPlan.topologyName(p2pTopology) + ": " + P2pPlan.topologyText(p2pTopology))
         sendControl(peerShort, Wire.p2pTopology(
@@ -535,13 +541,16 @@ class ProkNetNode(private val context: Context) : TransportListener {
                   else p2p.startGuest(providing = false, topology = P2pPlan.topologyName(p2pTopology))
         if (err != null) { DiagLog.e(tag, "cannot start Wi-Fi Direct: " + err); lastBuyError = err; return false }
         DiagLog.i(tag, "BUY over Wi-Fi Direct from prok-" + peerShort + ": becoming discoverable and asking to be invited")
-        main.postDelayed({ askForInvite(peerShort) }, 2500)     // let this phone learn its own P2P name first
+        if (!mine) main.postDelayed({ askForInvite(peerShort) }, 2500)     // let this phone learn its own P2P name first
+        else DiagLog.i(tag, "not asking the provider about its group: this phone owns the group in this topology")
         main.postDelayed({ p2pWaitStep(peerShort) }, 4000)
         return true
     }
 
     private fun askForInvite(peerShort: String) {
         if (!buyViaP2p || buyerWanted != peerShort) return
+        // v0.9.25: asking whether the PROVIDER'S group is ready is meaningless when this phone owns the group
+        if (!P2pPlan.asksProviderGroup(p2pTopology, false)) return
         // v0.9.10: never hammer a transport that is not there. The provider has to be in BLE range.
         if (transportFor(peerShort) == null) {
             if (!p2pPausedLogged) { p2pPausedLogged = true; DiagLog.w(tag, "prok-" + peerShort + " is not reachable over BLE: pausing the invitation requests until it is seen again") }
@@ -587,9 +596,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (P2pPlan.ownsGroup(p2pTopology, false)) {
             // v0.9.23 experiment: this phone owns the group and decides the plan in onP2pVisibility.
             // There is nothing to ask a provider about and nothing to join.
-            if (!p2p.plane.hasMember && p2pAssociationAt == 0L && p2pReachableMs >= P2pAdmission.SEARCH_GIVE_UP_MS) {
+            // v0.9.25: creating the group is its own stage. Its failure has its own reason, and the
+            // admission search does not start until the group exists.
+            if (p2p.stage == P2pPlan.Stage.FAILED) {
+                val why = p2p.lastError.ifEmpty { P2pPlan.GROUP_CREATE_FAIL_REASON }
+                failBuy(why, why)
+                return
+            }
+            val searched = P2pPlan.searchedMs(p2pTopology, false, p2pOwnerFormedAt, p2pWaitStart, System.currentTimeMillis())
+            if (p2p.groupFormed && !p2p.plane.hasMember && p2pAssociationAt == 0L && searched >= P2pAdmission.SEARCH_GIVE_UP_MS) {
                 val why = P2pAdmission.failReason(p2pDecision.plan, 0)
-                DiagLog.e(tag, why + " | I own the group, waiting for the provider to join it")
+                DiagLog.e(tag, why + " | I own the group, it has existed for " + (searched / 1000) + "s and the provider did not join it")
                 failBuy(why, why)
                 return
             }
@@ -705,11 +722,16 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (p2p.groupFormed == p2pGroupWasFormed) return
         p2pGroupWasFormed = p2p.groupFormed
         if (p2p.groupFormed) {
-            p2pGroupFormedAt = System.currentTimeMillis()
+            // v0.9.25: for an OWNER the transport clock starts at membership, not at formation; an empty
+            // group is an admission stage, not a transport one
+            val owner = p2p.role == P2pPlan.Role.GROUP_OWNER
+            p2pGroupFormedAt = if (owner && buyViaP2p) 0L else System.currentTimeMillis()
+            if (owner) p2pOwnerFormedAt = System.currentTimeMillis()
             DiagLog.i(tag, "WI-FI DIRECT GROUP FORMED: role " + p2p.role + ", clients " + p2p.clientCount + ", " + p2p.groupInfo +
                 " | " + p2p.plane.describe())
         } else {
             p2pGroupFormedAt = 0L
+            p2pOwnerFormedAt = 0L
             DiagLog.w(tag, "Wi-Fi Direct group gone (" + p2p.phase + ")")
         }
     }

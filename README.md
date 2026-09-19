@@ -57,7 +57,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.21 | A group is a room, membership is admission: a provider holding an EMPTY group invites the customer it can see, and every ending names the stage that actually failed | phone test: a group formed on 2.4 GHz at last, but discovery ran through the data window; and a SELLER_INVITE was killed 2 ms after it was chosen |
 | v0.9.22 | An accepted association owns the radio and its own clock: discovery cannot restart while it is in flight, membership turns discovery off whatever else changed, and the attempt is timed from the moment Android accepted it | phone test: the first CLEAN 2.4 GHz run. The group formed, discovery stopped at once, and NO IP packet crossed |
 | v0.9.23 | Membership ends admission for good, failures are filed by stage, each phone keeps its last test result after cleanup, and the customer can own the group instead of the provider (controlled experiment) | phone test: the topology reached the seller, but the buyer still sent a hotspot request and the seller kept a dead session alive |
-| v0.9.24 | A customer that owns the group always starts Wi-Fi Direct, and the provider's reversed session ends as one unit when the customer cancels | built, 185 JVM tests pass |
+| v0.9.24 | A customer that owns the group always starts Wi-Fi Direct, and the provider's reversed session ends as one unit when the customer cancels | phone test: the right path at last, and then createGroup was accepted and the group never formed, because a transient formed=false restarted discovery against Android's own creation |
+| v0.9.25 | Creating a group is its own stage with its own clock: a formed=false after an accepted createGroup is held, an accepted group that never forms is retried and then fails specifically, and an owner never asks the provider about its group | built, 191 JVM tests pass |
 
 ### v0.1 - what it does
 

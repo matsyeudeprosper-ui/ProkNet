@@ -145,6 +145,46 @@ object P2pPlan {
     fun ownsGroup(t: Topology, providing: Boolean): Boolean =
         if (t == Topology.SELLER_GROUP_OWNER) providing else !providing
 
+    // ---- v0.9.25: creating a group is its own stage, with its own clock ---------------------------------
+
+    /**
+     * After `createGroup()` is ACCEPTED, Android is allowed to report
+     * `groupFormed = false` while the group is still being created. The
+     * v0.9.24 run read that as "the group is gone", started peer discovery
+     * against Android's own creation, got `discoverPeers failed: BUSY` in a
+     * loop, and the group never formed.
+     */
+    const val GROUP_FORMATION_TIMEOUT_MS = 15_000L
+    const val GROUP_CREATE_FAIL_REASON = "Android accepted createGroup three times but no Wi-Fi Direct group formed"
+
+    enum class Creation { HOLD, GONE }
+
+    /** What a `formed=false` connection change means right now. */
+    fun onFormedFalse(stage: Stage, createAccepted: Boolean): Creation =
+        if (stage == Stage.CREATING_GROUP && createAccepted) Creation.HOLD else Creation.GONE
+
+    enum class Formation { FORMED, RETRY, FAIL, IGNORE }
+
+    /** The formation clock ran out after an accepted `createGroup()`. */
+    fun onFormationTimeout(stage: Stage, formed: Boolean, attempt: Int, maxAttempts: Int): Formation = when {
+        formed -> Formation.FORMED
+        stage != Stage.CREATING_GROUP -> Formation.IGNORE
+        attempt < maxAttempts -> Formation.RETRY
+        else -> Formation.FAIL
+    }
+
+    /**
+     * v0.9.25: for a customer that owns the group, the admission search only
+     * starts once that group exists. Creation time and search time are two
+     * different stages, and the group owner has to exist before anybody can
+     * find it.
+     */
+    fun searchedMs(topology: Topology, providing: Boolean, groupFormedAt: Long, purchaseStartedMs: Long, now: Long): Long =
+        if (ownsGroup(topology, providing)) (if (groupFormedAt > 0L) now - groupFormedAt else 0L) else now - purchaseStartedMs
+
+    /** The provider-group readiness ladder belongs to SELLER_GROUP_OWNER only. */
+    fun asksProviderGroup(topology: Topology, providing: Boolean): Boolean = !ownsGroup(topology, providing)
+
     // ---- v0.9.19: which band to ask for ------------------------------------------------------------
 
     /** 0 = let Android choose, 2 = ask for 2.4 GHz, 5 = ask for 5 GHz. */

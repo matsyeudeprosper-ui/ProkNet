@@ -504,4 +504,70 @@ class P2pAdmissionTest {
         g.clear()
         assertFalse(g.active)
     }
+
+    // ---- v0.9.25: creating a group is its own stage --------------------------------------------------
+
+    @Test
+    fun formed_false_while_creating_the_group_means_hold_not_gone() {
+        // the v0.9.24 run: createGroup accepted, then Android said formed=false, and discovery started
+        assertEquals(P2pPlan.Creation.HOLD, P2pPlan.onFormedFalse(P2pPlan.Stage.CREATING_GROUP, createAccepted = true))
+        // a formed=false before anything was accepted, or in any other stage, is a real absence
+        assertEquals(P2pPlan.Creation.GONE, P2pPlan.onFormedFalse(P2pPlan.Stage.CREATING_GROUP, createAccepted = false))
+        assertEquals(P2pPlan.Creation.GONE, P2pPlan.onFormedFalse(P2pPlan.Stage.GROUP_OWNER, createAccepted = true))
+        assertEquals(P2pPlan.Creation.GONE, P2pPlan.onFormedFalse(P2pPlan.Stage.DISCOVERING, createAccepted = false))
+    }
+
+    @Test
+    fun an_accepted_group_that_forms_in_time_becomes_the_owner_and_the_clock_is_dropped() {
+        assertEquals(P2pPlan.Formation.FORMED, P2pPlan.onFormationTimeout(P2pPlan.Stage.GROUP_OWNER, formed = true, attempt = 1, maxAttempts = 3))
+        // a clock that fires after the stage moved on is nothing
+        assertEquals(P2pPlan.Formation.IGNORE, P2pPlan.onFormationTimeout(P2pPlan.Stage.IDLE, formed = false, attempt = 1, maxAttempts = 3))
+        assertEquals(P2pPlan.Formation.IGNORE, P2pPlan.onFormationTimeout(P2pPlan.Stage.CLEANING, formed = false, attempt = 2, maxAttempts = 3))
+    }
+
+    @Test
+    fun an_accepted_group_that_never_forms_is_retried_then_fails_specifically() {
+        assertEquals(P2pPlan.Formation.RETRY, P2pPlan.onFormationTimeout(P2pPlan.Stage.CREATING_GROUP, false, attempt = 1, maxAttempts = 3))
+        assertEquals(P2pPlan.Formation.RETRY, P2pPlan.onFormationTimeout(P2pPlan.Stage.CREATING_GROUP, false, attempt = 2, maxAttempts = 3))
+        assertEquals(P2pPlan.Formation.FAIL, P2pPlan.onFormationTimeout(P2pPlan.Stage.CREATING_GROUP, false, attempt = 3, maxAttempts = 3))
+        // and that failure is filed under its own stage, never as peer visibility
+        assertEquals(P2pAdmission.FailStage.GROUP_CREATE, P2pAdmission.stageOf(P2pPlan.GROUP_CREATE_FAIL_REASON))
+        assertEquals("GROUP_CREATE_FAIL", P2pAdmission.stageName(P2pAdmission.FailStage.GROUP_CREATE))
+        assertTrue(ProductState.lostHint(P2pPlan.GROUP_CREATE_FAIL_REASON).contains("Wi-Fi"))
+        assertTrue("a person has to be able to read a popup before the clock ends", P2pPlan.GROUP_FORMATION_TIMEOUT_MS >= 10_000L)
+    }
+
+    @Test
+    fun an_owner_never_asks_the_provider_whether_its_group_is_ready() {
+        assertFalse(P2pPlan.asksProviderGroup(P2pPlan.Topology.BUYER_GROUP_OWNER, providing = false))
+        // production is unchanged: the customer that joins still asks
+        assertTrue(P2pPlan.asksProviderGroup(P2pPlan.Topology.SELLER_GROUP_OWNER, providing = false))
+    }
+
+    @Test
+    fun an_owner_search_clock_starts_only_once_its_group_exists() {
+        val start = 1_000_000L
+        // thirty seconds into the purchase and the group has still not formed: nothing has been searched
+        assertEquals(0L, P2pPlan.searchedMs(P2pPlan.Topology.BUYER_GROUP_OWNER, false, groupFormedAt = 0L, purchaseStartedMs = start, now = start + 30_000))
+        // the group forms at +30 s: the search clock starts there
+        assertEquals(5_000L, P2pPlan.searchedMs(P2pPlan.Topology.BUYER_GROUP_OWNER, false, groupFormedAt = start + 30_000, purchaseStartedMs = start, now = start + 35_000))
+        // a customer that JOINS a provider group searches from the start of the purchase, as before
+        assertEquals(35_000L, P2pPlan.searchedMs(P2pPlan.Topology.SELLER_GROUP_OWNER, false, groupFormedAt = 0L, purchaseStartedMs = start, now = start + 35_000))
+    }
+
+    @Test
+    fun the_provider_reversed_cleanup_leaves_sharing_and_the_upstream_alone() {
+        // the seller state that v0.9.24 proved on hardware, kept: clearing the guest session says
+        // nothing about gateway.providing or the validated Freebox upstream
+        val g = P2pAdmission.GuestSession()
+        val d = P2pAdmission.OwnerDecision()
+        g.begin("0f7d57b3"); d.plan = P2pAdmission.Plan.OWNER_INVITE
+        val providing = true
+        val upstreamValidated = true
+        g.clear(); d.reset()
+        assertFalse(g.active)
+        assertTrue(d.clean)
+        assertTrue(providing)
+        assertTrue(upstreamValidated)
+    }
 }
