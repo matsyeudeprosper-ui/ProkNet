@@ -34,6 +34,8 @@ object Routing {
     const val TRANSPORT_WIFI = "wifi"
     /** v0.9: the relay phone's second, client-only Wi-Fi link towards its seller. */
     const val TRANSPORT_WIFI_UP = "wifi-up"
+    /** v0.10: Bluetooth L2CAP bulk link. GATT stays [TRANSPORT_BLE], control and small packets only. */
+    const val TRANSPORT_BT_BULK = "bt-bulk"
 
     // ---- receive side ------------------------------------------------------------------------
 
@@ -194,6 +196,19 @@ object Routing {
     /** Which transport carries the next frame to a peer: Wi-Fi whenever its link is up, else BLE, else none. */
     fun chooseTransport(wifiUp: Boolean, bleReachable: Boolean): String? =
         if (wifiUp) TRANSPORT_WIFI else if (bleReachable) TRANSPORT_BLE else null
+
+    /**
+     * v0.10: the same rule with the Bluetooth bulk link in its place: an
+     * authenticated Wi-Fi link first, then an authenticated Bluetooth bulk
+     * link, then GATT for control-sized frames. GATT never carries an Internet
+     * tunnel; the tunnel only ever chooses between the two bulk links.
+     */
+    fun chooseTransport(wifiUp: Boolean, bulkUp: Boolean, bleReachable: Boolean): String? =
+        if (wifiUp) TRANSPORT_WIFI else if (bulkUp) TRANSPORT_BT_BULK else if (bleReachable) TRANSPORT_BLE else null
+
+    /** Which bulk link the Internet tunnel writes to for [peer], or null: never GATT. */
+    fun bulkLinkFor(wifiPeer: String?, bulkPeer: String?, peer: String): String? =
+        if (wifiPeer == peer) TRANSPORT_WIFI else if (bulkPeer == peer) TRANSPORT_BT_BULK else null
 
     /** Should we spend a Wi-Fi negotiation on this payload before sending it? */
     fun wantWifi(blobBytes: Int, wifiUp: Boolean, bleReachable: Boolean, wifiIdle: Boolean): Boolean =

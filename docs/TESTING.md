@@ -1720,3 +1720,51 @@ to wait a few seconds. Try once more after a minute before drawing anything.
 
 Whatever happens, the buyer must NOT show "Le fournisseur est déjà occupé".
 Copy the LAST P2P TEST RESULT block from both phones.
+
+## 46. v0.10.0 Bluetooth bulk Internet
+
+The exact proof condition, from the normal or the lab path.
+
+Setup:
+- SELLER OUKITEL: mobile data OFF, connected to the Freebox Wi-Fi, Bluetooth ON.
+- BUYER OnePlus: mobile data OFF, NOT connected to the Freebox, Bluetooth ON.
+- Both phones on 0.10.0, node running, Location on.
+
+The lab path (Developer -> BT Lab):
+1. SELLER: tap SELL. The card says it will serve over Bluetooth.
+2. BUYER: tap BUY OVER BLUETOOTH. It picks the visible provider offer that
+   advertises Bluetooth bulk.
+
+The buyer log should read, in order:
+
+```
+BULK REQUEST -> prok-XXXX session ...
+BULK OFFER from prok-XXXX: L2CAP PSM NNN at AA:BB:...
+BULK CONNECTING ...
+BULK SOCKET CONNECTED (client) ...
+AUTH START / AUTH OK / BULK UP with prok-XXXX
+BLUETOOTH BULK PROBE
+  buyer -> seller: 1,048,576 B OK, ... KB/s
+  seller -> buyer: 1,048,576 B OK, ... KB/s
+  VERDICT: BIDIRECTIONAL
+```
+
+Only then: the contract, TUNNEL UP, the VPN prompt (accept it), CONNECTE,
+and Chrome loading a normal HTTPS site.
+
+**The first proof is the probe verdict, from both phones.** A socket that
+connected is not a link that carries. If the verdict is anything but
+BIDIRECTIONAL, copy the LAST lines and both `bluetooth bulk:` diagnostic
+blocks; the screen will also say which direction failed.
+
+**Claim rule.** Bluetooth Internet is solved only if, in that run, the seller
+stayed on the Freebox with mobile data off, the buyer had no mobile data and
+no Freebox connection, the probe was BIDIRECTIONAL, the VPN came up, DNS and
+HTTPS worked, and Chrome loaded pages. Anything less is a partial result.
+
+### Checklist for the v0.10.0 report
+
+- The `BLUETOOTH BULK PROBE` block from both phones.
+- Seller Wi-Fi before and during: `wlan0` on the Freebox, upstream validated.
+- Buyer role CLIENT, VPN up, INTERNET OK, Chrome.
+- The `bluetooth bulk:` diagnostic block from both phones whatever happens.

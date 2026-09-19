@@ -77,6 +77,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
     })
     /** v0.9: the relay phone's second Wi-Fi link, client-only, towards its seller. Never carries packets or transfers. */
+    /**
+     * v0.10.0: the Bluetooth bulk link. The provider listens on an L2CAP
+     * channel, the customer connects to that exact peer, and the same signed
+     * ProkNet handshake, tunnel, gateway, VPN and accounting run on top. It
+     * never asks Android for a hotspot or a Wi-Fi Direct group, so the
+     * provider simply stays on its home Wi-Fi.
+     */
+    val bulk = net.prok.proknet.transport.BluetoothBulkTransport(context, identity)
+
     val wifiUp = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
         override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
@@ -286,6 +295,102 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile private var p2pUnreachableMs = 0L
     @Volatile private var p2pPausedLogged = false
     @Volatile private var p2pLastAskAt = 0L
+
+    // ---- v0.10.0: Bluetooth bulk Internet -------------------------------------------------------------------
+    /** Lab switch: buy over Bluetooth even from a provider on mobile data. */
+    @Volatile var preferBluetooth = false
+    @Volatile private var buyViaBulk = false
+    @Volatile private var bulkSession = 0
+
+    private fun newSession(): Int { var s = 0; while (s == 0) s = java.util.Random().nextInt(); return s }
+
+    /** Customer: BUY over Bluetooth. One fresh session per purchase; every stage is bounded. */
+    private fun startBulkBuy(peerShort: String): Boolean {
+        if (!bulk.supported) { lastBuyError = "Bluetooth bulk needs Android 10 or newer"; return false }
+        if (!bulk.isBluetoothOn) { lastBuyError = "Bluetooth is off"; return false }
+        buyViaBulk = true
+        bulkSession = newSession()
+        val s = bulkSession
+        DiagLog.i(tag, "BULK REQUEST -> prok-" + peerShort + " session " + net.prok.proknet.core.BulkPlan.sessionHex(s))
+        sendControl(peerShort, Wire.bulkRequest(s)) { ok -> if (!ok) DiagLog.w(tag, "the bulk request could not be delivered over BLE") }
+        main.postDelayed({
+            if (buyViaBulk && bulkSession == s && buyerWanted == peerShort && bulk.state.phase == net.prok.proknet.core.BulkPlan.Phase.IDLE)
+                failBuy(net.prok.proknet.core.BulkPlan.timeoutReason(net.prok.proknet.core.BulkPlan.Phase.REQUESTED),
+                    net.prok.proknet.core.BulkPlan.timeoutReason(net.prok.proknet.core.BulkPlan.Phase.REQUESTED))
+        }, net.prok.proknet.core.BulkPlan.OFFER_TIMEOUT_MS)
+        return true
+    }
+
+    /** Provider: a customer wants a Bluetooth bulk channel. Listen, and tell it where. */
+    private fun onBulkRequest(peerShort: String, c: Wire.Control.BulkRequest) {
+        if (!gateway.providing) { sendControl(peerShort, Wire.bulkCancel(c.session, "not sharing")) {}; return }
+        if (!hasKey(peerShort)) { DiagLog.w(tag, "BULK REQUEST from prok-" + peerShort + " without its key: refused"); sendControl(peerShort, Wire.bulkCancel(c.session, "unknown key")) {}; return }
+        DiagLog.i(tag, "BULK REQUEST from prok-" + peerShort + " session " + net.prok.proknet.core.BulkPlan.sessionHex(c.session))
+        val psm = bulk.listen(c.session, peerShort)
+        if (psm == null) {
+            DiagLog.e(tag, "cannot open a Bluetooth bulk listener: " + bulk.lastError)
+            sendControl(peerShort, Wire.bulkCancel(c.session, bulk.lastError)) {}
+            return
+        }
+        DiagLog.i(tag, "BULK OFFER PSM " + psm + " -> prok-" + peerShort)
+        sendControl(peerShort, Wire.bulkOffer(c.session, net.prok.proknet.core.BulkPlan.TECH_L2CAP, psm)) { ok ->
+            if (!ok) DiagLog.w(tag, "the bulk offer could not be delivered over BLE")
+        }
+    }
+
+    /** Customer: the provider is listening. Connect to that exact phone. */
+    private fun onBulkOffer(peerShort: String, c: Wire.Control.BulkOffer) {
+        if (!buyViaBulk || buyerWanted != peerShort || c.session != bulkSession) {
+            DiagLog.w(tag, "stale or foreign BULK OFFER from prok-" + peerShort + " (session " + net.prok.proknet.core.BulkPlan.sessionHex(c.session) + "): ignored"); return
+        }
+        val address = ble.visiblePeers().firstOrNull { it.shortId == peerShort }?.address
+        if (address == null) { failBuy("the provider is not visible over Bluetooth right now", "the provider is not visible over Bluetooth right now"); return }
+        DiagLog.i(tag, "BULK OFFER from prok-" + peerShort + ": L2CAP PSM " + c.psm + " at " + address)
+        if (!bulk.connect(c.session, peerShort, address, c.psm)) failBuy("Bluetooth bulk: " + bulk.lastError, "Bluetooth bulk: " + bulk.lastError)
+    }
+
+    private fun onBulkCancel(peerShort: String, c: Wire.Control.BulkCancel) {
+        if (buyViaBulk && buyerWanted == peerShort && c.session == bulkSession) {
+            DiagLog.w(tag, "the provider ended the Bluetooth bulk attempt: " + c.detail)
+            failBuy("the provider ended the Bluetooth bulk attempt: " + c.detail, "the provider ended the Bluetooth bulk attempt: " + c.detail)
+        } else if (gateway.providing && bulk.state.session == c.session) {
+            bulk.cancel("the customer cancelled: " + c.detail)
+        }
+    }
+
+    private val bulkHooks = object : net.prok.proknet.transport.BluetoothBulkTransport.Hooks {
+        override fun onBulkUp(peerShort: String, isHost: Boolean) {
+            main.post {
+                DiagLog.i(tag, "BULK UP with prok-" + peerShort + " (" + (if (isHost) "host" else "client") + "): running the 1 MB probe each way before anything else")
+                bulk.startProbe()
+                pushStatus()
+            }
+        }
+        override fun onProbe(peerShort: String, verdict: net.prok.proknet.core.BulkPlan.Verdict, report: String) {
+            main.post {
+                if (buyViaBulk && buyerWanted == peerShort) {
+                    if (net.prok.proknet.core.BulkPlan.probePassed(verdict)) {
+                        DiagLog.i(tag, "Bluetooth bulk link carried the payload both ways: proposing the contract")
+                        if (tunnel.session == null && tunnel.contract == null) tunnel.start(buyPrice)
+                    } else {
+                        failBuy(net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON + " (" + net.prok.proknet.core.BulkPlan.verdictText(verdict) + ")",
+                            net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON)
+                    }
+                }
+                pushStatus()
+            }
+        }
+        override fun onBulkDown(peerShort: String?, reason: String) {
+            main.post {
+                if (buyViaBulk && peerShort != null && buyerWanted == peerShort && tunnel.session == null) {
+                    DiagLog.w(tag, "Bluetooth bulk attempt ended before any session: " + reason)
+                    failBuy("Bluetooth bulk: " + reason, "Bluetooth bulk: " + reason)
+                }
+                pushStatus()
+            }
+        }
+        override fun onChanged() { main.post { pushStatus() } }
+    }
 
     // ---- v0.9.23: which phone owns the Wi-Fi Direct group ------------------------------------------
     /**
@@ -920,17 +1025,39 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun sendFromGateway(type: Int, streamId: Int, data: ByteArray): Boolean {
         val rb = relay.relayedBuyer
         val target = gateway.buyerShort ?: gateway.contract?.buyerShort ?: rb
-        return if (rb != null && target == rb) sendSealed(rb, type, streamId, data) else wifi.sendTunnel(type, streamId, data)
+        if (rb != null && target == rb) return sendSealed(rb, type, streamId, data)
+        return sendOnBulkLink(target, type, streamId, data)
     }
 
     /** Buyer side: to the seller on my link, or sealed for the seller behind my relay. */
     private fun sendFromTunnel(type: Int, streamId: Int, data: ByteArray): Boolean {
         val p = relay.providerShort
-        return if (p != null) sendSealed(p, type, streamId, data) else wifi.sendTunnel(type, streamId, data)
+        if (p != null) return sendSealed(p, type, streamId, data)
+        return sendOnBulkLink(buyerFarEnd(), type, streamId, data)
     }
 
+    /**
+     * v0.10.0: the Internet tunnel writes to the authenticated bulk link that
+     * holds [peer]: Wi-Fi if that link is up, else the Bluetooth bulk link.
+     * Never GATT.
+     */
+    private fun sendOnBulkLink(peer: String?, type: Int, streamId: Int, data: ByteArray): Boolean =
+        when (Routing.bulkLinkFor(wifi.linkedPeer, bulk.linkedPeer, peer ?: "")) {
+            Routing.TRANSPORT_WIFI -> wifi.sendTunnel(type, streamId, data)
+            Routing.TRANSPORT_BT_BULK -> bulk.sendTunnel(type, streamId, data)
+            else -> if (peer == null) wifi.sendTunnel(type, streamId, data) || bulk.sendTunnel(type, streamId, data) else false
+        }
+
     /** The seller the buyer talks to: the one behind a relay if introduced, else the link peer. */
-    private fun buyerFarEnd(): String? = relay.providerShort ?: wifi.linkedPeer
+    private fun buyerFarEnd(): String? = relay.providerShort ?: wifi.linkedPeer ?: bulk.linkedPeer
+
+    /** The authenticated link to the provider is up, on either bulk transport. */
+    fun buyerLinkUp(): Boolean {
+        val w = wifi.linkedPeer
+        if (w != null && wifi.canReach(w)) return true
+        val b = bulk.linkedPeer
+        return b != null && bulk.canReach(b)
+    }
 
     /** Seal a tunnel frame for [farShort] and send it on MY link (to the relay). */
     private fun sendSealed(farShort: String, type: Int, streamId: Int, data: ByteArray): Boolean {
@@ -982,7 +1109,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // v0.9.11: only claim the Wi-Fi Direct way in when the group is REALLY formed. The phone
             // test showed a seller advertising it while its group had not come up, so every buyer
             // started a doomed admission and was refused.
-            upstreamType = Tunnel.upstreamType(up), p2p = p2pFallbackActive && p2p.groupFormed)
+            upstreamType = Tunnel.upstreamType(up), p2p = p2pFallbackActive && p2p.groupFormed,
+            bulkBt = gateway.providing && up != null && bulk.supported && bulk.isBluetoothOn)
         ble.setCapabilities(flags, if (gateway.providing) sellPrice else 0)
     }
 
@@ -997,6 +1125,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.postDelayed({ if (gateway.providing) checkSharing("sharing switched on") }, 1200)
         } else {
             gateway.stop()
+            bulk.cancel("sharing stopped")
             p2pMemberAddress = ""; p2pMemberPeer = ""
             p2pDecision.reset(); p2pGuestName = ""; p2pGuest.clear()
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
@@ -1019,8 +1148,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
         buyViaRelay = offer.viaRelay
         clearLastFailure()
         DiagLog.i(tag, "BUY from prok-" + peer.shortId + " at " + offer.pricePerMb + " CFA/MB (" + Tunnel.upstreamName(offer.upstreamType) + (if (offer.viaRelay) ", THROUGH A RELAY" else "") + ", signal " + Market.signalWord(offer.rssi) + ")")
-        val path = P2pAdmission.buyPath(p2pTopology, offer.p2p, wifi.canReach(peer.shortId), offer.viaRelay)
+        val path = P2pAdmission.buyPath(p2pTopology, offer.p2p, wifi.canReach(peer.shortId), offer.viaRelay,
+            offerBulkBt = offer.bulkBt, sellerOnWifi = offer.upstreamType == Tunnel.UP_WIFI, preferBluetooth = preferBluetooth)
         return when (path) {
+            P2pAdmission.BuyPath.BLUETOOTH_BULK -> {
+                DiagLog.i(tag, "BUY decision: Bluetooth bulk link (the provider advertises it" +
+                    (if (preferBluetooth) ", and this phone prefers Bluetooth" else ", and the provider is on Wi-Fi where a hotspot is refused") + ")")
+                startBulkBuy(peer.shortId)
+            }
             P2pAdmission.BuyPath.RELAY_INTRO -> awaitIntroduction(peer.shortId)
             P2pAdmission.BuyPath.LINK_UP -> tunnel.start(buyPrice)
             P2pAdmission.BuyPath.WIFI_DIRECT -> {
@@ -1118,7 +1253,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * the host (10.168.138.1)` from an earlier attempt.
      */
     fun buyPhase(): String =
-        if (buyViaP2p) P2pPlan.buyPhase(p2p.stage, p2p.groupFormed, p2p.plane.usable, wifi.linkedPeer != null)
+        if (buyViaBulk) net.prok.proknet.core.BulkPlan.buyPhase(bulk.state)
+        else if (buyViaP2p) P2pPlan.buyPhase(p2p.stage, p2p.groupFormed, p2p.plane.usable, wifi.linkedPeer != null)
         else wifi.phase
 
     /** A new purchase starts from a clean screen: nothing from the last attempt may show. */
@@ -1130,6 +1266,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     fun stopInternet(reason: String) {
         p2pSessionToken++; p2pDeferredVisibility = null
+        if (buyViaBulk) {
+            val s = bulkSession
+            buyerWanted?.let { peer -> if (s != 0 && transportFor(peer) != null) sendControl(peer, Wire.bulkCancel(s, "customer stopped: " + reason.take(60))) {} }
+            buyViaBulk = false; bulkSession = 0
+            bulk.cancel("customer stopped: " + reason)
+        }
         if (buyViaP2p) {
             // v0.9.24: tell the provider, so a reversed session on its side ends with ours
             buyerWanted?.let { peer -> if (transportFor(peer) != null) sendControl(peer, Wire.wifiCancel(Wire.CANCEL_GENERIC, "customer stopped: " + reason.take(60))) {} }
@@ -1217,6 +1359,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
         wifi.start(this)
         wifiUp.tunnelSink = upSink
         wifiUp.start(this)
+        bulk.tunnelSink = tunnelSink
+        bulk.hooks = bulkHooks
+        bulk.start(this)
         main.postDelayed({ refreshAdvert() }, 1500)
         isRunning = true
         queue.start()
@@ -1239,6 +1384,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         relay.reset()
         wifiUp.stop()
         wifi.stop()
+        bulk.stop()
         ble.stop()
         isRunning = false
         main.removeCallbacks(bleWatchdog)
@@ -1272,8 +1418,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     private fun transportFor(peerShort: String): Transport? =
-        when (Routing.chooseTransport(wifi.canReach(peerShort), ble.canReach(peerShort))) {
+        when (Routing.chooseTransport(wifi.canReach(peerShort), bulk.canReach(peerShort), ble.canReach(peerShort))) {
             Routing.TRANSPORT_WIFI -> wifi
+            Routing.TRANSPORT_BT_BULK -> bulk
             Routing.TRANSPORT_BLE -> ble
             else -> null
         }
@@ -1328,6 +1475,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             pushStatus(); engine.onWifiChanged(); queue.onPeersChanged()
             // Buyer waiting for the link: start the session as soon as the authenticated link is up.
             val want = buyerWanted
+            // v0.10: the Bluetooth bulk link proposes only after its probe, in bulkHooks.onProbe
             if (transport == Routing.TRANSPORT_WIFI && want != null && wifi.canReach(want) && tunnel.session == null && tunnel.contract == null && tunnel.state != "CONNECTING" && tunnel.state != "AGREEING") {
                 if (buyViaRelay) awaitIntroduction(want)
                 else { DiagLog.i(tag, "Wi-Fi link up with prok-" + want + ": proposing the contract"); tunnel.start(buyPrice) }
@@ -1486,6 +1634,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // transport, which is idle on this path and dropped it in silence. The phone test shows
             // the seller answering every single request and the buyer never reacting.
             c is Wire.Control.P2pStatus -> onP2pStatus(peerShort, c)
+            c is Wire.Control.BulkRequest -> onBulkRequest(peerShort, c)
+            c is Wire.Control.BulkOffer -> onBulkOffer(peerShort, c)
+            c is Wire.Control.BulkReady -> DiagLog.i(tag, "BULK READY from prok-" + peerShort)
+            c is Wire.Control.BulkCancel -> onBulkCancel(peerShort, c)
             c is Wire.Control.P2pTopology -> onP2pTopology(peerShort, c)
             c is Wire.Control.P2pVisibility -> onP2pVisibility(peerShort, c)
             c is Wire.Control.P2pJoinPlan -> onP2pJoinPlan(peerShort, c)
@@ -1515,6 +1667,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         sb.append(" | keys ").append(store.peerKeyCount())
         if (gateway.providing) sb.append(" | SELL: ").append(gateway.state)
         if (gateway.providing && shareCheck == ShareCheck.Result.CANNOT_SHARE) sb.append(" | hotspot refused on this Wi-Fi (").append(ShareCheck.band(shareFreqMhz)).append(")")
+        sb.append(" | bt bulk ").append(bulk.state.phase).append(if (bulk.linkedPeer != null) " with prok-" + bulk.linkedPeer else "")
         sb.append(" | topology ").append(P2pPlan.topologyName(p2pTopology))
         if (p2pFallbackActive) sb.append(" | sharing by Wi-Fi Direct: ").append(p2p.phase).append(" clients ").append(p2p.clientCount)
             .append(" | listener ").append(net.prok.proknet.core.P2pDataPlane.verdictText(p2p.listenerVerdict()))

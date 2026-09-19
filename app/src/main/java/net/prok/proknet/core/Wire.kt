@@ -94,6 +94,38 @@ object Wire {
     const val TOPOLOGY_SELLER_GROUP_OWNER = 1
     const val TOPOLOGY_BUYER_GROUP_OWNER = 2
 
+    /**
+     * v0.10.0: the Bluetooth bulk channel is negotiated over the encrypted
+     * BLE control channel. Every message carries the purchase's session
+     * token, so a stale offer from an earlier attempt can never steer a
+     * later one.
+     */
+    const val OP_BULK_REQUEST = 11
+    const val OP_BULK_OFFER = 12
+    const val OP_BULK_READY = 13
+    const val OP_BULK_CANCEL = 14
+
+    fun bulkRequest(session: Int): ByteArray =
+        ByteBuffer.allocate(5).put(OP_BULK_REQUEST.toByte()).putInt(session).array()
+
+    fun bulkOffer(session: Int, tech: Int, psm: Int): ByteArray =
+        ByteBuffer.allocate(8).put(OP_BULK_OFFER.toByte()).putInt(session).put(tech.toByte()).putShort(psm.toShort()).array()
+
+    fun bulkReady(session: Int): ByteArray =
+        ByteBuffer.allocate(5).put(OP_BULK_READY.toByte()).putInt(session).array()
+
+    fun bulkCancel(session: Int, detail: String): ByteArray {
+        val d = detail.take(CANCEL_DETAIL_MAX).toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(5 + d.size).put(OP_BULK_CANCEL.toByte()).putInt(session).put(d).array()
+    }
+
+    /** [bytes received][elapsed ms] for one probe direction. */
+    fun bulkProbeDone(bytes: Long, elapsedMs: Long): ByteArray =
+        ByteBuffer.allocate(16).putLong(bytes).putLong(elapsedMs).array()
+
+    fun parseBulkProbeDone(p: ByteArray): Pair<Long, Long>? =
+        if (p.size < 16) null else ByteBuffer.wrap(p).let { it.long to it.long }
+
     fun topologyName(code: Int) = when (code) {
         TOPOLOGY_SELLER_GROUP_OWNER -> "SELLER_GROUP_OWNER"
         TOPOLOGY_BUYER_GROUP_OWNER -> "BUYER_GROUP_OWNER"; else -> "topology " + code
@@ -155,6 +187,14 @@ object Wire {
         class P2pJoinPlan(val plan: Int) : Control()
         /** v0.9.23: the customer -> the provider, who owns the Wi-Fi Direct group this session. */
         class P2pTopology(val topology: Int) : Control()
+        /** v0.10: customer -> provider, "open a Bluetooth bulk channel for this purchase". */
+        class BulkRequest(val session: Int) : Control()
+        /** v0.10: provider -> customer, "connect to me on this L2CAP PSM". */
+        class BulkOffer(val session: Int, val tech: Int, val psm: Int) : Control()
+        /** v0.10: customer -> provider, "my socket is connected" (informational). */
+        class BulkReady(val session: Int) : Control()
+        /** v0.10: either way, "this bulk attempt is over", with why. */
+        class BulkCancel(val session: Int, val detail: String) : Control()
         /** v0.9.14: buyer -> seller, the buyer's own P2P address and the port it listens on. */
         class P2pMember(val address: String, val port: Int) : Control()
         /**
@@ -245,6 +285,10 @@ object Wire {
                 }
                 OP_P2P_JOIN_PLAN -> Control.P2pJoinPlan(if (b.remaining() >= 1) b.get().toInt() and 0xFF else JOIN_PLAN_WAIT)
                 OP_P2P_TOPOLOGY -> Control.P2pTopology(if (b.remaining() >= 1) b.get().toInt() and 0xFF else TOPOLOGY_SELLER_GROUP_OWNER)
+                OP_BULK_REQUEST -> if (b.remaining() >= 4) Control.BulkRequest(b.int) else null
+                OP_BULK_OFFER -> if (b.remaining() >= 7) Control.BulkOffer(b.int, b.get().toInt() and 0xFF, b.short.toInt() and 0xFFFF) else null
+                OP_BULK_READY -> if (b.remaining() >= 4) Control.BulkReady(b.int) else null
+                OP_BULK_CANCEL -> if (b.remaining() >= 4) Control.BulkCancel(b.int, if (b.remaining() > 0) String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8) else "") else null
                 OP_P2P_MEMBER -> {
                     val n = b.get().toInt() and 0xFF
                     val a = String(ByteArray(n).also { b.get(it) }, Charsets.UTF_8)
@@ -290,6 +334,8 @@ object Wire {
     const val FRAME_TUNNEL = 5     // v0.6: [tunnel type][stream id][data], see core/Tunnel.kt
     const val FRAME_RELAY = 6      // v0.9: end-to-end sealed tunnel frame forwarded by a relay, see core/Relay.kt
     const val FRAME_RELAY_INFO = 7 // v0.9: relay introductions (who is behind me), see core/Relay.kt
+    const val FRAME_BULK_PROBE = 8      // v0.10: payload bytes of the bulk probe, on an authenticated link only
+    const val FRAME_BULK_PROBE_DONE = 9 // v0.10: [bytes received: 8][elapsed ms: 8], the receiver's verdict for one direction
     const val MAX_FRAME = 1 + 5 + 16 * 1024 + 64
     const val NONCE_LEN = 16
 

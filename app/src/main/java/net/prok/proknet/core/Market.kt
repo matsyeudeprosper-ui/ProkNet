@@ -32,11 +32,12 @@ object Market {
     const val FLAG_VALIDATED = 4   // upstream validated by Android
     const val FLAG_VIA_RELAY = 8   // v0.9: this phone relays a seller behind it (price = that seller's price)
     const val FLAG_P2P = 64        // v0.9.9: the way in is a Wi-Fi Direct group, not a hotspot (bit 6, above the upstream bits)
+    const val FLAG_BULK_BT = 128   // v0.10: this provider can serve over a Bluetooth L2CAP bulk link (bit 7)
     const val UPSTREAM_SHIFT = 4   // bits 4-5: Tunnel.UP_* (0 none, 1 cellular, 2 wifi, 3 other)
 
-    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int, viaRelay: Boolean = false, p2p: Boolean = false): Int =
+    fun flags(sell: Boolean, relay: Boolean, validated: Boolean, upstreamType: Int, viaRelay: Boolean = false, p2p: Boolean = false, bulkBt: Boolean = false): Int =
         (if (sell) FLAG_SELL else 0) or (if (relay) FLAG_RELAY else 0) or (if (validated) FLAG_VALIDATED else 0) or (if (viaRelay) FLAG_VIA_RELAY else 0) or
-            (if (p2p) FLAG_P2P else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
+            (if (p2p) FLAG_P2P else 0) or (if (bulkBt) FLAG_BULK_BT else 0) or ((upstreamType and 3) shl UPSTREAM_SHIFT)
 
     fun upstreamOf(flags: Int): Int = (flags shr UPSTREAM_SHIFT) and 3
 
@@ -48,6 +49,8 @@ object Market {
         val viaRelay get() = flags and FLAG_VIA_RELAY != 0
         /** v0.9.9: join this seller through its Wi-Fi Direct group instead of a hotspot. */
         val p2p get() = flags and FLAG_P2P != 0
+        /** v0.10: the provider can serve this customer over a Bluetooth bulk link. */
+        val bulkBt get() = flags and FLAG_BULK_BT != 0
         val upstreamType get() = upstreamOf(flags)
         fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + (if (viaRelay) " via relay" else "") + "  " + pricePerMb + " CFA/MB  signal " + signalWord(rssi) + "  " +
             (if (selling) (if (validated) "available" else "available (unverified)") else "not selling")

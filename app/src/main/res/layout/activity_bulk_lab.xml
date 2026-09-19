@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v0.10.0 Bluetooth Bulk Internet Lab: the local link is a Bluetooth L2CAP channel, no hotspot, no Wi-Fi Direct. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:text="Bluetooth Bulk Internet Lab (v0.10)" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:layout_marginTop="4dp"
+            android:text="SELLER: stay on your home Wi-Fi, mobile data off, tap SELL. BUYER: mobile data off, not on the home Wi-Fi, Bluetooth on, tap BUY OVER BLUETOOTH. The link is a Bluetooth L2CAP channel between the two phones; the signed handshake, the 1 MB probe each way, the contract, the tunnel and the VPN follow by themselves. Nothing here asks Android for a hotspot or a Wi-Fi Direct group." />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnBulkSell" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="SELL" />
+            <Button android:id="@+id/btnBulkBuy" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="BUY OVER BLUETOOTH" />
+            <Button android:id="@+id/btnBulkStop" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="STOP" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <Button android:id="@+id/btnBulkNetTest" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="NET TEST" />
+            <Button android:id="@+id/btnBulkDiag" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="COPY DIAGNOSTIC" />
+        </LinearLayout>
+
+        <TextView android:id="@+id/txtBulkState" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:fontFamily="monospace" android:layout_marginTop="6dp" android:text="" />
+    </LinearLayout>
+</ScrollView>

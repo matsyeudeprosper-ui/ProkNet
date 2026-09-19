@@ -67,6 +67,13 @@ object ProductState {
      */
     fun lostHint(lastError: String): String = when {
         lastError.isEmpty() -> "Réessayez"
+        // v0.10: the Bluetooth bulk link, in its own words
+        any(lastError, "did not carry bytes in both directions") ->
+            "La liaison Bluetooth entre les deux t\u00e9l\u00e9phones ne passe pas les donn\u00e9es dans les deux sens. Rapprochez-les et r\u00e9essayez."
+        any(lastError, "did not offer a Bluetooth bulk channel", "never connected to the Bluetooth channel", "Bluetooth channel could not be connected", "handshake did not complete over Bluetooth", "Bluetooth bulk:") ->
+            "La liaison Bluetooth avec le fournisseur n'a pas pu \u00eatre \u00e9tablie. V\u00e9rifiez que le Bluetooth est activ\u00e9 sur les deux t\u00e9l\u00e9phones et r\u00e9essayez."
+        any(lastError, "Bluetooth is off") ->
+            "Activez le Bluetooth sur ce t\u00e9l\u00e9phone, puis r\u00e9essayez."
         // v0.9.27: the framework on THIS phone asked for time. Not the provider, which may be perfectly free.
         P2pCreation.isFrameworkBusy(lastError) ->
             "Le Wi-Fi Direct de ce t\u00e9l\u00e9phone est encore occup\u00e9. Attendez quelques secondes puis r\u00e9essayez."

@@ -246,7 +246,7 @@ object P2pAdmission {
 
     // ---- v0.9.24: which transport a purchase starts on --------------------------------------------------
 
-    enum class BuyPath { LINK_UP, RELAY_INTRO, WIFI_DIRECT, HOTSPOT }
+    enum class BuyPath { LINK_UP, RELAY_INTRO, WIFI_DIRECT, BLUETOOTH_BULK, HOTSPOT }
 
     /**
      * The v0.9.23 run never tested the reversed topology because of this
@@ -255,8 +255,22 @@ object P2pAdmission {
      * then fell back to the hotspot request. A customer that OWNS the group
      * must not wait for the provider to advertise one.
      */
-    fun buyPath(topology: P2pPlan.Topology, offerP2p: Boolean, linkUp: Boolean, viaRelay: Boolean): BuyPath = when {
+    fun buyPath(topology: P2pPlan.Topology, offerP2p: Boolean, linkUp: Boolean, viaRelay: Boolean): BuyPath =
+        buyPath(topology, offerP2p, linkUp, viaRelay, offerBulkBt = false, sellerOnWifi = false, preferBluetooth = false)
+
+    /**
+     * v0.10.0: the Bluetooth bulk link is the local link for the case the
+     * whole Wi-Fi Direct experiment was about: a provider on its home Wi-Fi,
+     * whose hotspot Android refuses. A provider on mobile data keeps the
+     * proven hotspot path. The lab can force Bluetooth for either.
+     *
+     * An existing authenticated link is always used first. GATT is never a
+     * choice here: it carries control, not an Internet tunnel.
+     */
+    fun buyPath(topology: P2pPlan.Topology, offerP2p: Boolean, linkUp: Boolean, viaRelay: Boolean,
+                offerBulkBt: Boolean, sellerOnWifi: Boolean, preferBluetooth: Boolean): BuyPath = when {
         linkUp -> if (viaRelay) BuyPath.RELAY_INTRO else BuyPath.LINK_UP
+        offerBulkBt && (preferBluetooth || sellerOnWifi) -> BuyPath.BLUETOOTH_BULK
         topology == P2pPlan.Topology.BUYER_GROUP_OWNER -> BuyPath.WIFI_DIRECT
         offerP2p -> BuyPath.WIFI_DIRECT
         else -> BuyPath.HOTSPOT

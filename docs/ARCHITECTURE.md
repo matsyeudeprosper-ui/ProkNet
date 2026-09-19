@@ -746,7 +746,88 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Bluetooth bulk Internet (v0.10.0)
+
+Wi-Fi Direct is archived. Both topologies were measured on the real pair and
+neither carries a usable IP path: the OUKITEL as group owner is one way, the
+OnePlus never forms a group. So the local link between the two phones is now
+a **Bluetooth L2CAP connection-oriented channel**, and it asks Android for no
+hotspot and no group, so the provider simply stays on its Freebox.
+
+### The layering
+
+```
+BLE GATT (unchanged)              Bluetooth L2CAP (new)
+  discover, identity, SELL          the authenticated ProkNet stream
+  negotiate the bulk channel        signed HELLO/AUTH
+  control, store-carry-forward      PACKET / RECEIPT / tunnel / relay
+                                    the 1 MB probe, then the Internet tunnel
+```
+
+GATT never carries an Internet tunnel; it carries control and small packets,
+as it always has. The tunnel only ever chooses between the two bulk links,
+Wi-Fi and Bluetooth.
+
+### One authenticated stream, two carriers
+
+The upper half of the old Wi-Fi link is now `transport/StreamLink.kt`: the
+signed handshake, the writer thread, PACKET/RECEIPT, tunnel and relay frames,
+byte accounting. A Wi-Fi TCP socket and a Bluetooth L2CAP socket each present
+themselves as a `StreamLink.Endpoint`, so both feed the same code and the
+same security. `WifiTransport` was refactored onto it with its behaviour
+unchanged; `BluetoothBulkTransport` is the new owner.
+
+Nothing on either stream is trusted before `handshake()` verifies the peer's
+Ed25519 signature. The Android L2CAP APIs are the "insecure" ones, which only
+means no OS pairing dialog; a nearby phone that reaches the PSM and fails the
+ProkNet handshake gets a closed socket.
+
+### The negotiation
+
+```
+BUY pressed
+buyer  -> seller (BLE):  BULK_REQUEST(session)
+seller opens listenUsingInsecureL2capChannel(), gets a dynamic PSM
+seller -> buyer (BLE):   BULK_OFFER(session, L2CAP, psm)
+buyer  createInsecureL2capChannel(psm) to that EXACT BluetoothDevice
+        (the peer's current BLE address; never matched by human name)
+socket connected -> signed handshake -> BULK UP
+```
+
+Every message carries the purchase's session token, so a stale offer from an
+earlier attempt cannot steer a later one, and every stage has its own bounded
+timeout in `core/BulkPlan.kt` (the pure lifecycle: who may do what, in which
+phase, with which session, for how long).
+
+### Measure the link before believing it
+
+`BULK UP` does not start the tunnel. First the transport sends 1 MB and
+receives 1 MB, and reports each direction separately:
+
+```
+BLUETOOTH BULK PROBE
+  buyer -> seller: 1,048,576 B OK, xxx KB/s
+  seller -> buyer: 1,048,576 B OK, xxx KB/s
+  VERDICT: BIDIRECTIONAL
+```
+
+Only `BIDIRECTIONAL` proceeds to the contract, the tunnel and the VPN. Any
+other verdict fails the purchase with a Bluetooth-specific French sentence.
+That is the lesson of the whole Wi-Fi Direct saga made into a gate: a socket
+that connected is not a link that carries.
+
+### Transport selection
+
+`Routing.chooseTransport(wifiUp, bulkUp, bleReachable)`: an authenticated
+Wi-Fi link, then an authenticated Bluetooth bulk link, then GATT for control.
+The purchase decision (`P2pAdmission.buyPath`) sends a provider on its home
+Wi-Fi, which advertises `FLAG_BULK_BT`, to the Bluetooth path; a provider on
+mobile data keeps the proven hotspot; the lab can force Bluetooth for either.
+The gateway, the tunnel, the contract, the billing, the VPN, the marketplace
+and method A are unchanged: the bytes just travel on a different link.
+
 ## BUSY is not an attempt (v0.9.27)
+
 
 v0.9.26 produced the first genuinely clean creation attempt on the OnePlus:
 accepted, fifteen silent seconds with nothing but `pending` and `deferred`

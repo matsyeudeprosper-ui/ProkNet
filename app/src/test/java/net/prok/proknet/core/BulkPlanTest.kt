@@ -1,0 +1,180 @@
+package net.prok.proknet.core
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * v0.10.0: the Bluetooth bulk link, the pure part. Negotiation over BLE with a
+ * session token, a lifecycle where nothing is trusted before the signed
+ * handshake, bounded stages, and a probe that only passes on real bytes in
+ * both directions.
+ */
+class BulkPlanTest {
+
+    private val seller = "24e480e6"
+    private val buyer = "0f7d57b3"
+
+    @Test
+    fun the_negotiation_messages_survive_the_wire() {
+        val req = Wire.parseControl(Wire.bulkRequest(0x1234abcd)) as Wire.Control.BulkRequest
+        assertEquals(0x1234abcd, req.session)
+        val offer = Wire.parseControl(Wire.bulkOffer(0x1234abcd, BulkPlan.TECH_L2CAP, 0x85)) as Wire.Control.BulkOffer
+        assertEquals(0x1234abcd, offer.session); assertEquals(BulkPlan.TECH_L2CAP, offer.tech); assertEquals(0x85, offer.psm)
+        val ready = Wire.parseControl(Wire.bulkReady(7)) as Wire.Control.BulkReady
+        assertEquals(7, ready.session)
+        val cancel = Wire.parseControl(Wire.bulkCancel(7, "customer stopped")) as Wire.Control.BulkCancel
+        assertEquals(7, cancel.session); assertEquals("customer stopped", cancel.detail)
+        // a truncated message is nothing, not a crash and not a default
+        assertNull(Wire.parseControl(byteArrayOf(Wire.OP_BULK_OFFER.toByte(), 1, 2)))
+        assertNull(Wire.parseControl(byteArrayOf(Wire.OP_BULK_REQUEST.toByte())))
+        // the probe verdict for one direction
+        val done = Wire.parseBulkProbeDone(Wire.bulkProbeDone(1_048_576L, 4321L))!!
+        assertEquals(1_048_576L, done.first); assertEquals(4321L, done.second)
+        assertNull(Wire.parseBulkProbeDone(ByteArray(3)))
+        // a negative session token survives too
+        assertEquals(-5, (Wire.parseControl(Wire.bulkRequest(-5)) as Wire.Control.BulkRequest).session)
+    }
+
+    @Test
+    fun a_stale_or_foreign_offer_changes_nothing() {
+        val s = BulkPlan.request(BulkPlan.IDLE, session = 111, peer = seller)
+        assertEquals(BulkPlan.Phase.REQUESTED, s.phase)
+        // an offer from an earlier purchase
+        assertEquals(s, BulkPlan.offerReceived(s, session = 110, peer = seller, tech = BulkPlan.TECH_L2CAP, psm = 0x85))
+        assertFalse(BulkPlan.isOurOffer(s, 110, seller))
+        // an offer from another phone, even with our session
+        assertEquals(s, BulkPlan.offerReceived(s, 111, "deadbeef", BulkPlan.TECH_L2CAP, 0x85))
+        // the right one
+        val c = BulkPlan.offerReceived(s, 111, seller, BulkPlan.TECH_L2CAP, 0x85)
+        assertEquals(BulkPlan.Phase.CONNECTING, c.phase); assertEquals(0x85, c.psm)
+        // an offer with a technology we do not speak, or no PSM, ends the attempt with a reason
+        assertEquals(BulkPlan.Phase.FAILED, BulkPlan.offerReceived(s, 111, seller, 9, 0x85).phase)
+        assertEquals(BulkPlan.Phase.FAILED, BulkPlan.offerReceived(s, 111, seller, BulkPlan.TECH_L2CAP, 0).phase)
+        // a second request while one is active is ignored
+        assertEquals(s, BulkPlan.request(s, 222, seller))
+    }
+
+    @Test
+    fun a_socket_is_never_a_link_before_the_signed_handshake() {
+        val c = BulkPlan.offerReceived(BulkPlan.request(BulkPlan.IDLE, 5, seller), 5, seller, BulkPlan.TECH_L2CAP, 0x85)
+        val a = BulkPlan.socketConnected(c)
+        assertEquals(BulkPlan.Phase.AUTH, a.phase)
+        assertFalse("connected is not authenticated", a.authenticated)
+        assertFalse("no tunnel bytes on an unauthenticated socket", BulkPlan.mayCarry(a, seller))
+        // the handshake verifies somebody else: refused
+        val wrong = BulkPlan.authenticated(a, "deadbeef")
+        assertEquals(BulkPlan.Phase.FAILED, wrong.phase)
+        assertFalse(BulkPlan.mayCarry(wrong, seller))
+        // the handshake verifies the peer we negotiated with: UP, and only then bulk capable
+        val up = BulkPlan.authenticated(a, seller)
+        assertEquals(BulkPlan.Phase.UP, up.phase)
+        assertTrue(up.authenticated)
+        assertTrue(BulkPlan.mayCarry(up, seller))
+        assertFalse("and never for another peer", BulkPlan.mayCarry(up, buyer))
+        // the provider side, mirrored
+        val l = BulkPlan.listening(BulkPlan.IDLE, 5, buyer, 0x85)
+        assertEquals(BulkPlan.Side.HOST, l.side)
+        assertEquals(BulkPlan.Phase.AUTH, BulkPlan.socketConnected(l).phase)
+        assertEquals(BulkPlan.Phase.UP, BulkPlan.authenticated(BulkPlan.socketConnected(l), buyer).phase)
+    }
+
+    @Test
+    fun every_stage_is_bounded_and_a_late_timer_cannot_kill_a_newer_session() {
+        for (p in listOf(BulkPlan.Phase.REQUESTED, BulkPlan.Phase.LISTENING, BulkPlan.Phase.CONNECTING, BulkPlan.Phase.AUTH)) {
+            assertTrue(p.toString(), BulkPlan.timeoutMs(p) > 0)
+            assertTrue(BulkPlan.timeoutReason(p).isNotEmpty())
+        }
+        assertEquals(0L, BulkPlan.timeoutMs(BulkPlan.Phase.UP))
+        val s = BulkPlan.request(BulkPlan.IDLE, 9, seller)
+        assertTrue(BulkPlan.timerApplies(s, BulkPlan.Phase.REQUESTED, 9))
+        // the timer of a previous session fires after a new purchase started
+        assertFalse(BulkPlan.timerApplies(s, BulkPlan.Phase.REQUESTED, 8))
+        // or after the phase moved on
+        assertFalse(BulkPlan.timerApplies(BulkPlan.offerReceived(s, 9, seller, 1, 0x85), BulkPlan.Phase.REQUESTED, 9))
+        // a failure ends it, a reset returns to IDLE with nothing kept
+        val f = BulkPlan.failed(s, "the provider did not offer a Bluetooth bulk channel")
+        assertEquals(BulkPlan.Phase.FAILED, f.phase); assertFalse(f.active)
+        assertEquals(BulkPlan.IDLE, BulkPlan.reset(f))
+        assertEquals("failing IDLE is still IDLE", BulkPlan.IDLE, BulkPlan.failed(BulkPlan.IDLE, "x"))
+    }
+
+    @Test
+    fun the_probe_passes_only_on_real_bytes_both_ways() {
+        val mb = BulkPlan.PROBE_BYTES.toLong()
+        val ok = BulkPlan.Direction(mb, 5_000, true)
+        val bad = BulkPlan.Direction(120_000, 0, false)
+        assertEquals(BulkPlan.Verdict.NOT_RUN, BulkPlan.verdict(null, null))
+        assertEquals(BulkPlan.Verdict.BIDIRECTIONAL, BulkPlan.verdict(ok, ok))
+        assertEquals(BulkPlan.Verdict.ONLY_A_TO_B, BulkPlan.verdict(ok, bad))
+        assertEquals(BulkPlan.Verdict.ONLY_B_TO_A, BulkPlan.verdict(bad, ok))
+        assertEquals(BulkPlan.Verdict.NEITHER, BulkPlan.verdict(bad, bad))
+        assertEquals(BulkPlan.Verdict.NEITHER, BulkPlan.verdict(null, bad))
+        assertTrue(BulkPlan.probePassed(BulkPlan.Verdict.BIDIRECTIONAL))
+        assertFalse("a socket that connected is not a link that carries", BulkPlan.probePassed(BulkPlan.Verdict.ONLY_A_TO_B))
+        assertFalse(BulkPlan.probePassed(BulkPlan.Verdict.NEITHER))
+        assertEquals(204L, ok.kbps())
+        assertTrue(ok.describe().contains("OK"))
+        assertTrue(bad.describe().contains("FAILED"))
+        for (v in BulkPlan.Verdict.values()) assertTrue(BulkPlan.verdictText(v).isNotEmpty())
+        assertTrue(ProductState.lostHint(BulkPlan.PROBE_FAIL_REASON).contains("Bluetooth"))
+    }
+
+    @Test
+    fun the_tunnel_writes_to_the_bulk_link_that_holds_the_peer_and_never_to_gatt() {
+        // Wi-Fi first when it is up, Bluetooth bulk when it is the one holding the peer, GATT for control only
+        assertEquals(Routing.TRANSPORT_WIFI, Routing.chooseTransport(wifiUp = true, bulkUp = true, bleReachable = true))
+        assertEquals(Routing.TRANSPORT_BT_BULK, Routing.chooseTransport(wifiUp = false, bulkUp = true, bleReachable = true))
+        assertEquals(Routing.TRANSPORT_BLE, Routing.chooseTransport(wifiUp = false, bulkUp = false, bleReachable = true))
+        assertNull(Routing.chooseTransport(false, false, false))
+        // GATT stays available for control while the bulk link is UP: the two-argument rule is unchanged
+        assertEquals(Routing.TRANSPORT_BLE, Routing.chooseTransport(wifiUp = false, bleReachable = true))
+        // the Internet tunnel itself
+        assertEquals(Routing.TRANSPORT_BT_BULK, Routing.bulkLinkFor(wifiPeer = null, bulkPeer = seller, peer = seller))
+        assertEquals(Routing.TRANSPORT_WIFI, Routing.bulkLinkFor(wifiPeer = seller, bulkPeer = null, peer = seller))
+        assertNull("no bulk link to that peer means no tunnel frame, never GATT", Routing.bulkLinkFor(null, null, seller))
+        assertNull(Routing.bulkLinkFor(null, buyer, seller))
+    }
+
+    @Test
+    fun the_purchase_chooses_bluetooth_for_a_provider_on_home_wifi_and_keeps_the_hotspot_for_mobile_data() {
+        val t = P2pPlan.Topology.SELLER_GROUP_OWNER
+        // the OUKITEL on the Freebox: hotspot refused, Bluetooth advertised
+        assertEquals(P2pAdmission.BuyPath.BLUETOOTH_BULK,
+            P2pAdmission.buyPath(t, offerP2p = false, linkUp = false, viaRelay = false, offerBulkBt = true, sellerOnWifi = true, preferBluetooth = false))
+        // a provider on mobile data keeps the proven hotspot
+        assertEquals(P2pAdmission.BuyPath.HOTSPOT,
+            P2pAdmission.buyPath(t, false, false, false, offerBulkBt = true, sellerOnWifi = false, preferBluetooth = false))
+        // unless the lab prefers Bluetooth
+        assertEquals(P2pAdmission.BuyPath.BLUETOOTH_BULK,
+            P2pAdmission.buyPath(t, false, false, false, offerBulkBt = true, sellerOnWifi = false, preferBluetooth = true))
+        // a provider that does not advertise Bluetooth cannot be bought over it
+        assertEquals(P2pAdmission.BuyPath.HOTSPOT,
+            P2pAdmission.buyPath(t, false, false, false, offerBulkBt = false, sellerOnWifi = true, preferBluetooth = true))
+        // an existing authenticated link always wins
+        assertEquals(P2pAdmission.BuyPath.LINK_UP,
+            P2pAdmission.buyPath(t, false, linkUp = true, viaRelay = false, offerBulkBt = true, sellerOnWifi = true, preferBluetooth = true))
+        // the advert bit
+        val f = Market.flags(sell = true, relay = false, validated = true, upstreamType = Tunnel.UP_WIFI, bulkBt = true)
+        val o = Market.Offer(seller, 5, f, -50, 0L)
+        assertTrue(o.bulkBt); assertTrue(o.selling); assertEquals(Tunnel.UP_WIFI, o.upstreamType)
+        assertFalse(Market.Offer(seller, 5, Market.flags(true, false, true, Tunnel.UP_WIFI), -50, 0L).bulkBt)
+        assertTrue("bit 7 fits the one advert byte", Market.FLAG_BULK_BT <= 0xFF)
+    }
+
+    @Test
+    fun accounting_and_the_provider_upstream_do_not_know_which_link_carried_the_bytes() {
+        // a checkpoint is bytes and a price, never a transport name
+        val c = Tunnel.Accounting(seller, "buyer", 1_000L)
+        c.bytesUp += 1_000_000L; c.bytesDown += 2_000_000L
+        assertEquals(3_000_000L, c.bytesUp + c.bytesDown)
+        assertEquals("", c.disconnectReason)
+        // the bulk lifecycle carries no gateway or upstream field at all: it cannot touch them
+        val s = BulkPlan.authenticated(BulkPlan.socketConnected(BulkPlan.listening(BulkPlan.IDLE, 1, buyer, 0x85)), buyer)
+        assertEquals(setOf("phase", "side", "session", "peer", "psm", "authenticated", "error"),
+            BulkPlan.State::class.java.declaredFields.map { it.name }.filter { !it.startsWith("$") }.toSet())
+        assertTrue(s.authenticated)
+    }
+}

@@ -107,6 +107,7 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnLedger).setOnClickListener { ledgerDialog() }
         findViewById<Button>(R.id.btnHistory).setOnClickListener { historyDialog() }
         findViewById<Button>(R.id.btnRelayLab).setOnClickListener { startActivity(Intent(this, RelayLabActivity::class.java)) }
+        findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         node.vpnRequested = { startVpnWithConsent() }
@@ -531,6 +532,7 @@ class LabActivity : Activity(), ProkNetNode.Listener {
             (if (node.wifi.peerCancelDetail.isNotEmpty()) "provider refused, ITS error: " + node.wifi.peerCancelDetail + "\n" else "") +
             "ble: " + node.linkState(Routing.TRANSPORT_BLE) + " | sent " + node.ble.bytesSent + " B, recv " + node.ble.bytesReceived + " B\n" +
             "wifi: " + node.linkState(Routing.TRANSPORT_WIFI) + " | sent " + node.wifi.bytesSent + " B, recv " + node.wifi.bytesReceived + " B\n" +
+            node.bulk.diag() +
             "peers: " + peers.joinToString("; ") { describe(it) } + "\n" +
             "keys known: " + node.store.peerKeyCount() + "\n" +
             "market: SELL " + (if (node.sellOn) "on " + node.sellPrice + " CFA/MB min " + node.sellMinPrice + " max " + node.sellMaxMb + " MB" else "off") + ", RELAY " + node.relayOn + ", fee " + node.feePct + "%, offers nearby " + node.offers().joinToString("; ") { it.describe() } + "\n" +

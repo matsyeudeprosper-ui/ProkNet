@@ -60,7 +60,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.9.24 | A customer that owns the group always starts Wi-Fi Direct, and the provider's reversed session ends as one unit when the customer cancels | phone test: the right path at last, and then createGroup was accepted and the group never formed, because a transient formed=false restarted discovery against Android's own creation |
 | v0.9.25 | Creating a group is its own stage with its own clock: a formed=false after an accepted createGroup is held, an accepted group that never forms is retried and then fails specifically, and an owner never asks the provider about its group | phone test: the retry ladder worked, but the admission layer still decided plans and restarted discovery while createGroup was pending |
 | v0.9.26 | The admission plane is dormant while this phone creates its group: one pure gate every admission action asks, a deferred visibility evaluated once the group exists, and a hard net under discovery | phone test: the first genuinely clean creation attempt on the OnePlus, accepted, silent, no group; then two framework BUSY answers were counted as attempts 2 and 3 |
-| v0.9.27 | BUSY is not an attempt: a creation state machine with two counters, a verified framework reset between real attempts, every creation failure typed as GROUP_CREATE_FAIL, and a screen that never blames the provider for this phone's own Wi-Fi Direct | built, 203 JVM tests pass |
+| v0.9.27 | BUSY is not an attempt: a creation state machine with two counters, a verified framework reset between real attempts, every creation failure typed as GROUP_CREATE_FAIL, and a screen that never blames the provider for this phone's own Wi-Fi Direct | built, 203 JVM tests pass; Wi-Fi Direct then archived (see below) |
+| v0.10.0 | Bluetooth bulk Internet: the provider keeps its home Wi-Fi and serves over a Bluetooth L2CAP channel, the same signed handshake / tunnel / VPN on top, a 1 MB probe each way before the tunnel, no hotspot and no Wi-Fi Direct | built, 211 JVM tests pass, not yet proven on phones |
 
 ### v0.1 - what it does
 
@@ -177,6 +178,16 @@ Two Android phones with mobile data and Wi-Fi OFF can:
 Not here: Mobile Money, custody, automatic cashout, multi-hop Internet.
 
 ## Decided
+
+- **Wi-Fi Direct is archived (2026-09-19).** Two topologies, both measured on
+  the real OUKITEL + OnePlus pair. SELLER_GROUP_OWNER: the OUKITEL forms a
+  group and keeps its Freebox, but the IP path is one way (everything the
+  client sends arrives, nothing the owner sends comes back, on the default
+  band and forced to 2.4 GHz, with the Wi-Fi radio lock held).
+  BUYER_GROUP_OWNER: the OnePlus never forms a group; Android accepts
+  `createGroup` and the framework stays BUSY. Not viable for this hardware.
+  The code and its diagnostics stay in the repo; nothing selects it in
+  consumer operation. The local link moved to Bluetooth in v0.10.0.
 
 `docs/DECISION_WIFI_SHARING.md`: a seller phone connected to a Wi-Fi router
 often cannot create the hotspot a customer joins (Android

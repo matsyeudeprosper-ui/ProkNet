@@ -145,7 +145,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     // ---- refresh (everything derives from the node through ProductState) -------------------------
 
-    private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.buyPhase(), node.wifi.linkedPeer != null && node.wifi.canReach(node.wifi.linkedPeer ?: ""),
+    private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.buyPhase(), node.buyerLinkUp(),
         node.tunnel.state, ProkVpnService.running, buyError())
 
     /** Why the last attempt failed, until the user closes the card. The link layer's reason counts too. */
