@@ -1,125 +1,146 @@
-# CLAUDE_REPORT - ProkNet v0.10.2 "the sequential probe"
+# CLAUDE_REPORT - ProkNet v0.11.0 "the consumer path"
 
 Date: 2026-09-19
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 218/218 automated tests pass, released, hardware test pending.
-One small fix to the probe, one simple test screen. No architecture change.
-Bluetooth Internet is NOT claimed yet.**
+Status: **built, 222/222 automated tests pass, released. Integration and UX
+over the proven stack; nothing under it changed. Hardware regression of the
+normal UI pending (TESTING section 49).**
 
-## 1. What v0.10.1 proved on the phones
+## 0. Product status truth
 
-The seller stayed on the Freebox, no hotspot probe, no Wi-Fi Direct.
-L2CAP connected, the signed authentication passed, BULK UP. Seller ->
-buyer carried the full 1 MB. Buyer -> seller carried 696,320 / 802,816 /
-966,656 B across three runs and was then killed by the 40 s clock. So the
-link is bidirectional and the probe was the problem: two 1 MB streams
-competing for one ~30-34 KB/s channel under a single timeout, and a verdict
-that called a 966 KB direction "carried no bytes".
+Two-phone home-Wi-Fi sharing over Bluetooth: **HARDWARE PROVEN on this
+device pair** (v0.10.2, 2026-09-19). OUKITEL Android 15 seller on the
+Freebox, OnePlus Android 14 buyer. Bluetooth L2CAP authenticated, 256 KB
+PASS both directions, contract and session, VPN, DNS, HTTPS (TLS 1.3,
+HTTP 200), Chrome Wikipedia, accounting and checkpoint. Recorded in the
+README ("Proven"), ARCHITECTURE and TESTING. Not generalised to every
+Android device.
 
-## 2. The probe is sequential and smaller
+## 1. Normal seller flow
 
-```
-PROBE BUYER_TO_SELLER   buyer sends 256 KB   -> seller confirms full receipt
-PROBE SELLER_TO_BUYER   seller sends 256 KB  -> buyer confirms full receipt
-PROBE COMPLETE          VERDICT: BIDIRECTIONAL -> contract -> tunnel -> VPN -> Internet test
-```
+Open ProkNet -> Partager mon Internet -> price -> Commencer le partage.
+`BulkPlan.sellerAccessPath` picks the link (home Wi-Fi + Bluetooth ->
+Bluetooth; mobile data -> hotspot; home Wi-Fi without Bluetooth -> NONE,
+"Activez le Bluetooth : il sert à connecter vos clients sur ce réseau
+Wi-Fi."). The card reads "Vous partagez votre Internet / Disponible pour
+les personnes à proximité", then "Source : Wi-Fi (Freebox) ✅" and the
+price. With a customer: "Quelqu'un utilise votre Internet", 1 client, data,
+earnings. The hotspot warnings (Wi-Fi on, Location on, "this network
+refuses a hotspot") no longer appear on the Bluetooth path
+(`ProductState.sellerNeedsHotspotWarnings`). No protocol word on screen.
 
-- `BulkPlan.probeSender(step, isHost)`: the buyer (client) sends in step
-  1, the seller (host) in step 2, nobody outside a step. Tested: in every
-  step exactly one side sends.
-- Direction 2 does not start until the receipt report of direction 1 has
-  arrived. The seller writes its confirmation BEFORE its own payload, in
-  the same io task, so the buyer always sees the report first.
-- Per-direction clocks: the receiver waits 30 s, the sender 36 s. A
-  receiver that times out reports what did arrive, so both phones show the
-  same bytes.
-- Every probe state change, including the byte count, runs on the main
-  thread. The old counter lived on the read thread and a direction change
-  could reset it under incoming frames; that race is gone.
-- 256 KB at the measured 30 KB/s is about 9 s per direction, well inside
-  the clock.
+## 2. Normal buyer flow
 
-## 3. Verdicts stopped lying
+Open ProkNet -> Internet -> the offer card (price, signal, source "Wi-Fi")
+-> Connecter. Then, by itself: Connexion… -> Vérification de la
+connexion… -> Démarrage d'Internet… -> Internet connecté ✅ with price,
+data used, cost, and Arrêter. `ProductState.buyerNeedsWifi` stops CONNECT
+from demanding Wi-Fi on the customer for a Bluetooth provider.
 
-Per direction: `0 B = NO_DATA`, `1 B .. target-1 = PARTIAL`, `target =
-PASS`. The link verdict is the result of the first direction that did not
-pass, and it names the direction:
+## 3. Automatic transport rules
 
-```
-buyer -> seller: 243,712 / 262,144 B PARTIAL (timeout)
-seller -> buyer: not run
-VERDICT: PARTIAL, buyer -> seller timed out
-```
+- authenticated link exists -> reuse (`BuyPath.LINK_UP`)
+- provider on home Wi-Fi advertising Bluetooth -> Bluetooth bulk
+- provider on mobile data -> LocalOnlyHotspot
+- Wi-Fi Direct: never in the normal flow (no normal provider advertises a
+  group since v0.10.1; `startP2pFallback` refuses without the developer
+  flag). A test walks every combination and asserts WIFI_DIRECT never
+  comes out.
 
-The v0.10.1 numbers are a test case: a 966 KB direction is PARTIAL, never
-"nothing". `Verdict` is now `NOT_RUN / BIDIRECTIONAL / PARTIAL / NO_DATA`;
-only BIDIRECTIONAL proceeds, as before.
+## 4. Stale P2P cleanup
 
-## 4. Not chased, on purpose
+`ProkNetNode.start` calls `P2pLink.clearStaleGroup()` unless the developer
+P2P lab is on. It runs the Android-confirmed STOP walk (cancel connect,
+stop discovery, close sockets, remove group), which the lifecycle runs
+"always, even when this phone believes it is idle". Only the p2p
+interface is touched; wlan0 stays on the Freebox. Log line:
+`consumer start: removing any stale Wi-Fi Direct group ... (wlan0
+untouched)`. Cleanup only.
 
-`bad frame length 0` and `EOFException` followed the old timeout
-cancelling the link mid-transfer. If they appear after a clean sequential
-probe, they get their own investigation next.
+## 5. Consumer state mapping
 
-## 5. The test screen
+`ProductState.Buyer` gained CHECKING (fed by `ProkNetNode.linkChecking()`:
+link up, quick check running). Mapping from the real engine strings:
 
-`BtLabText` is a pure module (Snapshot in, sentence out), 3 JVM tests
-cover every sentence and the copied summary. The screen:
+| engine | user reads |
+|---|---|
+| REQUESTED / OFFERED ("FINDING") | Recherche d'un fournisseur… |
+| CONNECTING / AUTH | Connexion… |
+| UP + check running | Vérification de la connexion… |
+| AGREEING / CONNECTING / TUNNEL UP without VPN | Démarrage d'Internet… |
+| TUNNEL UP + VPN, INTERNET OK | Internet connecté ✅ |
+| INTERNET LOST / failure | Connexion perdue + one sentence |
 
-- Seller: `Internet source: Wi-Fi ✅`, `Bluetooth: Ready ✅`, START
-  SHARING, then `Waiting for another phone...`, `Phone connected ✅ /
-  Testing connection...`, `Bluetooth connection works both ways ✅ /
-  Internet sharing starting...`, `Sharing Internet ✅`.
-- Buyer: `Seller found ✅`, CONNECT, then `Connecting...`, `Checking both
-  directions...`, `Starting Internet...`, `Testing Internet...`, `INTERNET
-  WORKING ✅` with the five lines (Bluetooth, seller Internet, VPN, DNS,
-  HTTPS).
-- The screen starts the node and asks for permissions itself, runs the
-  HTTPS test through the seller itself once the tunnel is up, asks for
-  the VPN itself. A failure is one sentence.
-- COPY TEST RESULT: the summary you specified, then the full diagnostic.
-  COPY DIAGNOSTIC stays underneath for us.
+Failures: probe -> "La connexion à proximité est trop faible. Rapprochez
+les téléphones et réessayez."; Bluetooth off -> "Le Bluetooth est éteint.
+Activez-le pour vous connecter."; provider lost upstream -> "Le
+fournisseur a perdu son Internet."; unmapped -> "Impossible de se
+connecter à ce fournisseur. Réessayez.". The technical text stays under
+Développeur.
 
-One honest note on `DNS: working`: the app itself is excluded from its own
-VPN, so that line turns green on the first DNS query another app or
-Android makes through the VPN. The HTTPS line is our own test through the
-seller and does not depend on that.
+`BulkPlan.afterProbe(verdict)` is now the rule the node applies after the
+check: BIDIRECTIONAL -> start the contract; else end the attempt. The
+VPN request is the existing `onSessionUp -> vpnRequested` path (proved on
+hardware in v0.10.2); MainActivity now explains it in one sentence with
+CONTINUER before Android's prompt, and later sessions start without
+asking once Android has the consent.
 
-## 6. Tests (218, +5)
+## 6. Files changed
 
-Sequential order (buyer first, one sender per step, none outside a step);
-PARTIAL / NO_DATA / PASS boundaries at 0, 1, target-1, target; the named
-verdict and the plain sentence for both directions; direction 2 not run
-names direction 1; the seller and buyer screen sentences at every stage;
-the copied summary for success, a probe failure and a Bluetooth failure.
-The three v0.10.0 bulk tests and the two v0.10.1 seller-path tests still
-pass unchanged.
+`core/ProductState.kt` (CHECKING, four words, plain failures,
+buyerNeedsWifi, sellerNeedsHotspotWarnings, sellerSourceLine),
+`core/BulkPlan.kt` (afterProbe), `ble/ProkNetNode.kt` (linkChecking,
+afterProbe, clearStaleGroup at start), `transport/P2pLink.kt`
+(clearStaleGroup), `ui/MainActivity.kt` (checking state, Bluetooth-aware
+seller warnings and source line, Wi-Fi gate on CONNECT, VPN explanation),
+`res/values/strings.xml` (5 strings, "Internet connecté ✅"),
+`res/layout/activity_lab.xml` ("BT diagnostics"), tests
+`ProductStateTest`, `P2pAdmissionTest`, `BulkPlanTest`, `build.gradle.kts`.
 
-## 7. Build
+## 7. Tests (222, +4)
 
-Build 43, versionName 0.10.2,
-SHA256 `91a49b9a7cbaaf9d2704014b527701a6b3ae91c4d86b27f594961ba85475a803`.
+- home Wi-Fi seller + Bluetooth -> BLUETOOTH_BULK; mobile data -> HOTSPOT
+  (provider side, v0.10.1 rule re-asserted next to the buyer side)
+- buyer sees a Bluetooth-capable Wi-Fi seller -> BLUETOOTH_BULK with no
+  preference; mobile-data seller -> HOTSPOT; existing link -> LINK_UP
+- every combination of bulk/wifi/linkUp in the production topology ->
+  never WIFI_DIRECT
+- afterProbe: BIDIRECTIONAL -> START_CONTRACT, PARTIAL / NO_DATA / NOT_RUN
+  -> END_ATTEMPT
+- the real buyPhase strings map to Connexion / Vérification / Démarrage /
+  Connecté; no title or hint contains L2CAP, PSM, BULK, GATT, probe, 256;
+  the VPN hint names the OK to press
+- the four plain failure sentences
+- buyerNeedsWifi, sellerNeedsHotspotWarnings, sellerSourceLine (no protocol
+  word)
+- developer diagnostics: BtLabTextTest (3) still pass; the lab screen is
+  untouched
+Three old pins were updated on purpose: SECURING now reads "Démarrage
+d'Internet…", the generic failure sentence changed, and the probe hint no
+longer contains the word Bluetooth.
+
+## 8. Build
+
+Build 44, versionName 0.11.0,
+SHA256 `a4f0ede38fef1f0ae4956b3a2c17904fdcff5dd3ac538a481e417d6e3af43558`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.10.2
-Commit `c805b8b` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.11.0
+Commit `ef6e624` on `main`; this report on top.
 
-## 8. The hardware test
+## 9. The exact simple hardware test
 
-`docs/TESTING.md` section 48. OUKITEL: BT Lab, START SHARING. OnePlus: BT
-Lab, CONNECT, wait. Then COPY TEST RESULT on both and Chrome on the buyer.
+OUKITEL: open ProkNet, Partager mon Internet, Commencer le partage.
+OnePlus: open ProkNet, Internet, tap the offer, Connecter. Wait for
+"Internet connecté ✅", open Wikipedia. No Developer screen. Then stop both
+and run it a second time: the VPN must not ask again. TESTING section 49.
 
-## 9. Not changed
+## 10. Not changed
 
-L2CAP, the signed handshake, StreamLink, Tunnel, Gateway, VPN, contracts,
-accounting, the Wire bulk negotiation, the session token, the seller
-access path of v0.10.1, the mobile-data hotspot path, the developer P2P
-lab. No RFCOMM.
-
-## 10. The claim rule
-
-A copied BUYER summary with both directions PASS and `Internet: YES`, and
-a page in Chrome. Not before.
+BluetoothBulkTransport, L2CAP, StreamLink, the signed handshake, Tunnel,
+Gateway, VPN, contracts and accounting, the v0.10.2 sequential probe (its
+size and timing untouched: gather timings over several sessions first),
+the mobile-data hotspot path, the developer labs. No 3-phone relay work.
