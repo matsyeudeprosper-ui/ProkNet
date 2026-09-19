@@ -97,7 +97,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<View>(R.id.navEarn).setOnClickListener { select(Tab.EARN) }
         v<View>(R.id.navActivity).setOnClickListener { select(Tab.ACTIVITY) }
 
-        v<PulseButtonView>(R.id.btnGetInternet).label = getString(R.string.get_internet_big)
+        v<PulseButtonView>(R.id.btnGetInternet).label = getString(R.string.sphere_idle)
         v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
         v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
         v<View>(R.id.rowShare).setOnClickListener { ensureRunning { select(Tab.EARN) } }
@@ -164,6 +164,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun getInternet() {
         if (node.sellOn) { toast(getString(R.string.toast_stop_sharing_first)); return }
+        if (request?.active == true) return
         ensureRunning {
             if (buyerOn()) { refresh(); return@ensureRunning }
             lostDismissed = false
@@ -275,7 +276,22 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val buyerVisible = buyerOn() || (b == ProductState.Buyer.LOST && !lostDismissed)
         val requestVisible = r != null && r.state != InternetRequest.State.CANCELLED
         val status = sellerOn || buyerVisible || requestVisible
-        show(R.id.homeAsk, !status); show(R.id.homeStatus, status)
+        show(R.id.homeAsk, !sellerOn); show(R.id.homeStatus, status)
+        val sphere = v<PulseButtonView>(R.id.btnGetInternet)
+        sphere.mode = when {
+            buyerVisible && b == ProductState.Buyer.ONLINE -> PulseButtonView.Mode.ONLINE
+            buyerVisible && b != ProductState.Buyer.LOST -> PulseButtonView.Mode.CONNECTING
+            r != null && r.active -> PulseButtonView.Mode.SEARCHING
+            else -> PulseButtonView.Mode.IDLE
+        }
+        sphere.label = getString(when {
+            buyerVisible && b == ProductState.Buyer.ONLINE -> R.string.sphere_online
+            buyerVisible && b == ProductState.Buyer.LOST -> R.string.sphere_retry
+            buyerVisible -> R.string.sphere_connecting
+            r != null && r.active -> R.string.sphere_searching
+            r != null && r.state == InternetRequest.State.FAILED -> R.string.sphere_retry
+            else -> R.string.sphere_idle
+        })
         val stop = v<Button>(R.id.btnHomeStop)
         when {
             sellerOn -> {
@@ -303,19 +319,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 stop.text = getString(if (rr.active) R.string.cancel_big else R.string.close_big)
             }
         }
-        // the sonar breathes while a request is alive
-        v<PulseButtonView>(R.id.btnGetInternet).searching = r != null && r.active
         // three quiet numbers, and the line under the sonar
         val cands = if (running) cover.candidates() else emptyList()
         val usable = cands.filter { GetInternet.blocker(it, now, null) == null }
         val sourcesWord = if (usable.isEmpty()) getString(R.string.sources_none) else if (usable.size == 1) getString(R.string.sources_one) else getString(R.string.sources_many, usable.size)
-        text(R.id.tileAround, sourcesWord)
+        text(R.id.tileAround, usable.size.toString())
         v<PulseButtonView>(R.id.btnGetInternet).sources = usable.size
         text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb }).replace(" par Mo", "/Mo"))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
-        text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline))
-        text(R.id.homeLine, if (!running) getString(R.string.home_line_off) else if (usable.isEmpty()) getString(R.string.home_promise_short) else getString(R.string.home_line_ready, sourcesWord + " · " + CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb })))
-        text(R.id.rowShareSub, getString(if (sellerOn) R.string.row_share_on else R.string.row_share_sub))
+        text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))
+        text(R.id.rowShareSub, getString(R.string.row_share_on_short)); show(R.id.rowShareSub, sellerOn)
         text(R.id.homeNote, if (running && !node.isBluetoothOn()) getString(R.string.home_bluetooth_off) else "")
     }
 

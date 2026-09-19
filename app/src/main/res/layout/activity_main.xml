@@ -22,11 +22,9 @@
                     <TextView android:id="@+id/chipNode" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/bg_chip" android:paddingStart="12dp" android:paddingEnd="14dp" android:paddingTop="7dp" android:paddingBottom="7dp" android:drawableStart="@drawable/dot_muted" android:drawablePadding="8dp" android:gravity="center_vertical" android:text="@string/node_off" android:textSize="12sp" android:textStyle="bold" android:textColor="@color/text" />
                 </LinearLayout>
 
-                <!-- the question, the sonar, the line -->
+                <!-- the sphere -->
                 <LinearLayout android:id="@+id/homeAsk" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center_horizontal">
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="26dp" android:text="@string/home_question" android:textSize="27sp" android:textStyle="bold" android:textColor="@color/text" android:letterSpacing="-0.02" />
-                    <net.prok.proknet.ui.PulseButtonView android:id="@+id/btnGetInternet" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="-6dp" />
-                    <TextView android:id="@+id/homeLine" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center" android:text="@string/home_promise_short" android:textSize="14sp" android:textColor="@color/text_muted" android:layout_marginTop="-8dp" android:layout_marginBottom="18dp" />
+                    <net.prok.proknet.ui.PulseButtonView android:id="@+id/btnGetInternet" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_marginBottom="4dp" />
                 </LinearLayout>
 
                 <!-- the status card while searching / connecting / connected / failed -->
@@ -55,17 +53,16 @@
                 </LinearLayout>
 
                 <!-- two doors -->
-                <LinearLayout android:id="@+id/rowShare" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:background="@drawable/bg_secondary" android:padding="18dp" android:layout_marginBottom="10dp" android:clickable="true" android:focusable="true">
+                <LinearLayout android:id="@+id/rowShare" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:background="@drawable/bg_secondary" android:paddingStart="20dp" android:paddingEnd="20dp" android:paddingTop="20dp" android:paddingBottom="20dp" android:layout_marginBottom="10dp" android:clickable="true" android:focusable="true">
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
                         <TextView android:id="@+id/rowShareTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/row_share_title" style="@style/H2" />
-                        <TextView android:id="@+id/rowShareSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="@string/row_share_sub" style="@style/Muted" />
+                        <TextView android:id="@+id/rowShareSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="" style="@style/Muted" android:visibility="gone" />
                     </LinearLayout>
                     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/chevron" android:textSize="26sp" android:textColor="@color/text_muted" android:layout_marginStart="12dp" />
                 </LinearLayout>
                 <LinearLayout android:id="@+id/rowMap" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:background="@drawable/bg_secondary" android:padding="18dp" android:clickable="true" android:focusable="true">
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
                         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/row_map_title" style="@style/H2" />
-                        <TextView android:id="@+id/rowMapSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="@string/row_map_sub" style="@style/Muted" />
                     </LinearLayout>
                     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/chevron" android:textSize="26sp" android:textColor="@color/text_muted" android:layout_marginStart="12dp" />
                 </LinearLayout>

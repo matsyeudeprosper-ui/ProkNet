@@ -255,6 +255,15 @@
     <string name="map_place">Placer sur une vraie carte</string>
     <string name="map_place_sub">Autorisez la position approximative (à 500 m près) pour placer ces observations dans des cases. Jamais votre position exacte.</string>
 
+    <!-- v0.12.4 the sphere speaks -->
+    <string name="sphere_idle">OBTENIR
+INTERNET</string>
+    <string name="sphere_searching">RECHERCHE</string>
+    <string name="sphere_connecting">CONNEXION</string>
+    <string name="sphere_online">CONNECTÉ</string>
+    <string name="sphere_retry">RÉESSAYER</string>
+    <string name="row_share_on_short">Vous partagez</string>
+
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>
     <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>

@@ -746,6 +746,32 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The sphere is the interface (v0.12.4)
+
+Mike liked the sphere and asked for less writing, more intuition, and a
+sphere that breathes. So the state moved into the sphere:
+
+- `PulseButtonView.Mode` IDLE / SEARCHING / CONNECTING / ONLINE. At rest
+  the sphere breathes on a 3.4 s sine (radius 2 %, halo alpha); searching
+  breathes on 1.5 s with a turning radar wedge; connecting emits two
+  expanding pulse rings; online turns the body, halo and arcs green. A
+  press sends a ripple ring outward. The two scan arcs rotate slowly in
+  opposite directions; the source dots orbit the first arc (24 s per turn,
+  8 s while searching). The view redraws with `postInvalidateOnAnimation`
+  while attached and shown, never otherwise.
+- One word per state, set by the home refresh: OBTENIR INTERNET /
+  RECHERCHE / CONNEXION / CONNECTÉ / RÉESSAYER.
+- The ask block no longer hides while a request runs; it hides only for a
+  seller. The status card sits under the sphere with the details and
+  ARRÊTER. A tap while a request is alive does nothing.
+- Two defects fixed: the software layer used for blur showed as a hard
+  rectangle because the ambient gradients reached the view edge (they now
+  stay inside 92 % of the radius), and the outer arc was clipped (arcs are
+  bounded by the view radius, height 336 dp).
+- Less writing: no "Besoin d'Internet ?", no "Prêt · …" line, tiles show
+  only the value ("2", "gratuit", "3 min"), door rows are a title and a
+  chevron, the share row says "Vous partagez" only while sharing.
+
 ## The sphere, second pass (v0.12.3)
 
 Mike: "Better but not quite. Was that the best you have?" It was not. The
