@@ -24,7 +24,7 @@
 
                 <!-- the question, the sonar, the line -->
                 <LinearLayout android:id="@+id/homeAsk" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center_horizontal">
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="26dp" android:text="@string/home_question" android:textSize="26sp" android:textStyle="bold" android:textColor="@color/text" android:letterSpacing="-0.02" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="26dp" android:text="@string/home_question" android:textSize="27sp" android:textStyle="bold" android:textColor="@color/text" android:letterSpacing="-0.02" />
                     <net.prok.proknet.ui.PulseButtonView android:id="@+id/btnGetInternet" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="-6dp" />
                     <TextView android:id="@+id/homeLine" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center" android:text="@string/home_promise_short" android:textSize="14sp" android:textColor="@color/text_muted" android:layout_marginTop="-8dp" android:layout_marginBottom="18dp" />
                 </LinearLayout>
@@ -41,16 +41,16 @@
                 <!-- three quiet numbers -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginEnd="4dp">
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_around" style="@style/Caption" />
-                        <TextView android:id="@+id/tileAround" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_around" style="@style/Caption" android:maxLines="1" />
+                        <TextView android:id="@+id/tileAround" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="12sp" android:autoSizeMaxTextSize="18sp" />
                     </LinearLayout>
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginStart="4dp" android:layout_marginEnd="4dp">
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_price" style="@style/Caption" />
-                        <TextView android:id="@+id/tilePrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_price" style="@style/Caption" android:maxLines="1" />
+                        <TextView android:id="@+id/tilePrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="12sp" android:autoSizeMaxTextSize="18sp" />
                     </LinearLayout>
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginStart="4dp">
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_last" style="@style/Caption" />
-                        <TextView android:id="@+id/tileLast" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tile_last" style="@style/Caption" android:maxLines="1" />
+                        <TextView android:id="@+id/tileLast" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="—" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="12sp" android:autoSizeMaxTextSize="18sp" />
                     </LinearLayout>
                 </LinearLayout>
 

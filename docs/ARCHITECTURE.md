@@ -746,6 +746,27 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The sphere, second pass (v0.12.3)
+
+Mike: "Better but not quite. Was that the best you have?" It was not. The
+v0.12.2 sphere was a pale flat disc inside three even circles, and the
+tiles truncated.
+
+`PulseButtonView` now runs in a software layer so it can blur: a drop
+shadow (blurred dark ellipse under the sphere), a blurred halo ring, and
+blurred glows under the source dots. The body is a four-stop radial
+gradient from a tight near-white specular (top-left) through the brand
+blue to a deep navy edge, with a thin white rim. Ambient light replaces
+the bullseye: a blue radial glow high-left and a violet one low-right, and
+two scan arcs whose stroke fades around the circle (a sweep gradient) so
+they read as light, not as a target. The usable sources the engine sees
+(`sources`, set from the home refresh) sit on the first arc as small green
+glowing dots, evenly spread; while searching they drift and a radar wedge
+turns once every 3 s. The label carries a soft shadow.
+
+Tiles: short captions (Sources / Prix / Dernière) on one line, values
+auto-sized between 12 and 18 sp, so "il y a 14 min" is complete.
+
 ## Accueil and Carte, redesigned (v0.12.2)
 
 Mike rejected the v0.12.1 home (a giant filled ball in an empty frame) and

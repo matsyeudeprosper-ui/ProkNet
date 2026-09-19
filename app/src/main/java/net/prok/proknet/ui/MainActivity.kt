@@ -310,6 +310,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val usable = cands.filter { GetInternet.blocker(it, now, null) == null }
         val sourcesWord = if (usable.isEmpty()) getString(R.string.sources_none) else if (usable.size == 1) getString(R.string.sources_one) else getString(R.string.sources_many, usable.size)
         text(R.id.tileAround, sourcesWord)
+        v<PulseButtonView>(R.id.btnGetInternet).sources = usable.size
         text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb }).replace(" par Mo", "/Mo"))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline))
