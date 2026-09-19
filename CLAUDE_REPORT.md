@@ -1,98 +1,125 @@
-# CLAUDE_REPORT - ProkNet v0.10.1 "the runtime obeys the architecture"
+# CLAUDE_REPORT - ProkNet v0.10.2 "the sequential probe"
 
 Date: 2026-09-19
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 213/213 automated tests pass, released, not yet tested on phones.
-This is a lifecycle correction, not a rewrite. Bluetooth Internet is still NOT claimed.**
+Status: **built, 218/218 automated tests pass, released, hardware test pending.
+One small fix to the probe, one simple test screen. No architecture change.
+Bluetooth Internet is NOT claimed yet.**
 
-## 1. The violation you found
+## 1. What v0.10.1 proved on the phones
 
-v0.10.0 claimed the home-Wi-Fi provider stays on its Wi-Fi and serves over
-Bluetooth. `setSelling(true)` still called `checkSharing`, which ran
-`HotspotProbe` and, on a refusal, `startP2pFallback` created a Wi-Fi Direct
-group. So a normal SELL on home Wi-Fi could still start the hotspot machinery
-and the archived transport, contaminating the very test v0.10 exists for.
+The seller stayed on the Freebox, no hotspot probe, no Wi-Fi Direct.
+L2CAP connected, the signed authentication passed, BULK UP. Seller ->
+buyer carried the full 1 MB. Buyer -> seller carried 696,320 / 802,816 /
+966,656 B across three runs and was then killed by the 40 s clock. So the
+link is bidirectional and the probe was the problem: two 1 MB streams
+competing for one ~30-34 KB/s channel under a single timeout, and a verdict
+that called a 966 KB direction "carried no bytes".
 
-## 2. One pure rule (requirements 1, 3)
+## 2. The probe is sequential and smaller
 
-`BulkPlan.sellerAccessPath(upstreamIsWifi, bulkSupported, bluetoothOn)`:
+```
+PROBE BUYER_TO_SELLER   buyer sends 256 KB   -> seller confirms full receipt
+PROBE SELLER_TO_BUYER   seller sends 256 KB  -> buyer confirms full receipt
+PROBE COMPLETE          VERDICT: BIDIRECTIONAL -> contract -> tunnel -> VPN -> Internet test
+```
 
-| upstream | Bluetooth | path |
-|---|---|---|
-| mobile data | any | HOTSPOT (the proven path, probes as before) |
-| home Wi-Fi | on | BLUETOOTH_BULK (no probe, Wi-Fi radio untouched) |
-| home Wi-Fi | off / unsupported | NONE (reported honestly, no silent group) |
+- `BulkPlan.probeSender(step, isHost)`: the buyer (client) sends in step
+  1, the seller (host) in step 2, nobody outside a step. Tested: in every
+  step exactly one side sends.
+- Direction 2 does not start until the receipt report of direction 1 has
+  arrived. The seller writes its confirmation BEFORE its own payload, in
+  the same io task, so the buyer always sees the report first.
+- Per-direction clocks: the receiver waits 30 s, the sender 36 s. A
+  receiver that times out reports what did arrive, so both phones show the
+  same bytes.
+- Every probe state change, including the byte count, runs on the main
+  thread. The old counter lived on the read thread and a direction change
+  could reset it under incoming frames; that race is gone.
+- 256 KB at the measured 30 KB/s is about 9 s per direction, well inside
+  the clock.
 
-`onSharingReady` runs when SELL comes up and applies it. `needsHotspotProbe`
-is true only for HOTSPOT, so a Bluetooth seller never calls `HotspotProbe`
-and never touches the Wi-Fi local-link state; it advertises `FLAG_BULK_BT`
-and waits for a `BULK_REQUEST`. Wi-Fi Direct is not one of the answers.
+## 3. Verdicts stopped lying
 
-## 3. Automatic Wi-Fi Direct is gone (requirement 2)
+Per direction: `0 B = NO_DATA`, `1 B .. target-1 = PARTIAL`, `target =
+PASS`. The link verdict is the result of the first direction that did not
+pass, and it names the direction:
 
-Both automatic `startP2pFallback` calls in `checkSharing` are removed. The
-buyer-asking rebuild only fires if a developer group was already up. And
-`startP2pFallback` refuses structurally unless `p2pDeveloperEnabled` is set,
-which only the P2P lab entry points (`p2pSell`, `p2pBuy`) set. No normal
-SELL / BUY / share-check / network-change / provider-request path can create
-a group. The rule is code, not a comment.
+```
+buyer -> seller: 243,712 / 262,144 B PARTIAL (timeout)
+seller -> buyer: not run
+VERDICT: PARTIAL, buyer -> seller timed out
+```
 
-## 4. Mobile-data hotspot preserved (requirement 4)
+The v0.10.1 numbers are a test case: a 966 KB direction is PARTIAL, never
+"nothing". `Verdict` is now `NOT_RUN / BIDIRECTIONAL / PARTIAL / NO_DATA`;
+only BIDIRECTIONAL proceeds, as before.
 
-A mobile-data upstream still returns HOTSPOT and runs exactly as before. The
-change is specific to the home-Wi-Fi seller.
+## 4. Not chased, on purpose
 
-## 5. The BLE watchdog knows the bulk link (requirement 5)
+`bad frame length 0` and `EOFException` followed the old timeout
+cancelling the link mid-transfer. If they appear after a clean sequential
+probe, they get their own investigation next.
 
-`bleState().linkBusy` now includes `bulk.state.active || bulk.linkedPeer !=
-null`, so the watchdog does not recover the scanner or advertiser during
-BULK_REQUEST, LISTENING, CONNECTING, AUTH, PROBE or UP.
+## 5. The test screen
 
-## 6. Reachability and the transports collection (requirements 6, 7)
+`BtLabText` is a pure module (Snapshot in, sentence out), 3 JVM tests
+cover every sentence and the copied summary. The screen:
 
-`reachablePeers` adds the authenticated bulk peer next to the Wi-Fi one, so a
-live L2CAP peer is not treated as gone during a BLE scan gap. The stale
-`transports` collection (`listOf(wifi, ble)`, previously unused) now lists
-`wifi, bulk, ble`.
+- Seller: `Internet source: Wi-Fi ✅`, `Bluetooth: Ready ✅`, START
+  SHARING, then `Waiting for another phone...`, `Phone connected ✅ /
+  Testing connection...`, `Bluetooth connection works both ways ✅ /
+  Internet sharing starting...`, `Sharing Internet ✅`.
+- Buyer: `Seller found ✅`, CONNECT, then `Connecting...`, `Checking both
+  directions...`, `Starting Internet...`, `Testing Internet...`, `INTERNET
+  WORKING ✅` with the five lines (Bluetooth, seller Internet, VPN, DNS,
+  HTTPS).
+- The screen starts the node and asks for permissions itself, runs the
+  HTTPS test through the seller itself once the tunnel is up, asks for
+  the VPN itself. A failure is one sentence.
+- COPY TEST RESULT: the summary you specified, then the full diagnostic.
+  COPY DIAGNOSTIC stays underneath for us.
 
-## 7. Tests (213, +2)
+One honest note on `DNS: working`: the app itself is excluded from its own
+VPN, so that line turns green on the first DNS query another app or
+Android makes through the VPN. The HTTPS line is our own test through the
+seller and does not depend on that.
 
-`sellerAccessPath` on every combination: home Wi-Fi + Bluetooth -> Bluetooth
-bulk with no probe; mobile data -> hotspot with a probe; home Wi-Fi without
-Bluetooth -> NONE, never Wi-Fi Direct. A remembered hotspot refusal does not
-matter to a Bluetooth seller, and a Wi-Fi network change under it keeps the
-Bluetooth answer with no probe. No SellerAccessPath value names Wi-Fi Direct.
-Everything from v0.10.0 still passes.
+## 6. Tests (218, +5)
 
-## 8. Build
+Sequential order (buyer first, one sender per step, none outside a step);
+PARTIAL / NO_DATA / PASS boundaries at 0, 1, target-1, target; the named
+verdict and the plain sentence for both directions; direction 2 not run
+names direction 1; the seller and buyer screen sentences at every stage;
+the copied summary for success, a probe failure and a Bluetooth failure.
+The three v0.10.0 bulk tests and the two v0.10.1 seller-path tests still
+pass unchanged.
 
-Build 42, versionName 0.10.1,
-SHA256 `2593115155e42b1458c34174a92c58dcfdb61179522c555d64261d5dc23f5b67`.
+## 7. Build
+
+Build 43, versionName 0.10.2,
+SHA256 `91a49b9a7cbaaf9d2704014b527701a6b3ae91c4d86b27f594961ba85475a803`.
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.10.1
-Commit `d4cd31e` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.10.2
+Commit `c805b8b` on `main`; this report on top.
 
-## 9. The clean hardware test (requirement 9)
+## 8. The hardware test
 
-`docs/TESTING.md` sections 47 then 46. The SELLER OUKITEL, on the Freebox
-with mobile data off and Bluetooth on, must show `SELLER ACCESS PATH =
-BLUETOOTH_BULK`, `PROVIDER READY, upstream Wi-Fi, validated`, and NO hotspot
-probe, NO Wi-Fi Direct line, NO `p2p` interface. Then the BUYER over
-Bluetooth: BULK UP, `VERDICT: BIDIRECTIONAL`, contract, VPN, DNS, HTTPS,
-Chrome.
+`docs/TESTING.md` section 48. OUKITEL: BT Lab, START SHARING. OnePlus: BT
+Lab, CONNECT, wait. Then COPY TEST RESULT on both and Chrome on the buyer.
 
-## 10. Not changed
+## 9. Not changed
 
-The L2CAP design, the StreamLink refactor, the signed handshake, the 1 MB
-probe, the tunnel, the gateway, the VPN, the contracts, the accounting, the
-Wire bulk negotiation, the session tokens, the mobile-data hotspot path and
-the developer P2P lab are all untouched.
+L2CAP, the signed handshake, StreamLink, Tunnel, Gateway, VPN, contracts,
+accounting, the Wire bulk negotiation, the session token, the seller
+access path of v0.10.1, the mobile-data hotspot path, the developer P2P
+lab. No RFCOMM.
 
-## 11. The claim rule
+## 10. The claim rule
 
-Sections 47 and 46. No claim until the seller is provably clean and the buyer
-reaches bidirectional bytes, VPN, DNS and HTTPS.
+A copied BUYER summary with both directions PASS and `Internet: YES`, and
+a page in Chrome. Not before.
