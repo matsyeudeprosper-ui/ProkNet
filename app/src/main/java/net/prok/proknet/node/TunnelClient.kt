@@ -288,7 +288,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 main.post(ticker)
                 hooks.onSessionUp()
             }
-            Tunnel.T_SESSION_END -> fail("seller ended session: " + String(f.data, Charsets.UTF_8))
+            Tunnel.T_SESSION_END -> onSellerEnded(String(f.data, Charsets.UTF_8))
             Tunnel.T_ERROR -> {
                 val e = Tunnel.parseError(f.data)
                 if (f.streamId == 0) { fail("seller error: " + (e?.message ?: "?")) }
@@ -397,6 +397,30 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
             teardown = Teardown.onFinalSigned(teardown)
             finishStop(teardown.reason.ifEmpty { "stopped by user" }, "final checkpoint #" + cp.seq + " countersigned")
         }
+    }
+
+    /**
+     * v0.15.0: the seller ended the session.
+     *
+     * By the time this arrives the seller has already issued its closing checkpoint and
+     * we have countersigned it, so the money is settled on the same figure it would have
+     * been had we pressed Stop ourselves. What is left is to end cleanly: close the VPN,
+     * and tell the user the provider stopped sharing rather than report a fault they did
+     * not cause and cannot fix.
+     */
+    private fun onSellerEnded(msg: String) {
+        val provider = msg.contains(Tunnel.END_PROVIDER_STOPPED)
+        if (teardown.settling) {
+            // we were stopping too; the seller simply got there first
+            teardown = Teardown.onFinalSigned(teardown)
+            finishStop(msg, "the provider ended the session first"); return
+        }
+        teardown = Teardown.begin(Teardown.running(teardown), msg, false, Teardown.Cause.PEER_STOP)
+        lastError = if (provider) Tunnel.END_PROVIDER_STOPPED else "seller ended session: " + msg
+        DiagLog.i(tag, "SESSION END: the provider ended the session (" + msg + ")")
+        endSession(msg)
+        // this is what closes the VPN and clears the buy attempt
+        hooks.onAttemptFailed(lastError)
     }
 
     private fun markInternetOk(why: String) { if (state == "TUNNEL UP") setState("INTERNET OK", why) }

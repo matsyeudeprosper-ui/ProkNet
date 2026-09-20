@@ -1210,16 +1210,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.postDelayed({ refreshAutoPrice() }, 1500)
             main.postDelayed({ if (gateway.providing) onSharingReady("sharing switched on") }, 1200)
         } else {
-            gateway.stop()
-            // v0.14.2: gateway.stop() issues the closing checkpoint; let it leave before
-            // the link does, so the buyer learns the session ended instead of just
-            // watching the link vanish
-            bulk.cancel("sharing stopped", flushMs = BULK_FLUSH_MS)
-            // v0.13.3: nothing from the session may block the next request
-            onSharingStopped?.invoke()
-            p2pMemberAddress = ""; p2pMemberPeer = ""
-            p2pDecision.reset(); p2pGuestName = ""; p2pGuest.clear()
-            if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
+            // v0.15.0: the gateway now settles the closing figure over the live link and
+            // calls back when nothing is owed. Cutting the link here, as v0.14.2 did,
+            // was the seller-side twin of the buyer bug it fixed.
+            gateway.onStopComplete = { r -> main.post { finishSharingTeardown(r) } }
+            gateway.stop("sharing stopped")
         }
         refreshAdvert(); pushStatus()
         return null
@@ -1452,6 +1447,18 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "STOP COMPLETE: " + reason + " | final checkpoint " + tunnel.finalCheckpoint +
             " | bulk close NORMAL | VPN DOWN | buyer " + tunnel.state)
         pushStatus()
+    }
+
+    /** v0.15.0: everything that may only happen once the seller owes nothing. */
+    private fun finishSharingTeardown(reason: String) {
+        bulk.cancel(reason, flushMs = BULK_FLUSH_MS)
+        // v0.13.3: nothing from the session may block the next request
+        onSharingStopped?.invoke()
+        p2pMemberAddress = ""; p2pMemberPeer = ""
+        p2pDecision.reset(); p2pGuestName = ""; p2pGuest.clear()
+        if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
+        DiagLog.i(tag, "SHARING STOPPED: " + reason + " | final checkpoint " + gateway.finalCheckpoint)
+        refreshAdvert(); pushStatus()
     }
 
     /** v0.14.2: the bound on letting already-queued frames go out during a graceful close. */

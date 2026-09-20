@@ -157,16 +157,51 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         updateState()
     }
 
-    fun stop() {
+    fun stop() = stop("seller disabled")
+
+    /**
+     * v0.15.0: the seller stops sharing.
+     *
+     * v0.14.2 gave the BUYER a graceful stop and left this path as it was: it called
+     * `endSession` straight away, which issued a closing checkpoint and settled in the
+     * same breath on `lastSigned` — the PREVIOUS one, because the buyer had not
+     * countersigned the new one yet — and then cleared the contract, so the buyer's
+     * countersignature arrived at a seller that had forgotten what it signed. A short
+     * session therefore still settled at zero whenever the SELLER was the one to stop.
+     *
+     * Now both directions run the same machine. The role decides who sends which frame.
+     * It never decides what the session costs.
+     */
+    fun stop(reason: String) {
         if (!providing) return
-        endSession("seller disabled")
-        contract = null
+        // no new buyer traffic, but the link stays up for the closing signature
         providing = false
-        upstreamCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }; upstreamCallback = null
         main.removeCallbacks(ticker)
-        DiagLog.i(tag, "SELL disabled")
-        updateState()
+        if (session != null && contract != null) {
+            sellerStopping = true
+            beginFinalize(reason, Teardown.Cause.LOCAL_STOP)
+            return                      // releaseProviding() runs when the settlement is done
+        }
+        releaseProviding(reason)
     }
+
+    /** Everything that may only happen once nothing is owed. */
+    private fun releaseProviding(reason: String) {
+        sellerStopping = false
+        contract = null
+        upstreamCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }; upstreamCallback = null
+        DiagLog.i(tag, "SELL disabled (" + reason + ", final checkpoint " + finalCheckpoint + ")")
+        updateState()
+        val cb = onStopComplete
+        if (cb != null) try { cb(reason) } catch (e: Exception) { DiagLog.w(tag, "stop callback: " + e) }
+    }
+
+    /** v0.15.0: true while a seller-initiated stop is still collecting the closing signature. */
+    @Volatile var sellerStopping = false
+        private set
+
+    /** v0.15.0: the node closes the bulk link only when this fires. */
+    @Volatile var onStopComplete: ((String) -> Unit)? = null
 
     fun onLinkClosed(peerShort: String, reason: String) { if (buyerShort == peerShort || contract?.buyerShort == peerShort) endSession("link closed: " + reason) }
 
@@ -176,12 +211,12 @@ class Gateway(private val context: Context, private val identity: Identity, priv
      * whatever the last periodic checkpoint was. A session shorter than the 30 s
      * checkpoint interval used to settle at zero.
      */
-    private fun beginFinalize(reason: String) {
-        if (session == null || contract == null) { endSession(reason); return }
+    private fun beginFinalize(reason: String, cause: Teardown.Cause = Teardown.Cause.PEER_STOP) {
+        if (session == null || contract == null) { finishFinalize(reason); return }
         if (teardown.settling) return
         if (teardown.phase != Teardown.Phase.RUNNING) teardown = Teardown.running(teardown)
-        teardown = Teardown.begin(teardown, reason, true)
-        DiagLog.i(tag, "FINALIZING: " + reason + " - issuing the final checkpoint")
+        teardown = Teardown.begin(teardown, reason, true, cause)
+        DiagLog.i(tag, "FINALIZING (" + cause + "): " + reason + " - issuing the final checkpoint")
         checkpointIfDue(true)
         val token = teardown.token
         main.postDelayed({
@@ -189,10 +224,29 @@ class Gateway(private val context: Context, private val identity: Identity, priv
             if (next !== teardown) {
                 teardown = next
                 DiagLog.w(tag, "final checkpoint not countersigned within " + (FINALIZE_MS / 1000) + "s: settling on the last signed one")
-                endSession(reason + " (final checkpoint not countersigned)")
+                finishFinalize(reason + " (final checkpoint not countersigned)")
             }
         }, FINALIZE_MS)
     }
+
+    /**
+     * The closing figure is in, or the window closed. Settle on the newest checkpoint
+     * BOTH sides signed, whichever way the session ended.
+     */
+    private fun finishFinalize(reason: String) {
+        if (endingNow) return
+        endingNow = true
+        // A4: when WE chose to stop, the buyer has to hear it over the still-live link,
+        // so it closes its VPN and says so, instead of watching Internet die for no reason
+        if (sellerStopping && session != null)
+            hooks.send(Tunnel.T_SESSION_END, 0, Tunnel.END_PROVIDER_STOPPED.toByteArray(Charsets.UTF_8))
+        endSession(reason)
+        endingNow = false
+        if (sellerStopping) releaseProviding(reason)
+    }
+
+    /** Finalisation may be reached from a timer, an ack and a closing link at once. */
+    @Volatile private var endingNow = false
 
     private fun endSession(reason: String) {
         val s = session
@@ -348,7 +402,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
             val why = teardown.reason.ifEmpty { "buyer ended" }
             teardown = Teardown.onFinalSigned(teardown)
             DiagLog.i(tag, "final checkpoint #" + cp.seq + " countersigned: settling")
-            main.post { endSession(why) }
+            main.post { finishFinalize(why) }
         }
         hooks.store().setCheckpointBuyerSig(c.sessionHex, cp.seq, sb.sig)
         hooks.store().updateSession(c.sessionHex, bytesUp = cp.bytesUp, bytesDown = cp.bytesDown, lastSeq = cp.seq, lastCheckpoint = cp.encode())

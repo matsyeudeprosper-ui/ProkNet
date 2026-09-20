@@ -15,6 +15,12 @@ object Tunnel {
     const val T_SESSION_START = 1   // buyer -> provider: [version 1][buyer id 16]
     const val T_SESSION_OK = 2      // provider -> buyer: [version 1][provider id 16][upstream type 1][validated 1]
     const val T_SESSION_END = 3     // either: [reason utf8]
+
+    /**
+     * v0.15.0: the seller chose to stop sharing. The buyer's Internet really has ended,
+     * but nothing failed, so the buyer must say so rather than report a fault.
+     */
+    const val END_PROVIDER_STOPPED = "provider stopped sharing"
     const val T_OPEN_TCP = 4        // buyer -> provider, new stream id: [port u16][hostLen u8][host]
     const val T_TCP_OPEN_OK = 5     // provider -> buyer: stream connected
     const val T_TCP_DATA = 6        // either: raw bytes

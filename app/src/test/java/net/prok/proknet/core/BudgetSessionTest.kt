@@ -176,6 +176,40 @@ class BudgetSessionTest {
             return settle(at)
         }
 
+        /**
+         * v0.15.0: the SELLER presses Stop. Same machine, other role.
+         *
+         * The seller issues the closing checkpoint, keeps the link up while the buyer
+         * countersigns it, settles on that figure, and only then tells the buyer the
+         * session is over. Before v0.15.0 this path settled on the PREVIOUS checkpoint
+         * and cleared the contract, so a short session was free whenever the seller was
+         * the one to stop.
+         */
+        fun sellerStop(usedUp: Long, usedDown: Long, at: Long = now, linkUp: Boolean = true): Long {
+            if (stopped || sellerStop.settling) { lateCallbacksIgnored++; return 0 }
+            stopped = true
+            sellerStop = Teardown.begin(Teardown.running(sellerStop), "sharing stopped", linkUp, Teardown.Cause.LOCAL_STOP)
+            if (sellerStop.settling) {
+                val why = checkpoint(usedUp, usedDown, at, final = true)
+                if (why == null) {
+                    sellerStop = Teardown.onFinalSigned(sellerStop)
+                    // only now does the buyer hear that the session ended
+                    buyerStop = Teardown.begin(Teardown.running(buyerStop), Tunnel.END_PROVIDER_STOPPED, false, Teardown.Cause.PEER_STOP)
+                    buyerEnded = Tunnel.END_PROVIDER_STOPPED
+                } else {
+                    sellerStop = Teardown.onLinkGone(sellerStop, why)
+                    buyerStop = Teardown.onLinkGone(Teardown.running(buyerStop), why)
+                }
+            }
+            check(sellerStop.mayClose) { "the link was closed before the seller had settled" }
+            lastStopFinal = sellerStop.final
+            bulkClosed = true
+            return settle(at)
+        }
+
+        /** What the buyer was told when the seller ended it. */
+        var buyerEnded = ""
+
         /** A callback from a finished session arriving late must change nothing. */
         fun lateCallback(token: Int) {
             val next = Teardown.onTimeout(buyerStop, token)
@@ -484,6 +518,111 @@ class BudgetSessionTest {
         val cost = link.stop(320_000, 1_200_000, at = now + 120_000)
         assertTrue(cost > 0 && cost <= 5_000)
         assertEquals("one gross entry and one fee entry", 2, link.ledger.entries.size)
+    }
+
+    // ================= v0.15.0 PART A: the seller stops =================
+
+    @Test
+    fun a_short_session_the_seller_ends_is_not_free_either() {
+        // the seller-side twin of the v0.14.2 bug: the closing checkpoint was issued and
+        // then settled past, on the PREVIOUS one, before the buyer could countersign
+        for (seconds in listOf(5L, 15L, 29L, 31L)) {
+            val link = Link(budget = 5_000, rate = 300)
+            assertNull(link.agree())
+            assertTrue(link.sessionStart())
+            val periodic = seconds * 1000 >= Market.CHECKPOINT_INTERVAL_MS
+            val up = 40_000L * seconds
+            val down = 120_000L * seconds
+            if (periodic) assertNull(link.checkpoint(up / 2, down / 2, at = now + Market.CHECKPOINT_INTERVAL_MS))
+
+            val cost = link.sellerStop(up, down, at = now + seconds * 1000)
+            assertTrue("a " + seconds + " s session the seller ended must not be free", cost > 0)
+            assertTrue(cost <= 5_000)
+            val split = Market.split(cost, 5)
+            assertTrue("the seller must earn something", split.sellerNet > 0)
+            assertEquals(split.gross, link.ledger.entries[0].amountCentimes)
+            assertEquals(split.fee, link.ledger.entries[1].amountCentimes)
+            assertEquals(Teardown.Final.PASS, link.lastStopFinal)
+            assertEquals("and the buyer must be told, not left guessing",
+                Tunnel.END_PROVIDER_STOPPED, link.buyerEnded)
+        }
+    }
+
+    @Test
+    fun it_costs_the_same_whoever_pressed_stop() {
+        // THE invariant the money layer rests on: the role decides who sends which frame,
+        // never what the session costs
+        for (seconds in listOf(5L, 20L, 45L)) {
+            val up = 60_000L * seconds
+            val down = 140_000L * seconds
+            val byBuyer = Link(budget = 5_000, rate = 300)
+            assertNull(byBuyer.agree()); assertTrue(byBuyer.sessionStart())
+            val buyerCost = byBuyer.stop(up, down, at = now + seconds * 1000)
+
+            val bySeller = Link(budget = 5_000, rate = 300)
+            assertNull(bySeller.agree()); assertTrue(bySeller.sessionStart())
+            val sellerCost = bySeller.sellerStop(up, down, at = now + seconds * 1000)
+
+            assertEquals("identical signed usage must settle identically", buyerCost, sellerCost)
+            assertEquals(Market.split(buyerCost, 5).sellerNet, Market.split(sellerCost, 5).sellerNet)
+            assertEquals(Market.split(buyerCost, 5).fee, Market.split(sellerCost, 5).fee)
+            assertEquals(byBuyer.ledger.total(), bySeller.ledger.total())
+        }
+    }
+
+    @Test
+    fun the_seller_pressing_stop_twice_settles_once() {
+        val link = Link(budget = 5_000, rate = 300)
+        assertNull(link.agree())
+        val first = link.sellerStop(400_000, 1_000_000)
+        assertTrue(first > 0)
+        val entries = link.ledger.entries.size
+        val total = link.ledger.total()
+        link.sellerStop(400_000, 1_000_000)
+        link.sellerStop(400_000, 1_000_000)
+        assertEquals(entries, link.ledger.entries.size)
+        assertEquals(total, link.ledger.total())
+    }
+
+    @Test
+    fun a_buyer_that_vanishes_before_the_ack_settles_on_what_was_already_signed() {
+        val link = Link(budget = 5_000, rate = 300)
+        assertNull(link.agree())
+        assertNull(link.checkpoint(250_000, 550_000))
+        val alreadySigned = link.lastSigned!!.costCentimes
+        assertTrue(alreadySigned > 0)
+        val cost = link.sellerStop(1_500_000, 2_500_000, linkUp = false)
+        assertEquals("never invent usage nobody signed for", alreadySigned, cost)
+        assertTrue("and never hang waiting", link.bulkClosed)
+        assertEquals(Teardown.Final.UNAVAILABLE, link.lastStopFinal)
+    }
+
+    @Test
+    fun a_seller_stop_with_nothing_signed_yet_and_no_link_owes_nothing() {
+        // honest boundary: no checkpoint was ever countersigned and the buyer is gone
+        val link = Link(budget = 5_000, rate = 300)
+        assertNull(link.agree())
+        assertEquals(0L, link.sellerStop(900_000, 1_100_000, linkUp = false))
+        assertTrue("nothing may be booked for usage nobody signed for", link.ledger.entries.isEmpty())
+        assertTrue(link.bulkClosed)
+    }
+
+    @Test
+    fun the_seller_can_stop_one_session_and_serve_the_next_at_once() {
+        val link = Link(budget = 5_000, rate = 300)
+        var booked = 0
+        for (i in 1..3) {
+            assertNull(link.agree(sessionId = i.toByte(), at = now + i * 1000))
+            assertTrue(link.sessionStart())
+            val cost = link.sellerStop(150_000L * i, 450_000L * i, at = now + i * 1000)
+            assertTrue("session " + i + " must bill what it used", cost > 0)
+            booked += 2
+            assertEquals(booked, link.ledger.entries.size)
+            assertNull(link.sellerContract); assertNull(link.buyerContract)
+            assertNull(link.lastSigned); assertNull(link.lastAccepted)
+            assertEquals(Teardown.Phase.IDLE, link.sellerStop.phase)
+        }
+        assertEquals(3, link.used.size)
     }
 
 }

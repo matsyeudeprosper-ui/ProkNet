@@ -77,6 +77,8 @@ object ProductState {
             "La liaison Bluetooth avec le fournisseur n'a pas pu \u00eatre \u00e9tablie. V\u00e9rifiez que le Bluetooth est activ\u00e9 sur les deux t\u00e9l\u00e9phones et r\u00e9essayez."
         any(lastError, "Bluetooth is off") ->
             "Le Bluetooth est \u00e9teint. Activez-le pour vous connecter."
+        // v0.15: the provider chose to stop. Not a fault, and not this phone's fault either.
+        any(lastError, "provider stopped sharing") -> "Le fournisseur a arr\u00eat\u00e9 le partage."
         // v0.11: the provider lost its own Internet; nothing on this phone is wrong
         any(lastError, "lost its upstream", "upstream lost", "provider lost") ->
             "Le fournisseur a perdu son Internet."

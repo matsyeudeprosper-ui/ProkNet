@@ -30,6 +30,27 @@ object Teardown {
         IDLE,
     }
 
+    /**
+     * v0.15.0: who ended it. The role decides which frame goes out first; it must never
+     * decide what the session costs. A buyer stop and a seller stop over the same signed
+     * usage settle at exactly the same figure, and a test pins that.
+     */
+    enum class Cause {
+        NONE,
+
+        /** This phone's user pressed Stop. */
+        LOCAL_STOP,
+
+        /** The other phone ended the session. */
+        PEER_STOP,
+
+        /** The link went away before the closing figure was signed. */
+        LINK_LOST,
+
+        /** The grace window expired. */
+        TIMEOUT,
+    }
+
     /** What became of the final signed usage figure. */
     enum class Final {
         /** No session, so nothing to settle. */
@@ -57,6 +78,7 @@ object Teardown {
         val final: Final = Final.NONE,
         val token: Int = 0,
         val reason: String = "",
+        val cause: Cause = Cause.NONE,
     ) {
         val settling: Boolean get() = phase == Phase.SETTLING
         /** True once nothing is owed and the caller may close the transport. */
@@ -75,7 +97,7 @@ object Teardown {
     }
 
     /** A session is up and carrying traffic. */
-    fun running(s: State = State()): State = State(Phase.RUNNING, Final.NONE, s.token, "")
+    fun running(s: State = State()): State = State(Phase.RUNNING, Final.NONE, s.token, "", Cause.NONE)
 
     /**
      * Stop was asked for.
@@ -86,17 +108,17 @@ object Teardown {
      * @param canReachPeer false when the link is already gone: there is nobody to sign
      *        the closing figure with, so settle on what is already signed and finish.
      */
-    fun begin(s: State, reason: String, canReachPeer: Boolean): State = when {
-        s.phase == Phase.IDLE -> State(Phase.IDLE, Final.NONE, s.token + 1, reason)
+    fun begin(s: State, reason: String, canReachPeer: Boolean, cause: Cause = Cause.LOCAL_STOP): State = when {
+        s.phase == Phase.IDLE -> State(Phase.IDLE, Final.NONE, s.token + 1, reason, cause)
         s.phase == Phase.SETTLING -> s                       // already stopping: one stop only
-        !canReachPeer -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, reason)
-        else -> State(Phase.SETTLING, Final.WAITING, s.token + 1, reason)
+        !canReachPeer -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, reason, cause)
+        else -> State(Phase.SETTLING, Final.WAITING, s.token + 1, reason, cause)
     }
 
     /** The closing figure came back signed by both sides. This is the good ending. */
     fun onFinalSigned(s: State): State =
         if (s.phase != Phase.SETTLING) s
-        else State(Phase.IDLE, Final.PASS, s.token + 1, s.reason)
+        else State(Phase.IDLE, Final.PASS, s.token + 1, s.reason, s.cause)
 
     /**
      * The graceful window expired. Only the timer belonging to THIS stop may end it: an
@@ -104,15 +126,15 @@ object Teardown {
      */
     fun onTimeout(s: State, token: Int): State =
         if (s.phase != Phase.SETTLING || s.token != token) s
-        else State(Phase.IDLE, Final.TIMEOUT, s.token + 1, s.reason)
+        else State(Phase.IDLE, Final.TIMEOUT, s.token + 1, s.reason, Cause.TIMEOUT)
 
     /**
      * The link went away. During a stop that is the expected end of it, not a fault; the
      * caller must not record an error the user never caused.
      */
     fun onLinkGone(s: State, reason: String): State = when (s.phase) {
-        Phase.SETTLING -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, s.reason)
-        Phase.RUNNING -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, reason)
+        Phase.SETTLING -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, s.reason, Cause.LINK_LOST)
+        Phase.RUNNING -> State(Phase.IDLE, Final.UNAVAILABLE, s.token + 1, reason, Cause.LINK_LOST)
         Phase.IDLE -> s
     }
 
