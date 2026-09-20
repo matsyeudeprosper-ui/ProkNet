@@ -2003,3 +2003,22 @@ Bluetooth off on the OnePlus, wait ten seconds, turn it back on. Within
 about 25 seconds the log (COPY NETWORK) must show `Bluetooth is back on:
 the radio will be restarted once` and a recovery, and the two phones must
 see each other again without restarting the app.
+
+## 54. v0.13.2 the provider knows it could share
+
+On the OUKITEL, on the Freebox with sharing OFF, Développeur -> COPY
+NETWORK must show:
+
+```
+current phone Internet: WI-FI validated
+potential seller path: BLUETOOTH_BULK
+seller gateway running: NO
+```
+
+If it says `current phone Internet: NONE` while the phone is really on
+Wi-Fi, that is the bug returning. `seller gateway running: NO` with a
+validated Internet above it is correct and expected: the gateway starts
+only when PARTAGER is tapped.
+
+Then run section 51. The log must now show `PROVIDER ACTIVATION
+opportunity for <id>` instead of `not activating for <id>: NO_INTERNET`.

@@ -93,24 +93,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
 
     // ---- upstream -------------------------------------------------------------------------------
 
-    private fun networks(): List<Pair<Network, Tunnel.NetView>> {
-        val out = ArrayList<Pair<Network, Tunnel.NetView>>()
-        try {
-            for (n in cm.allNetworks) {
-                val caps = cm.getNetworkCapabilities(n) ?: continue
-                val lp = cm.getLinkProperties(n)
-                val iface = lp?.interfaceName ?: ""
-                val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                // v0.9.7: p2p interfaces join the list of local-only links that can never be an upstream
-                val isProk = wifi && (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) || net.prok.proknet.core.P2pPlan.isLocalLinkIface(iface))
-                out.add(n to Tunnel.NetView(
-                    n.toString() + "/" + iface, caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED), caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR), wifi, isProk,
-                ))
-            }
-        } catch (e: Exception) { DiagLog.w(tag, "networks: " + e) }
-        return out
-    }
+    /** v0.13.2: the scan lives in [Upstream] so the seller gateway and provider eligibility share one truth. */
+    private fun networks(): List<Pair<Network, Tunnel.NetView>> = Upstream.networks(context)
 
     fun refreshUpstream(reason: String) {
         val nets = networks()

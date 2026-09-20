@@ -746,6 +746,51 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Could this phone become a seller? (v0.13.2)
+
+The OUKITEL received the request, verified the signature, stored it — and
+refused: `not activating for ...: NO_INTERNET`, while the same diagnostic
+showed `wlan0=192.168.1.13` and a validated Freebox.
+
+`NetworkNode.eligibility()` asked the seller gateway
+(`node.gateway.upstream?.validated`, `node.sellerAccessPath()`). The gateway
+only starts inside `setSelling(true)`, which only runs when the user taps
+PARTAGER. So with sharing off `gateway.upstream` is null: NO_INTERNET, no
+notification, no PARTAGER, no gateway — a closed loop the user could never
+break.
+
+Provider activation asks **"could this phone become a seller right now?"**
+It must never ask "is the seller gateway already running?".
+
+`node/Upstream.kt` answers the first question from the phone's real
+connectivity: `networks(context)` (the ConnectivityManager scan, moved out
+of `Gateway` so both use one truth, not two) and `now(context)` =
+`Tunnel.chooseUpstream(...)`. `Gateway.networks()` is now one line calling
+it, so the seller path and the eligibility path can never disagree.
+
+`ProviderActivation.potentialPath(upstreamType, upstreamValidated,
+bulkSupported, bluetoothOn)` is pure: no validated Internet → NONE;
+validated Wi-Fi → `BulkPlan.sellerAccessPath` (BLUETOOTH_BULK with
+Bluetooth and L2CAP, NONE without); anything else validated → HOTSPOT.
+`ProviderActivation.eligibility(...)` composes it, and `alreadySharing` is
+the only field the gateway still decides.
+
+`NetworkNode.currentUpstream()` picks the source of truth by state: the
+gateway when SELL is on (it is authoritative then), the phone's current
+capability when SELL is off. The gateway is never pre-started to answer a
+question.
+
+The diagnostic separates the three facts that were conflated:
+
+```
+current phone Internet: WI-FI validated
+potential seller path: BLUETOOTH_BULK
+seller gateway running: NO
+```
+
+so "provider upstream none" can no longer read as "this phone has no
+Internet".
+
 ## Two bugs from the first v0.13 run (v0.13.1)
 
 **A new request wore an old session's error.** `getInternet()` set

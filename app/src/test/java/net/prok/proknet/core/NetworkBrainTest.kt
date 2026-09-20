@@ -303,4 +303,66 @@ class NetworkBrainTest {
         val shared = SyncProtocol.parseDownload("V\t1\t" + now + "\nX\tz1:2\tGREEN\t1\t0\t500\t" + (now - 60_000) + "\t9\n")!!.cells.single()
         assertEquals(Coverage.ZoneStatus.YELLOW, shared.status)
     }
+
+    // ---- v0.13.2: could this phone become a seller RIGHT NOW? ------------------------------------------
+
+    /** Eligibility as the phone builds it: the capability it has, not the gateway it has not started. */
+    private fun capable(optIn: Boolean = true, type: Int = Tunnel.UP_WIFI, validated: Boolean = true, bulk: Boolean = true,
+                        bt: Boolean = true, sharing: Boolean = false, busy: Boolean = false, price: Int = 500) =
+        ProviderActivation.eligibility(optIn, type, validated, bulk, bt, sharing, busy, price)
+
+    @Test
+    fun the_oukitel_on_its_freebox_with_sharing_off_is_a_potential_provider() {
+        // the exact hardware case: Freebox validated, Bluetooth on, bulk supported, opt-in on,
+        // not sharing, not busy. v0.13.1 read the seller gateway here, which is not started while
+        // sharing is off, and answered NO_INTERNET, so PARTAGER was never offered.
+        val e = capable()
+        assertTrue(e.upstreamValidated)
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, e.accessPath)
+        assertFalse(e.alreadySharing)
+        val r = req()
+        assertNull(ProviderActivation.refusal(e, r, now))
+        val o = ProviderActivation.opportunity(e, r, now, local = true)!!
+        assertEquals("Quelqu'un cherche Internet à proximité.", o.title)
+
+        // mobile data with sharing off is eligible too, through the proven hotspot path
+        val m = capable(type = Tunnel.UP_CELLULAR)
+        assertEquals(BulkPlan.SellerAccessPath.HOTSPOT, m.accessPath)
+        assertNull(ProviderActivation.refusal(m, r, now))
+        // a phone on mobile data does not need Bluetooth for the hotspot path
+        assertNull(ProviderActivation.refusal(capable(type = Tunnel.UP_CELLULAR, bt = false), r, now))
+    }
+
+    @Test
+    fun potential_path_reads_the_phone_capability_and_never_the_gateway() {
+        // no Internet at all, or Internet that Android has not validated: NONE, and NO_INTERNET
+        assertEquals(BulkPlan.SellerAccessPath.NONE, ProviderActivation.potentialPath(Tunnel.UP_NONE, false, true, true))
+        assertEquals(BulkPlan.SellerAccessPath.NONE, ProviderActivation.potentialPath(Tunnel.UP_WIFI, false, true, true))
+        assertEquals(ProviderActivation.Refusal.NO_INTERNET, ProviderActivation.refusal(capable(type = Tunnel.UP_NONE, validated = false), req(), now))
+        assertEquals(ProviderActivation.Refusal.NO_INTERNET, ProviderActivation.refusal(capable(validated = false), req(), now))
+        // validated Wi-Fi with Bluetooth off, or without L2CAP: no local path for a Wi-Fi seller
+        assertEquals(BulkPlan.SellerAccessPath.NONE, ProviderActivation.potentialPath(Tunnel.UP_WIFI, true, bulkSupported = true, bluetoothOn = false))
+        assertEquals(BulkPlan.SellerAccessPath.NONE, ProviderActivation.potentialPath(Tunnel.UP_WIFI, true, bulkSupported = false, bluetoothOn = true))
+        assertEquals(ProviderActivation.Refusal.NO_LOCAL_PATH, ProviderActivation.refusal(capable(bt = false), req(), now))
+        // validated Wi-Fi + Bluetooth: the proven path
+        assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, ProviderActivation.potentialPath(Tunnel.UP_WIFI, true, true, true))
+        // anything else validated falls to the hotspot path
+        assertEquals(BulkPlan.SellerAccessPath.HOTSPOT, ProviderActivation.potentialPath(Tunnel.UP_OTHER, true, true, true))
+    }
+
+    @Test
+    fun the_other_refusals_still_hold_when_the_phone_is_capable() {
+        val r = req()
+        assertEquals(ProviderActivation.Refusal.NOT_OPTED_IN, ProviderActivation.refusal(capable(optIn = false), r, now))
+        assertEquals(ProviderActivation.Refusal.ALREADY_SHARING, ProviderActivation.refusal(capable(sharing = true), r, now))
+        assertEquals(ProviderActivation.Refusal.BUSY, ProviderActivation.refusal(capable(busy = true), r, now))
+        assertEquals(ProviderActivation.Refusal.REQUEST_NOT_OPEN, ProviderActivation.refusal(capable(), r, now + NetRequest.NOW_TTL_MS + 1))
+        // the request's ceiling is still respected against the phone's own price
+        val capped = NetRequest.sign(NetRequest.oneTap("4444444444444444", buyer.short, buyer.pubBytes.toHex(), now, "z1:2").copy(ceilingCentimesPerMb = 300), buyer)
+        assertEquals(ProviderActivation.Refusal.ABOVE_CEILING, ProviderActivation.refusal(capable(price = 500), capped, now))
+        assertNull(ProviderActivation.refusal(capable(price = 300), capped, now))
+        // and a capable phone still heartbeats as a potential provider
+        assertTrue(ProviderActivation.availability(capable(), "z1:2", Tunnel.UP_WIFI).potential)
+        assertFalse(ProviderActivation.availability(capable(validated = false, type = Tunnel.UP_NONE), "z1:2", Tunnel.UP_NONE).potential)
+    }
 }

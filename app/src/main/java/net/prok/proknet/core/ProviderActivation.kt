@@ -21,6 +21,25 @@ object ProviderActivation {
 
     enum class Refusal { NOT_OPTED_IN, NO_INTERNET, NO_LOCAL_PATH, BLUETOOTH_OFF, BUSY, ABOVE_CEILING, REQUEST_NOT_OPEN, ALREADY_SHARING }
 
+    /**
+     * v0.13.2: the path this phone COULD offer right now, from the Internet it
+     * actually has — not from the seller gateway, which is only started once the
+     * user taps PARTAGER. Asking the gateway made a phone on a validated Freebox
+     * answer NO_INTERNET while sharing was off, so no notification was ever
+     * posted and the user could never tap PARTAGER.
+     */
+    fun potentialPath(upstreamType: Int, upstreamValidated: Boolean, bulkSupported: Boolean, bluetoothOn: Boolean): BulkPlan.SellerAccessPath =
+        if (!upstreamValidated || upstreamType == Tunnel.UP_NONE) BulkPlan.SellerAccessPath.NONE
+        else BulkPlan.sellerAccessPath(upstreamType == Tunnel.UP_WIFI, bulkSupported, bluetoothOn)
+
+    /** Eligibility from the phone's real capability. [alreadySharing] is the only thing the gateway decides. */
+    fun eligibility(optIn: Boolean, upstreamType: Int, upstreamValidated: Boolean, bulkSupported: Boolean, bluetoothOn: Boolean,
+                    alreadySharing: Boolean, busy: Boolean, sellPriceCentimesPerMb: Int): Eligibility = Eligibility(
+        optIn = optIn,
+        upstreamValidated = upstreamValidated && upstreamType != Tunnel.UP_NONE,
+        accessPath = potentialPath(upstreamType, upstreamValidated, bulkSupported, bluetoothOn),
+        bluetoothOn = bluetoothOn, alreadySharing = alreadySharing, busy = busy, sellPriceCentimesPerMb = sellPriceCentimesPerMb)
+
     data class Opportunity(val requestId: String, val zone: String, val local: Boolean, val ceilingCentimesPerMb: Int, val expiresAt: Long) {
         val title: String get() = if (local) "Quelqu'un cherche Internet à proximité." else "Une demande Internet existe dans votre zone."
         val text: String get() = "Vous pouvez partager votre connexion et gagner des CFA."

@@ -119,10 +119,23 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         return why
     }
 
-    fun eligibility(): ProviderActivation.Eligibility = ProviderActivation.Eligibility(
-        optIn = notifyOptIn, upstreamValidated = node.gateway.upstream?.validated == true, accessPath = node.sellerAccessPath(),
-        bluetoothOn = node.bulk.isBluetoothOn, alreadySharing = node.sellOn, busy = node.gateway.session != null,
-        sellPriceCentimesPerMb = node.sellPrice * 100)
+    /**
+     * v0.13.2: "could this phone become a seller right now?" While SELL is off the
+     * seller gateway is not running and its upstream is null, so the phone's real
+     * current Internet is the evidence; once SELL is on the gateway is authoritative.
+     */
+    fun currentUpstream(): net.prok.proknet.core.Tunnel.NetView? = if (node.sellOn) node.gateway.upstream else Upstream.now(context)
+
+    fun eligibility(): ProviderActivation.Eligibility {
+        val up = currentUpstream()
+        return ProviderActivation.eligibility(
+            optIn = notifyOptIn,
+            upstreamType = net.prok.proknet.core.Tunnel.upstreamType(up),
+            upstreamValidated = up?.validated == true,
+            bulkSupported = node.bulk.supported, bluetoothOn = node.bulk.isBluetoothOn,
+            alreadySharing = node.sellOn, busy = node.gateway.session != null,
+            sellPriceCentimesPerMb = node.sellPrice * 100)
+    }
 
     private fun considerActivation(r: NetRequest.Request, local: Boolean) {
         val now = System.currentTimeMillis()
@@ -268,7 +281,9 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         sb.append("Request state: ").append(mine?.let { it.state.name + " (" + it.id + ", " + (if (it.expired(now)) "expired" else ((it.expiresAt - now) / 60_000).toString() + " min left") + ")" } ?: "no request from this phone").append("\n")
         sb.append("Last request forwarded to: ").append(lastForwardTo.ifEmpty { "nobody yet" }).append("\n")
         sb.append("Provider activation notification sent: ").append(if (lastOpportunityAt > 0) "YES, " + CoverageModel.ageWord(now - lastOpportunityAt) else "NO")
-            .append(if (lastOpportunityAt > 0) "" else " - " + lastRefusal.ifEmpty { "no request reached this phone" }).append("\n\n")
+            .append(if (lastOpportunityAt > 0) "" else " - " + lastRefusal.ifEmpty { "no request reached this phone" }).append("\n")
+        sb.append("This phone could share: ").append(Upstream.describe(currentUpstream())).append(" -> ").append(eligibility().accessPath)
+            .append(if (node.sellOn) " (already sharing)" else "").append("\n\n")
         return sb.toString()
     }
 
@@ -291,8 +306,11 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             .append(if (r.expired(now)) " EXPIRED" else " expires in " + ((r.expiresAt - now) / 60_000) + " min").append("\n")
         sb.append("provider:\n")
         val e = eligibility()
-        sb.append("  notifications: ").append(if (e.optIn) "ON" else "OFF").append(" | internet validated: ").append(e.upstreamValidated).append(" | path: ").append(e.accessPath)
-            .append(" | bluetooth: ").append(e.bluetoothOn).append(" | sharing: ").append(e.alreadySharing).append(" | busy: ").append(e.busy).append(" | price: ").append(e.sellPriceCentimesPerMb).append("c\n")
+        sb.append("  current phone Internet: ").append(Upstream.describe(currentUpstream())).append("\n")
+        sb.append("  potential seller path: ").append(e.accessPath).append("\n")
+        sb.append("  seller gateway running: ").append(if (node.sellOn) "YES" else "NO").append("\n")
+        sb.append("  notifications: ").append(if (e.optIn) "ON" else "OFF").append(" | internet validated: ").append(e.upstreamValidated)
+            .append(" | bluetooth: ").append(e.bluetoothOn).append(" | busy: ").append(e.busy).append(" | price: ").append(e.sellPriceCentimesPerMb).append("c\n")
         sb.append("  last opportunity: ").append(if (lastOpportunityAt == 0L) "-" else CoverageModel.ageWord(now - lastOpportunityAt)).append(" | last refusal: ").append(lastRefusal.ifEmpty { "-" }).append("\n")
         sb.append("  shared coverage: ").append(if (shareCoverage) "ON" else "OFF").append(" | shared cells known: ").append(cover.shared.size).append(" | last shared update: ").append(if (cover.lastSharedAt == 0L) "-" else CoverageModel.ageWord(now - cover.lastSharedAt)).append("\n")
         val s = state.stats
