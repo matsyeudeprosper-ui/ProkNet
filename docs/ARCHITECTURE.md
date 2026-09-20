@@ -498,8 +498,9 @@ RELAY, bit2 validated, bits 4-5 upstream type. Ranking
 `score = validated*100 + (60 - 3*price, floor 0) + signal(0..40)`,
 unavailable last, ties by ID: deterministic and tested.
 
-**Contract** (62 bytes): version, session id (8, random by the buyer), buyer
-id, seller id, price/MB, minimum price, max MB, fee %, start time. Flow over
+**Contract** (v1 62 bytes, v2 84 bytes): version, session id (8, random by
+the buyer), buyer id, seller id, price/MB, minimum price, max MB, fee %,
+start time, and for v2 the economics below. Flow over
 the tunnel: `CONTRACT_PROPOSE` (contract + buyer signature) ->
 `CONTRACT_ACCEPT` (hash + seller signature) or `CONTRACT_REJECT`. The seller
 accepts only its exact current terms, the buyer id of the authenticated
@@ -798,6 +799,82 @@ handshake or probe is paid for.
 **Free stays free.** A budget of 50 CFA means "you may spend up to 50",
 never "take 50". A free source quotes a rate of 0, charges 0, and is not
 rationed by money.
+
+## The signed envelope is self-describing (v0.14.1)
+
+v0.14.0 shipped the budget contract and failed on the phones. The Bluetooth
+link came up, the signed handshake passed, a 512 KB probe passed both ways,
+and then the seller answered `contract rejected: malformed proposal`. The
+cause was one line: `Gateway.onProposal` parsed every proposal with
+`Tunnel.parseSigned(data, Market.Contract.LEN)` — the **v1** length — so an
+84-byte v2 body never reached `Contract.decode`. The economics were correct.
+The envelope was read with the wrong ruler.
+
+The rule now: **the wire says its own length.** The first byte of a contract
+is its version; `Contract.bodyLenFor(version)` is the only place a body
+length comes from, and an unknown version returns -1 rather than a guess.
+`Market.framingOf` walks the envelope in one order and names where it
+stopped — `EMPTY`, `UNSUPPORTED_VERSION`, `TRUNCATED`, `NO_SIGNATURE`,
+`LENGTH_MISMATCH`, `BAD_CONTRACT`, `OK` — and `Contract.decode` refuses any
+body whose size does not match its declared version, so a 62-byte body
+claiming v2 is not silently read as a budget contract full of zeros, and an
+84-byte body claiming v1 is not read as a legacy one with its economics
+dropped. No other fixed-size parser is version-dependent: the checkpoint is
+45 bytes in every version, and `CONTRACT_ACCEPT` carries the contract
+**hash**, which is 32 bytes whatever the contract was.
+
+**The admission decision is a pure function.** `Gateway` needs an Android
+Context and a main Looper, so it can never be built in a JVM test, and that
+is precisely why the boundary inside it was never tested. The decision moved
+out to `Market.admitProposal`, which takes the envelope, the link peer, the
+buyer key, the seller's terms and the seller's floor, and returns an
+`Admission`: the reason (null when agreed) plus what it saw on the way —
+declared version, envelope length, whether it decoded, whether the signature
+verified. `Gateway.onProposal` now only carries that answer out to the wire
+and the diagnostic. The tests call the same function the seller phone calls.
+
+**The ceiling is checked with the un-clamped figure.** `costFor` deliberately
+clamps to the signed budget, which makes it useless for judging the contract
+itself: a ceiling inflated to three times the budget still "costs" exactly
+the budget. `uncappedCostFor` gives the seller the real figure, and
+`acceptableProposal` admits on that, so a byte ceiling that does not fit its
+signed budget is refused instead of quietly agreed to.
+
+**Money cannot overflow.** Every product is clamped before it is multiplied,
+not after: `costFor`, `uncappedCostFor`, `Pricing.chargeFor` and
+`Pricing.bytesForBudget` bound their inputs to `MAX_BILLABLE_BYTES` (1 TB),
+`MAX_PRICE_PER_MB` and the new `MAX_BUDGET_CENTIMES` (1 000 000 CFA) first.
+The largest legal product is about 1.1e17, well inside Long. A hostile or
+corrupt byte count produces a charge inside the budget, never a negative one.
+
+**The seller judges the economics it has now.** A phone may advertise on home
+Wi-Fi and be on mobile data by the time the proposal arrives. `Gateway` holds
+a `sellerFloorProvider` that recomputes the floor from the **current** source
+at the moment the contract is admitted, so a rate agreed for free Wi-Fi is
+refused once the data costs real money.
+
+**What the contract still does not say.** Version 2 signs the rate, the
+budget, the byte ceiling, the source-cost basis, the seller policy and the
+pricing mode. It does **not** carry a cost class or a payer. A sponsored or
+Prok-funded session is therefore not cryptographically distinguishable from
+an ordinary one, and neither phone can prove to the other who was meant to
+pay: those are local policy, not an agreement. Signing them needs a version 3.
+A test pins this so no screen or document can claim otherwise.
+
+**The rate the buyer signs is the advertised one.** The field holds centimes
+and could carry 2.11 CFA/MB, but the buyer only ever learns the seller's
+advertised price, which is whole CFA rounded **up**. So in practice the
+signed rate is a multiple of 100. The seller still admits on its own current
+floor, so the rounding can only ever favour the seller, never underpay it.
+Carrying the true sub-CFA rate needs a signed offer in the advertisement,
+which this release does not add. It is not claimed anywhere that the buyer
+receives the exact internal rate.
+
+**The quote has a shelf life.** The buyer snapshots its quote when `buy()`
+admits the deal and does not re-read the budget preference mid-setup, so
+changing the budget during a connection cannot alter a purchase already under
+way. But setting up a Bluetooth link can take a while, so a snapshot older
+than two minutes is taken again before anything is signed rather than trusted.
 
 **Nobody is subsidised by accident.** COMMERCIAL must fit the budget and
 leave the seller in profit. SPONSORED lets the buyer pay nothing while the

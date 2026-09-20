@@ -23,6 +23,7 @@ import net.prok.proknet.core.Market
 import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.Tunnel
+import net.prok.proknet.core.hexToBytes
 import net.prok.proknet.core.toHex
 
 /**
@@ -220,29 +221,35 @@ class Gateway(private val context: Context, private val identity: Identity, priv
     // ---- contract ------------------------------------------------------------------------------------
 
     private fun onProposal(peerShort: String, f: Tunnel.Frame) {
-        if (!providing) { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "seller not enabled".toByteArray()); return }
-        val sb = Tunnel.parseSigned(f.data, Market.Contract.LEN) ?: run { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "malformed proposal".toByteArray()); return }
-        val c = Market.Contract.decode(sb.body) ?: run { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "malformed contract".toByteArray()); return }
-        val linkPeer = hooks.peerFullId(peerShort)
-        val buyerPub = hooks.peerPub(peerShort)
-        if (linkPeer == null || buyerPub == null) { hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "no authenticated link".toByteArray()); return }
-        if (!Crypto.verify(buyerPub, Market.contractSignData(c), sb.sig)) { DiagLog.w(tag, "CONTRACT from prok-" + peerShort + ": buyer signature INVALID"); hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "bad signature".toByteArray()); return }
+        lastContractNote = ""
+        if (!providing) { rejectContract("seller not enabled", peerShort); return }
+        // v0.14.1: one pure decision, the same one the tests run. The body length comes
+        // from the contract's own version byte, never from a constant: v0.14.0 parsed
+        // every proposal at the v1 length and threw away valid budget contracts.
         val t = hooks.terms()
-        val why = Market.acceptableProposal(c, identity.idBytes, linkPeer.let { hex -> ByteArray(16) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() } },
-            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds(), sellerFloorCentimesPerMb)
+        val a = Market.admitProposal(f.data, identity.idBytes, hooks.peerFullId(peerShort)?.hexToBytes(), hooks.peerPub(peerShort),
+            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds(), currentFloorCentimesPerMb())
+        lastContractLen = a.envelopeLen; lastContractVersion = a.declaredVersion
+        lastContractDecoded = a.decoded; lastContractSigOk = a.signatureOk
+        val why = a.reason
         if (why != null) {
             // tell the buyer the real terms so it can re-propose once with them
             val msg = if (why == "terms differ from my offer") "terms:" + t[0] + "," + t[1] + "," + t[2] + "," + t[3] else why
-            DiagLog.w(tag, "CONTRACT from prok-" + peerShort + " rejected: " + why)
-            hooks.send(Tunnel.T_CONTRACT_REJECT, 0, msg.toByteArray()); return
+            rejectContract(why, peerShort, send = msg)
+            return
         }
+        val c = a.contract!!
+        val sb = Market.SignedContract(c, a.buyerSig!!)
+        lastContractNote = "accepted"
         if (session != null) endSession("replaced by a new contract")
         val sellerSig = identity.sign(Market.contractSignData(c))
         contract = c; lastIssued = null; lastSigned = null
         hooks.store().insertSession(StoredSession(c.sessionHex, "seller", c.encode(), sb.sig, sellerSig, "agreed", c.startTs, 0, 0, 0, 0, null, 0, "", peerShort))
         hooks.send(Tunnel.T_CONTRACT_ACCEPT, 0, Tunnel.signed(c.hash(), sellerSig))
-        DiagLog.i(tag, "CONTRACT AGREED with prok-" + peerShort + ": session " + c.sessionHex.substring(0, 8) + ", " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + " CFA, max " +
-            (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB") + ", fee " + c.feePct + "% (both signatures stored)")
+        DiagLog.i(tag, "CONTRACT AGREED with prok-" + peerShort + ": session " + c.sessionHex.substring(0, 8) + ", v" + c.version +
+            (if (c.budgetSession) " BUDGET, budget " + Market.cfa(c.buyerBudgetCentimes) + ", rate " + Market.cfa(c.rateCentimesPerMb.toLong()) + "/MB, ceiling " + Market.mb(c.maxBytes)
+             else ", " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + " CFA, max " + (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB")) +
+            ", fee " + c.feePct + "% (both signatures stored)")
         updateState()
     }
 
@@ -321,6 +328,37 @@ class Gateway(private val context: Context, private val identity: Identity, priv
 
     /** v0.14: what this phone must keep per MB. The node sets it from the source and the seller's policy. */
     @Volatile var sellerFloorCentimesPerMb: Int = 0
+    /**
+     * v0.14.1: the floor as it is RIGHT NOW. A seller may have advertised on home
+     * Wi-Fi and moved to mobile data while the buyer was setting up; the contract
+     * is judged on the source the phone actually has at this moment, not on the
+     * economics that were true when it advertised.
+     */
+    @Volatile var sellerFloorProvider: (() -> Int)? = null
+    fun currentFloorCentimesPerMb(): Int = try { sellerFloorProvider?.invoke() ?: sellerFloorCentimesPerMb } catch (e: Exception) { sellerFloorCentimesPerMb }
+
+    // ---- v0.14.1: exactly why the last proposal failed, for the diagnostic ----
+    @Volatile var lastContractVersion = -1; private set
+    @Volatile var lastContractLen = 0; private set
+    @Volatile var lastContractDecoded = false; private set
+    @Volatile var lastContractSigOk = false; private set
+    @Volatile var lastContractNote = ""; private set
+
+    private fun rejectContract(why: String, peerShort: String, send: String = why) {
+        lastContractNote = why
+        DiagLog.w(tag, "CONTRACT from prok-" + peerShort + " rejected: " + why +
+            " (version " + lastContractVersion + ", envelope " + lastContractLen + " B, decode " + (if (lastContractDecoded) "PASS" else "FAIL") +
+            ", signature " + (if (lastContractSigOk) "PASS" else "FAIL") + ")")
+        hooks.send(Tunnel.T_CONTRACT_REJECT, 0, send.toByteArray())
+    }
+
+    /** v0.14.1: the contract line for COPY NETWORK. */
+    fun contractDiag(): String =
+        "  version attempted: " + (if (lastContractVersion < 0) "-" else lastContractVersion.toString()) +
+            " | signed envelope length: " + lastContractLen + "\n" +
+            "  decode: " + (if (lastContractDecoded) "PASS" else "FAIL") + " | signature: " + (if (lastContractSigOk) "PASS" else "FAIL") +
+            " | economic admission: " + (if (lastContractNote == "accepted") "PASS" else if (lastContractNote.isEmpty()) "-" else "FAIL") + "\n" +
+            "  reject reason: " + lastContractNote.ifEmpty { "-" }
     fun agreedCost(): Long { val c = contract ?: return 0; return Market.finalCost(c, lastSigned) }
 
     // ---- streams (unchanged from v0.6) ----------------------------------------------------------

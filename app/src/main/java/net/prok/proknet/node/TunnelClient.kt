@@ -124,7 +124,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
 
     /** The quote this session was agreed on, for the budget wording. */
     @Volatile var budgetQuote: net.prok.proknet.core.Pricing.Quote? = null
-        private set
+        internal set
 
     fun start(advertisedPricePerMb: Int, minPrice: Int = 0, maxMb: Int = 0): Boolean {
         val peer = hooks.linkPeer(); val peerFull = hooks.linkPeerFullId()
@@ -162,6 +162,9 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
 
     private fun fail(reason: String) {
         lastError = reason
+        // v0.14.1: nothing economic may survive into the next attempt
+        pendingProposal = null
+        budgetQuote = null
         DiagLog.w(tag, "session failed: " + reason)
         endSession(reason)
         hooks.onAttemptFailed(reason)
@@ -282,7 +285,12 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     }
 
     /** The seller's real terms may differ in min/max/fee (not visible in the scan); re-propose once if the PRICE is what was advertised. */
+    /** v0.14.1: the last contract rejection, verbatim from the seller, for the diagnostic. */
+    @Volatile var lastContractReject = ""
+        private set
+
     private fun onReject(msg: String) {
+        lastContractReject = msg
         if (msg.startsWith("terms:") && !reproposed) {
             val p = msg.removePrefix("terms:").split(",").mapNotNull { it.trim().toIntOrNull() }
             if (p.size == 4 && p[0] == advertisedPrice && Market.validMinPrice(p[1]) && Market.validMaxMb(p[2]) && Market.validFee(p[3])) {

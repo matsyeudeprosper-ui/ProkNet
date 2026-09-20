@@ -474,6 +474,8 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 .append(", budget ").append(Market.cfa(c.buyerBudgetCentimes)).append(", rate ").append(Market.cfa(c.rateCentimesPerMb.toLong()))
                 .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
         }
+        sb.append("contract:\n").append(node.gateway.contractDiag()).append("\n")
+        node.tunnel.lastContractReject.takeIf { it.isNotEmpty() }?.let { sb.append("  buyer saw rejection: ").append(it).append("\n") }
         sb.append("control plane:\n  ").append(node.bleControlPlaneLine().replace("\n", "\n  ")).append("\n")
         sb.append("  forwarding: ").append(ControlRetry.describe(retry, now)).append("\n")
         for ((peer, h) in retry.peers) ControlRetry.peerNote(h, now).let { if (it.isNotEmpty()) sb.append("  prok-").append(peer).append(": ").append(it).append("\n") }

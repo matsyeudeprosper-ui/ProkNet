@@ -213,6 +213,21 @@ object CoverageModel {
 
     fun kindWord(k: SourceKind): String = if (k == SourceKind.WIFI) "Wi-Fi" else "ProkNet"
 
+    /**
+     * v0.14.1: what a normal person reads. Nobody buying Internet thinks in
+     * megabytes, so the consumer screens say how expensive a source is, not what
+     * one megabyte costs. [priceWord] survives for Developer, COPY NETWORK and
+     * the detail of old v1 sessions, which are the only places a CFA/MB figure
+     * is the honest thing to show.
+     */
+    fun priceBandWord(centimesPerMb: Int): String = when {
+        centimesPerMb == PRICE_UNKNOWN -> "Prix inconnu"
+        centimesPerMb <= 0 -> "Gratuit"
+        centimesPerMb <= 200 -> "Bon march\u00e9"
+        centimesPerMb <= 500 -> "Prix moyen"
+        else -> "Plus cher"
+    }
+
     fun priceWord(centimesPerMb: Int): String = when {
         centimesPerMb == PRICE_UNKNOWN -> "inconnu"
         centimesPerMb == 0 -> "gratuit"

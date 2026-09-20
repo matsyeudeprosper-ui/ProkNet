@@ -117,15 +117,24 @@ object Pricing {
         return Math.min(((sellerNetPerMb.toLong() * 100 + denom - 1) / denom), policy.maxRateCentimesPerMb.toLong()).toInt()
     }
 
-    /** How many bytes a budget buys at a rate. Free Internet is not limited by money. */
-    fun bytesForBudget(budgetCentimes: Long, rateCentimesPerMb: Int): Long =
-        if (rateCentimesPerMb <= 0) Market.MAX_MB_PER_SESSION.toLong() * MB
-        else Math.max(0L, budgetCentimes * MB / rateCentimesPerMb)
+    /**
+     * How many bytes a budget buys at a rate. Free Internet is not limited by money.
+     * v0.14.1: the budget is clamped before it is multiplied, so no hostile or corrupt
+     * value can overflow Long and wrap into a negative or absurd ceiling.
+     */
+    fun bytesForBudget(budgetCentimes: Long, rateCentimesPerMb: Int): Long {
+        if (rateCentimesPerMb <= 0) return Market.MAX_MB_PER_SESSION.toLong() * MB
+        val budget = budgetCentimes.coerceIn(0L, Market.MAX_BUDGET_CENTIMES)
+        return (budget * MB / rateCentimesPerMb).coerceIn(0L, Market.MAX_BILLABLE_BYTES)
+    }
 
     /** What [bytes] cost at this rate, rounded half up, exactly like the rest of the ledger. */
     fun chargeFor(bytes: Long, rateCentimesPerMb: Int): Long {
         if (rateCentimesPerMb <= 0 || bytes <= 0) return 0
-        return (bytes * rateCentimesPerMb + MB / 2) / MB
+        // clamp both factors first: MAX_BILLABLE_BYTES x MAX_PRICE_PER_MB stays well inside Long
+        val b = minOf(bytes, Market.MAX_BILLABLE_BYTES)
+        val r = minOf(rateCentimesPerMb, Market.MAX_PRICE_PER_MB)
+        return (b * r + MB / 2) / MB
     }
 
     // ---- the quote ----------------------------------------------------------------------------------------
@@ -138,6 +147,15 @@ object Pricing {
         val budgetCentimes: Long,
         val sourceCostPerMb: Int,
         val sellerNetPerMb: Int,
+        /**
+         * v0.14.1, said plainly: [costClass] and [payer] are THIS phone's local
+         * decision. Contract version 2 signs the rate, the budget, the byte
+         * ceiling, the source-cost basis, the seller policy and the pricing mode.
+         * It does not carry a cost class or a payer, so a sponsored session is not
+         * cryptographically distinguishable from a normal one on the wire, and
+         * neither phone can prove to the other who was meant to pay. Treat these
+         * two as policy, never as an agreement. Signing them needs a version 3.
+         */
         val costClass: Coverage.Kind,
         val payer: Payer,
         val free: Boolean,
@@ -160,13 +178,14 @@ object Pricing {
      * an amount to be spent: a free source costs nothing whatever the budget says.
      */
     fun quote(
-        budgetCentimes: Long,
+        budgetCentimesRaw: Long,
         source: Source,
         sellerPolicy: SellerPolicy = SellerPolicy.BALANCED,
         costClass: Coverage.Kind = Coverage.Kind.COMMERCIAL,
         sponsorBudgetCentimes: Long = 0,
         policy: Policy = DEFAULT,
     ): Quote {
+        val budgetCentimes = budgetCentimesRaw.coerceIn(0L, Market.MAX_BUDGET_CENTIMES)
         if (!sellable(source.kind)) return refuse("this source may not be resold", budgetCentimes, costClass)
         val cost = sourceCostPerMb(source.kind, source.declaredCostCentimesPerMb, policy)
 
@@ -211,7 +230,8 @@ object Pricing {
      * offered, so it checks the one thing that is its own business: does my
      * budget buy something useful at this price?
      */
-    fun quoteForOffer(budgetCentimes: Long, rateCentimesPerMb: Int, policy: Policy = DEFAULT): Quote {
+    fun quoteForOffer(budgetCentimesRaw: Long, rateCentimesPerMb: Int, policy: Policy = DEFAULT): Quote {
+        val budgetCentimes = budgetCentimesRaw.coerceIn(0L, Market.MAX_BUDGET_CENTIMES)
         if (rateCentimesPerMb <= 0)
             return Quote(true, "free source: the buyer pays nothing", 0, bytesForBudget(0, 0), budgetCentimes, 0, 0,
                 Coverage.Kind.COMMERCIAL, Payer.BUYER, true, 0, 0, 0, 0, 0, 0)

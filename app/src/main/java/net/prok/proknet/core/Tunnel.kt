@@ -25,7 +25,10 @@ object Tunnel {
     const val T_KEEPALIVE = 11      // either: [seq u32]; answered with the same
     const val T_UPSTREAM_STATE = 12 // provider -> buyer: [available 1][type 1][validated 1]
     // v0.7 marketplace
-    const val T_CONTRACT_PROPOSE = 13 // buyer -> seller: [contract 62][sigLen 1][buyer sig]
+    // v0.14.1: the contract body is VERSIONED, not a fixed 62 bytes. Its first byte is the
+    // version and the version determines the length (Market.Contract.bodyLenFor). Parse it with
+    // Market.decodeSignedContract, never with a hardcoded length.
+    const val T_CONTRACT_PROPOSE = 13 // buyer -> seller: [versioned contract][sigLen 1][buyer sig]
     const val T_CONTRACT_ACCEPT = 14  // seller -> buyer: [contract hash 32][sigLen 1][seller sig]
     const val T_CONTRACT_REJECT = 15  // seller -> buyer: [reason utf8]
     const val T_USAGE_CHECKPOINT = 16 // seller -> buyer: [checkpoint 45][sigLen 1][seller sig]

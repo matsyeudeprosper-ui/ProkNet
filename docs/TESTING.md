@@ -2126,3 +2126,77 @@ If the OUKITEL is switched to mobile data with sharing off, Gagner → "Mon
 forfait" → for example 1 000 CFA for 2 000 Mo → COMMENCER. The advertised
 price must be **higher** than on Wi-Fi, because the data now costs the
 seller real money. That is the protection working.
+
+## 59. v0.14.1 the budget session is boring (THE acceptance test)
+
+v0.14.0 build 55 failed here: the probe passed both ways and the seller then
+answered `contract rejected: malformed proposal`. This section is what makes
+v0.14.1 stable, and it is not passed until all three parts pass **in one
+sitting, without restarting either app**.
+
+Setup as in section 58: OUKITEL on the Freebox Wi-Fi as the seller, OnePlus
+as the buyer, budget 50 CFA.
+
+### 59a. Three budget sessions in a row
+
+Do the whole buy-and-browse flow **three times**, stopping properly between
+each one:
+
+1. OnePlus: GET INTERNET -> connect to the OUKITEL -> open Wikipedia, read
+   two or three pages -> stop.
+2. Wait for both phones to show they are idle again.
+3. Repeat, twice more.
+
+Every one of the three must reach Internet. The second and third must not be
+slower or less reliable than the first, and neither phone may need a restart.
+
+After each session the buyer must read
+
+```
+Vous avez dépensé N CFA sur votre budget de 50 CFA
+```
+
+with N small and **growing** across the three sessions only because you used
+more, never jumping to 50. The seller must read "Vous avez gagné …" with a
+figure above zero each time.
+
+COPY NETWORK on the OUKITEL must show, after each session, a `contract:`
+block ending in
+
+```
+  decode: PASS | signature: PASS | economic admission: PASS
+  reject reason: accepted
+```
+
+If `reject reason:` ever says anything else, copy the whole block: it now
+names exactly which of the six steps failed and at which contract version.
+
+### 59b. Bluetooth failure injection
+
+During the **second** session, while a page is loading, switch Bluetooth off
+on the OnePlus, wait ten seconds, and switch it back on. Do not touch the
+app. Then tap GET INTERNET again.
+
+Expected: the session ends with an honest error, not a frozen screen, and
+the next tap works. The buyer must not carry the old session's spend into
+the new one, and the seller must not still believe it has a live contract.
+COPY NETWORK on the buyer must show `buyer saw rejection:` empty or a real
+reason, never a stale one from a previous attempt.
+
+### 59c. Background
+
+During the **third** session, put the buyer app in the background (home
+button), leave the screen off for two minutes, then come back. Internet must
+still work, or fail with a clear message. The amount spent must be the
+amount actually used during those two minutes, not the budget.
+
+### What would make this a FAIL
+
+- Any "malformed proposal", "malformed contract" or "malformed signed
+  envelope" message at all.
+- A `live contract:` line showing `v1` instead of `v2 BUDGET`.
+- A spend equal to the budget after a short session.
+- A second or third session that needs an app restart.
+- Any consumer screen showing a CFA-per-megabyte figure. It is allowed only
+  in Developer, in COPY NETWORK, and in the detail of an old v1 session.
+

@@ -46,6 +46,8 @@ import net.prok.proknet.core.P2pPlan
  * and signed by this identity. Relays see routing metadata only.
  */
 class ProkNetNode(private val context: Context) : TransportListener {
+    companion object { /** v0.14.1: a price quote older than this is taken again before anything is signed. */ const val QUOTE_FRESH_MS = 120_000L }
+
     private val tag = "NODE"
     private val main = Handler(Looper.getMainLooper())
 
@@ -657,6 +659,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.e(tag, "PURCHASE FAILED at stage " + P2pAdmission.stageName(stage) + ": " + logReason)
         stopInternet(logReason)
         lastBuyError = userError
+        clearPurchaseEconomics()
         pushStatus()
     }
 
@@ -1167,7 +1170,18 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** v0.14: recompute what this phone charges, from its source and its earning policy. */
     /** v0.14: start the session on the quote the purchase was admitted on. */
     private fun startBudgetTunnel(): Boolean {
-        val q = buyQuote ?: net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, buyPrice * 100)
+        // v0.14.1: the snapshot taken at admission, never a fresh read of the preference
+        // while a purchase is under way. It is only trusted while it is fresh: setting up
+        // a Bluetooth link can take a while, and a quote taken before a long wait may no
+        // longer describe anything real, so a stale one is taken again rather than signed.
+        val age = System.currentTimeMillis() - buyQuoteAt
+        var q = buyQuote
+        if (q == null || age > QUOTE_FRESH_MS || age < 0) {
+            if (q != null) DiagLog.w(tag, "BUY quote was " + (age / 1000) + " s old: taking it again before signing")
+            q = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, buyPrice * 100)
+            if (!q.admissible) { DiagLog.w(tag, "BUY refused on the fresh quote: " + q.reason); lastBuyError = q.reason; return false }
+            buyQuoteAt = System.currentTimeMillis()
+        }
         buyQuote = q
         return tunnel.startBudget(q, sellerPolicy.ordinal)
     }
@@ -1175,6 +1189,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     fun refreshAutoPrice() {
         val rate = autoRateCentimesPerMb()
         gateway.sellerFloorCentimesPerMb = net.prok.proknet.core.Pricing.sellerFloorPerMb(mySource(), sellerPolicy)
+        // v0.14.1: and re-evaluated from the CURRENT source every time a contract arrives
+        gateway.sellerFloorProvider = { net.prok.proknet.core.Pricing.sellerFloorPerMb(mySource(), sellerPolicy) }
         val cfa = net.prok.proknet.core.Pricing.advertisedPriceCfa(rate)
         if (cfa != sellPrice) {
             sellPrice = cfa
@@ -1223,7 +1239,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
             lastBuyError = quote.reason
             return false
         }
+        // v0.14.1: the attempt is frozen on this quote. Changing the budget preference
+        // mid-setup must never alter a purchase that is already under way.
         buyQuote = quote
+        buyQuoteAt = System.currentTimeMillis()
         DiagLog.i(tag, "BUY admitted: budget " + Market.cfa(buyBudgetCentimes) + ", rate " + Market.cfa(quote.rateCentimesPerMb.toLong()) +
             "/MB, ceiling " + Market.mb(quote.maxBillableBytes))
         buyPrice = offer.pricePerMb
@@ -1305,6 +1324,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** v0.14: what one MB of this phone's own data costs it, in centimes; -1 = not declared. */
     @Volatile var sourceCostCentimesPerMb: Int = -1
     /** v0.14: the quote the current purchase was admitted on. */
+    /** v0.14.1: how long a quote may sit before it has to be taken again. */
+    @Volatile var buyQuoteAt = 0L
+        private set
+
     @Volatile var buyQuote: net.prok.proknet.core.Pricing.Quote? = null
 
     /** v0.14: the source this phone would share, as the pricing engine sees it. */
@@ -1370,7 +1393,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (wifi.linkedPeer == null) wifi.disconnect("a new purchase starts from a clean screen")
     }
 
+    /** v0.14.1: after any failed or finished purchase, no economics may leak into the next tap. */
+    private fun clearPurchaseEconomics() { buyQuote = null; buyQuoteAt = 0; buyPrice = 0 }
+
     fun stopInternet(reason: String) {
+        clearPurchaseEconomics()
         p2pSessionToken++; p2pDeferredVisibility = null
         if (buyViaBulk) {
             val s = bulkSession

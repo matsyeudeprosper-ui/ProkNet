@@ -21,6 +21,8 @@ object Market {
     const val MAX_FEE_PCT = 50
     const val DEFAULT_FEE_PCT = 5
     const val MAX_BILLABLE_BYTES = 1L shl 40  // 1 TB: beyond this a checkpoint is malformed
+    /** v0.14.1: 1 000 000 CFA. A budget beyond this is malformed, and bounding it keeps every product in Long. */
+    const val MAX_BUDGET_CENTIMES = 100_000_000L
     const val CHECKPOINT_INTERVAL_MS = 30_000L
     const val CHECKPOINT_INTERVAL_BYTES = 1L * MB
     /** How far the seller's claimed bytes may exceed the buyer's own count before the buyer disputes. */
@@ -124,7 +126,14 @@ object Market {
         val pricePerMb: Int, val minPriceCfa: Int, val maxMb: Int, val feePct: Int, val startTs: Long,
         val version: Int = PRICING_VERSION,
         // ---- v0.14 (version 2 only): the economics both sides actually sign ----
-        /** The exact internal rate, in centimes per MB. CFA-per-MB cannot express 2.11 CFA. */
+        /**
+         * The agreed rate in centimes per MB. The field can carry any centime value,
+         * but in v0.14.1 the buyer only ever learns the seller's ADVERTISED price,
+         * which is whole CFA rounded up, so in practice this is a multiple of 100.
+         * The seller still admits on its own current floor, so rounding can only ever
+         * favour the seller. Carrying the true sub-CFA rate needs a signed offer in
+         * the advertisement, which this release does not add.
+         */
         val rateCentimesPerMb: Int = 0,
         /** The buyer's ceiling. The session may never cost more than this. */
         val buyerBudgetCentimes: Long = 0,
@@ -154,10 +163,28 @@ object Market {
          */
         fun costFor(bytes: Long): Long {
             if (!budgetSession) return sessionCost(bytes, pricePerMb, minPriceCfa)
-            if (rateCentimesPerMb <= 0) return 0
-            val capped = if (maxBillableBytes > 0) minOf(bytes, maxBillableBytes) else bytes
+            if (rateCentimesPerMb <= 0 || bytes <= 0) return 0
+            // v0.14.1: clamp BEFORE multiplying. A hostile or corrupt byte count must not
+            // overflow Long and wrap into a negative or absurd charge.
+            val ceiling = if (maxBillableBytes > 0) minOf(maxBillableBytes, MAX_BILLABLE_BYTES) else MAX_BILLABLE_BYTES
+            val capped = minOf(bytes, ceiling)
             val raw = (capped * rateCentimesPerMb + MB / 2) / MB
             return if (buyerBudgetCentimes > 0) minOf(raw, buyerBudgetCentimes) else raw
+        }
+
+        /**
+         * v0.14.1: what [bytes] cost at the signed rate WITHOUT the budget clamp.
+         *
+         * [costFor] deliberately clamps to the budget, which makes it useless for
+         * checking the contract itself: a ceiling inflated to three times the budget
+         * still "costs" exactly the budget. The seller admits a proposal on this
+         * figure, so a byte ceiling that does not match the signed budget is refused
+         * instead of silently agreed to.
+         */
+        fun uncappedCostFor(bytes: Long): Long {
+            if (rateCentimesPerMb <= 0 || bytes <= 0) return 0
+            val capped = minOf(bytes, MAX_BILLABLE_BYTES)
+            return (capped * rateCentimesPerMb + MB / 2) / MB
         }
 
         fun encode(): ByteArray =
@@ -175,9 +202,13 @@ object Market {
             if (!base) return false
             return when (version) {
                 PRICING_VERSION -> true
-                PRICING_VERSION_BUDGET -> rateCentimesPerMb in 0..MAX_PRICE_PER_MB && buyerBudgetCentimes >= 0 &&
+                // v0.14.1: a paid budget session must carry a real ceiling; a free one (rate 0) is
+                // explicitly allowed to have no budget at all, and costs nothing by construction.
+                PRICING_VERSION_BUDGET -> rateCentimesPerMb in 0..MAX_PRICE_PER_MB &&
+                    buyerBudgetCentimes in 0..MAX_BUDGET_CENTIMES &&
                     maxBillableBytes in 0..MAX_BILLABLE_BYTES && sourceCostBasisCentimesPerMb in 0..MAX_PRICE_PER_MB &&
-                    sellerPolicy in 0..7 && pricingMode in 0..1
+                    sellerPolicy in 0..7 && pricingMode in 0..1 &&
+                    (rateCentimesPerMb == 0 || (maxBillableBytes > 0 && buyerBudgetCentimes > 0))
                 else -> false
             }
         }
@@ -188,8 +219,25 @@ object Market {
             const val LEN = 62
             /** v1 plus rate, budget, byte ceiling, source-cost basis, seller policy, pricing mode. */
             const val LEN_V2 = LEN + 4 + 8 + 8 + 4 + 1 + 1
+
+            /**
+             * v0.14.1: the body length a declared version MUST have, or -1 for a
+             * version this build does not support. The wire is self-describing:
+             * the first byte says the version, the version says the length. No
+             * guessing from the packet size, and no version may be parsed with
+             * another version's layout.
+             */
+            fun bodyLenFor(version: Int): Int = when (version) {
+                PRICING_VERSION -> LEN
+                PRICING_VERSION_BUDGET -> LEN_V2
+                else -> -1
+            }
+
             fun decode(b: ByteArray?): Contract? {
-                if (b == null || (b.size != LEN && b.size != LEN_V2)) return null
+                if (b == null || b.isEmpty()) return null
+                // a 62-byte body claiming version 2 used to decode as a budget contract
+                // with all-zero economics; the length must match the declared version
+                if (b.size != bodyLenFor(b[0].toInt() and 0xFF)) return null
                 return try {
                     val bb = ByteBuffer.wrap(b)
                     val ver = bb.get().toInt() and 0xFF
@@ -204,8 +252,89 @@ object Market {
         }
     }
 
-    /** What a signature over a contract commits to (domain-separated). */
+    /** What a signature over a contract commits to (domain-separated). Covers every economic field, v1 or v2. */
     fun contractSignData(c: Contract): ByteArray = "ProkNet-contract-1".toByteArray(Charsets.UTF_8) + c.encode()
+
+    /** A contract and the signature over exactly its bytes. */
+    class SignedContract(val contract: Contract, val sig: ByteArray)
+
+    /** Why a signed proposal could not be read. Distinct, so a failure is never a guess. */
+    enum class Framing { OK, EMPTY, UNSUPPORTED_VERSION, TRUNCATED, LENGTH_MISMATCH, NO_SIGNATURE, BAD_CONTRACT }
+
+    /**
+     * v0.14.1: parse `[contract body][sigLen 1][sig]` where the body length comes
+     * from the version byte, not from a constant.
+     *
+     * The v0.14.0 regression: `Gateway` parsed every proposal with the v1 length
+     * (62), so a perfectly valid 84-byte budget contract was rejected as
+     * "malformed proposal" before it could ever be decoded — after the phones had
+     * already paid for a Bluetooth link, a handshake and a 512 KB probe.
+     */
+    fun framingOf(d: ByteArray?): Framing {
+        if (d == null || d.isEmpty()) return Framing.EMPTY
+        val len = Contract.bodyLenFor(d[0].toInt() and 0xFF)
+        if (len < 0) return Framing.UNSUPPORTED_VERSION
+        if (d.size < len + 2) return Framing.TRUNCATED
+        val n = d[len].toInt() and 0xFF
+        if (n == 0) return Framing.NO_SIGNATURE
+        if (d.size != len + 1 + n) return Framing.LENGTH_MISMATCH
+        return if (Contract.decode(d.copyOfRange(0, len)) == null) Framing.BAD_CONTRACT else Framing.OK
+    }
+
+    fun decodeSignedContract(d: ByteArray?): SignedContract? {
+        if (framingOf(d) != Framing.OK) return null
+        val len = Contract.bodyLenFor(d!![0].toInt() and 0xFF)
+        val c = Contract.decode(d.copyOfRange(0, len)) ?: return null
+        return SignedContract(c, d.copyOfRange(len + 1, d.size))
+    }
+
+    /**
+     * The seller's whole decision about one signed proposal, and what it saw on the way.
+     * [reason] is null exactly when the proposal is agreed.
+     */
+    class Admission(
+        val reason: String?,
+        val contract: Contract?,
+        val buyerSig: ByteArray?,
+        val framing: Framing,
+        val declaredVersion: Int,
+        val envelopeLen: Int,
+        val decoded: Boolean,
+        val signatureOk: Boolean,
+    ) {
+        val ok: Boolean get() = reason == null
+    }
+
+    /**
+     * v0.14.1: receive signed proposal -> read the version -> take exactly the contract
+     * bytes -> take exactly the signature bytes -> decode -> validate -> verify the
+     * signature over exactly those bytes -> economic admission. In that order, with a
+     * distinct reason at every step.
+     *
+     * This is the boundary that failed on the phones in v0.14.0. `Gateway` cannot be
+     * built in a JVM test because it needs an Android Context and a Looper, so the
+     * decision lives here instead of inside it, and the tests run the same function the
+     * seller phone runs rather than an imitation of it.
+     */
+    fun admitProposal(
+        data: ByteArray?, myId: ByteArray, linkPeerId: ByteArray?, buyerPub: ByteArray?,
+        myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int,
+        nowMs: Long, usedSessionIds: Set<String>, myFloorCentimesPerMb: Int = 0,
+    ): Admission {
+        val len = data?.size ?: 0
+        val ver = if (data != null && data.isNotEmpty()) data[0].toInt() and 0xFF else -1
+        val framing = framingOf(data)
+        if (framing != Framing.OK)
+            return Admission("malformed signed envelope (" + framing + ")", null, null, framing, ver, len, false, false)
+        val sb = decodeSignedContract(data)
+            ?: return Admission("malformed contract", null, null, framing, ver, len, false, false)
+        if (linkPeerId == null || buyerPub == null)
+            return Admission("no authenticated link", sb.contract, sb.sig, framing, ver, len, true, false)
+        if (!Crypto.verify(buyerPub, contractSignData(sb.contract), sb.sig))
+            return Admission("bad buyer signature", sb.contract, sb.sig, framing, ver, len, true, false)
+        val why = acceptableProposal(sb.contract, myId, linkPeerId, myPrice, myMin, myMaxMb, myFee, nowMs, usedSessionIds, myFloorCentimesPerMb)
+        return Admission(why, sb.contract, sb.sig, framing, ver, len, true, true)
+    }
 
     /** Seller-side check of a proposal: the terms must be exactly what the seller currently offers, and the parties must be the link parties. */
     fun acceptableProposal(c: Contract, myId: ByteArray, linkPeerId: ByteArray, myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int, nowMs: Long, usedSessionIds: Set<String>,
@@ -216,12 +345,14 @@ object Market {
         if (c.budgetSession) {
             // v0.14: the seller checks that the rate really covers its floor, not that a price list matches
             if (c.feePct != myFee) return "fee differs from my offer"
-            if (c.rateCentimesPerMb <= 0) return "no internal rate"
-            if (c.maxBillableBytes <= 0 || c.buyerBudgetCentimes <= 0) return "no budget ceiling"
-            if (c.costFor(c.maxBillableBytes) > c.buyerBudgetCentimes) return "the byte ceiling costs more than the signed budget"
-            // the seller never signs a rate that leaves it below its own floor
-            if (myFloorCentimesPerMb > 0 && split(c.rateCentimesPerMb.toLong(), c.feePct).sellerNet < myFloorCentimesPerMb)
-                return "the rate does not cover my cost and margin"
+            if (c.rateCentimesPerMb > 0) {
+                if (c.maxBillableBytes <= 0 || c.buyerBudgetCentimes <= 0) return "budget ceiling invalid"
+                if (c.uncappedCostFor(c.maxBillableBytes) > c.buyerBudgetCentimes) return "budget ceiling invalid"
+                // the seller never signs a rate that leaves it below the floor it has RIGHT NOW
+                if (myFloorCentimesPerMb > 0 && split(c.rateCentimesPerMb.toLong(), c.feePct).sellerNet < myFloorCentimesPerMb)
+                    return "seller floor not met"
+            }
+            // rate 0 is a free session: nothing to charge, nothing to protect
         } else if (c.pricePerMb != myPrice || c.minPriceCfa != myMin || c.maxMb != myMaxMb || c.feePct != myFee) return "terms differ from my offer"
         if (Math.abs(nowMs - c.startTs) > 10 * 60_000L) return "start time too far from now"
         if (usedSessionIds.contains(c.sessionHex)) return "session id already used"

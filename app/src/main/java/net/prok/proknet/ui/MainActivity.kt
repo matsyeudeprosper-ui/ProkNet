@@ -412,7 +412,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val sourcesWord = if (usable.isEmpty()) getString(R.string.sources_none) else if (usable.size == 1) getString(R.string.sources_one) else getString(R.string.sources_many, usable.size)
         text(R.id.tileAround, usable.size.toString())
         v<PulseButtonView>(R.id.btnGetInternet).sources = usable.size
-        text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb }).replace(" par Mo", "/Mo"))
+        text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceBandWord(usable.minOf { it.priceCentimesPerMb }))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))
         v<TextView>(R.id.rowShareSub).apply { text = getString(if (sellerOn) R.string.row_share_caption_on else R.string.row_share_caption); setTextColor(getColor(if (sellerOn) R.color.ok else R.color.text_muted)) }
@@ -513,7 +513,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             dot.layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) }
             val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
             texts.addView(TextView(this).apply { text = nameOf(s); setTextAppearance(R.style.H2) })
-            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(st) + " · " + CoverageModel.ageWord(now - s.lastSeen) + " · " + CoverageModel.priceWord(s.priceCentimesPerMb); setTextAppearance(R.style.Muted) })
+            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(st) + " · " + CoverageModel.ageWord(now - s.lastSeen) + " · " + CoverageModel.priceBandWord(s.priceCentimesPerMb); setTextAppearance(R.style.Muted) })
             val chevron = TextView(this).apply { text = getString(R.string.chevron); textSize = 24f; setTextColor(getColor(R.color.text_muted)) }
             row.addView(dot); row.addView(texts); row.addView(chevron)
             row.setOnClickListener { sourceDialog(s, st, now) }
@@ -528,7 +528,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             dot.layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) }
             val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
             texts.addView(TextView(this).apply { text = getString(R.string.map_shared) + (if (c.zone in localZones || c.zone == zone) " · " + getString(R.string.map_here) else ""); setTextAppearance(R.style.H2) })
-            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(c.status) + " · " + getString(R.string.map_shared_sources, c.potential) + " · " + CoverageModel.priceWord(c.bestPrice) + " · " + CoverageModel.ageWord(now - c.lastSeen); setTextAppearance(R.style.Muted) })
+            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(c.status) + " · " + getString(R.string.map_shared_sources, c.potential) + " · " + CoverageModel.priceBandWord(c.bestPrice) + " · " + CoverageModel.ageWord(now - c.lastSeen); setTextAppearance(R.style.Muted) })
             row.addView(dot); row.addView(texts)
             list.addView(row)
         }
@@ -540,7 +540,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             CoverageModel.cellWord(st) + (if (st == Coverage.ZoneStatus.YELLOW) " (vu récemment)" else ""),
             getString(R.string.map_last_seen, CoverageModel.ageWord(now - s.lastSeen)),
             getString(R.string.map_type, CoverageModel.kindWord(s.kind)),
-            getString(R.string.map_best_price, CoverageModel.priceWord(s.priceCentimesPerMb)),
+            getString(R.string.map_best_price, CoverageModel.priceBandWord(s.priceCentimesPerMb)),
             getString(R.string.map_seen_times, s.observations),
         )
         AlertDialog.Builder(this).setTitle(s.name).setMessage(lines.joinToString("\n")).setPositiveButton(R.string.close, null).show()
@@ -552,7 +552,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             getString(R.string.map_last_seen, CoverageModel.ageWord(now - cell.lastObservedAt)),
             getString(R.string.map_direct, cell.directSourceCount),
             getString(R.string.map_potential, cell.potentialSourceCount),
-            getString(R.string.map_best_price, CoverageModel.priceWord(cell.bestKnownPrice)),
+            getString(R.string.map_best_price, CoverageModel.priceBandWord(cell.bestKnownPrice)),
         ).joinToString("\n")
         AlertDialog.Builder(this).setTitle(CoverageModel.cellWord(cell?.status ?: Coverage.ZoneStatus.RED)).setMessage(msg).setPositiveButton(R.string.close, null).show()
     }
