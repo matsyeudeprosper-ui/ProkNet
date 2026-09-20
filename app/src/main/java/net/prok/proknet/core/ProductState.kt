@@ -149,6 +149,31 @@ object ProductState {
     val Buyer.busy: Boolean get() = this == Buyer.FINDING || this == Buyer.CONNECTING || this == Buyer.CHECKING || this == Buyer.SECURING || this == Buyer.STARTING
     val Buyer.active: Boolean get() = busy || this == Buyer.ONLINE
 
+    // ---- v0.13.1: who owns the home screen -------------------------------------------------------
+
+    enum class HomeOwner { SELLER, PURCHASE, REQUEST, IDLE }
+
+    /**
+     * v0.13.1 bug: a brand-new GET INTERNET request showed "Connexion perdue /
+     * RÉESSAYER" because the error of a session the user had stopped earlier was
+     * still on the node, so the buyer state read LOST and the lost card outranked
+     * the live request.
+     *
+     * An active request always beats a lost card: a card about a purchase that is
+     * over can never hide a request that is running now.
+     */
+    fun homeOwner(sellerOn: Boolean, purchaseActive: Boolean, requestActive: Boolean, showLost: Boolean): HomeOwner = when {
+        sellerOn -> HomeOwner.SELLER
+        purchaseActive -> HomeOwner.PURCHASE
+        requestActive -> HomeOwner.REQUEST
+        showLost -> HomeOwner.PURCHASE          // the lost card is the purchase card, with nothing running
+        else -> HomeOwner.IDLE
+    }
+
+    /** A user who stopped a session on purpose was never given an error. */
+    fun isUserStop(lastError: String): Boolean =
+        any(lastError, "stopped by user", "customer stopped", "stopped from the", "sharing stopped", "stopped by the user")
+
     // ---- seller ("Share Internet") ---------------------------------------------------------------
 
     enum class Seller { OFF, NO_INTERNET, AVAILABLE, SERVING, LOST }

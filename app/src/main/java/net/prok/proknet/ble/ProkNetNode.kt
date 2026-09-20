@@ -1307,7 +1307,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         else wifi.phase
 
     /** A new purchase starts from a clean screen: nothing from the last attempt may show. */
-    private fun clearLastFailure() {
+    fun clearLastFailure() {
         lastBuyError = ""
         tunnel.clearError()
         if (wifi.linkedPeer == null) wifi.disconnect("a new purchase starts from a clean screen")
@@ -1344,8 +1344,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile var lastBleVerdict: BleHealth.Verdict = BleHealth.Verdict.NOT_RUNNING
         private set
 
+    /** v0.13.1: the adapter going OFF and coming back, seen by the watchdog itself; no receiver needed. */
+    @Volatile private var bluetoothWasOff = false
+    @Volatile private var bluetoothReturnedAt = 0L
+
     private fun bleState(): BleHealth.State {
         val now = System.currentTimeMillis()
+        if (!ble.isBluetoothOn) bluetoothWasOff = true
+        else if (bluetoothWasOff) {
+            bluetoothWasOff = false; bluetoothReturnedAt = now
+            DiagLog.i(tag, "Bluetooth is back on: the radio will be restarted once")
+        }
         val lastSeen = store.knownPeers().maxOfOrNull { it.lastSeen } ?: 0L
         val msSince = if (lastSeen > 0) now - lastSeen else -1L
         // v0.10.1: an L2CAP negotiation, probe or session is a live link; the watchdog must not
@@ -1360,7 +1369,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             startedAt = ble.startedAt, gattTimeouts = ble.gattTimeouts,
             expectPeers = BleHealth.expectPeers(msSince, buyerWanted != null, gateway.providing),
             linkBusy = linkBusy, sessionEndedAt = sessionEndedAt,
-            lastRecoveryAt = ble.lastRecoveryAt, recoveries = ble.recoveries,
+            lastRecoveryAt = ble.lastRecoveryAt, recoveries = ble.recoveries, bluetoothReturnedAt = bluetoothReturnedAt,
         )
     }
 

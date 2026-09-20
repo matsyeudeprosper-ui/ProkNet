@@ -240,4 +240,33 @@ class ProductStateTest {
         for (s in listOf(none, ProductState.sellerSourceLine(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, Tunnel.UP_WIFI, "x")))
             for (w in listOf("L2CAP", "PSM", "bulk", "GATT")) assertFalse(w, s.contains(w))
     }
+
+    // ---- v0.13.1: a new request is never shown an old session's error ------------------------------------
+
+    @Test
+    fun a_live_request_outranks_a_lost_card_from_a_purchase_that_is_over() {
+        // the exact OnePlus case: no purchase in flight, a stale LOST from a stopped session, a fresh request
+        assertEquals(ProductState.HomeOwner.REQUEST, ProductState.homeOwner(sellerOn = false, purchaseActive = false, requestActive = true, showLost = true))
+        // with nothing running, the lost card is the purchase card and may show
+        assertEquals(ProductState.HomeOwner.PURCHASE, ProductState.homeOwner(false, false, false, true))
+        // a purchase in flight always wins, and a seller wins over everything
+        assertEquals(ProductState.HomeOwner.PURCHASE, ProductState.homeOwner(false, true, true, false))
+        assertEquals(ProductState.HomeOwner.SELLER, ProductState.homeOwner(true, true, true, true))
+        assertEquals(ProductState.HomeOwner.IDLE, ProductState.homeOwner(false, false, false, false))
+    }
+
+    @Test
+    fun a_session_the_user_stopped_is_not_an_error_for_the_next_request() {
+        // the diagnostic line that produced "Connexion perdue / Rapprochez-vous du fournisseur"
+        assertTrue(ProductState.isUserStop("Wi-Fi link closed: customer stopped: stopped by user"))
+        assertTrue(ProductState.isUserStop("customer stopped: stopped from the Bluetooth test screen"))
+        assertTrue(ProductState.isUserStop("sharing stopped"))
+        // real failures are still errors
+        assertFalse(ProductState.isUserStop("the provider did not answer within 60s"))
+        assertFalse(ProductState.isUserStop(BulkPlan.PROBE_FAIL_REASON))
+        assertFalse(ProductState.isUserStop(""))
+        // and with no error at all the buyer is IDLE, not LOST
+        assertEquals(Buyer.IDLE, ProductState.buyer(false, "IDLE", false, "DISCONNECTED", false, ""))
+        assertEquals(Buyer.LOST, ProductState.buyer(false, "IDLE", false, "DISCONNECTED", false, "the provider did not answer"))
+    }
 }

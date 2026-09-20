@@ -31,6 +31,14 @@ object BleHealth {
     const val COOLDOWN_MAX_MS = 300_000L
     /** A fresh start needs a moment before anything can be called stale. */
     const val GRACE_MS = 12_000L
+    /**
+     * v0.13.1: no scan result AT ALL for this long, even with nobody expected.
+     * The phone log showed Bluetooth off, then on, then "healthy" with adv on,
+     * scan on, peers 0 and the last result thousands of seconds old: the stale
+     * scanning/advertising flags survive an adapter restart and [expectPeers]
+     * was false (the last peer was 55 minutes old), so nothing ever recovered.
+     */
+    const val SILENT_MAX_MS = 10 * 60_000L
 
     class State(
         val now: Long,
@@ -55,9 +63,11 @@ object BleHealth {
         val sessionEndedAt: Long,
         val lastRecoveryAt: Long,
         val recoveries: Int,
+        /** v0.13.1: when the adapter was last seen coming back from OFF, 0 = never. */
+        val bluetoothReturnedAt: Long = 0L,
     )
 
-    enum class Verdict { HEALTHY, NOT_RUNNING, BLUETOOTH_OFF, BUSY, COOLING_DOWN, ADVERTISING_STALE, SCAN_STALE, BOTH_STALE, GATT_WEDGED }
+    enum class Verdict { HEALTHY, NOT_RUNNING, BLUETOOTH_OFF, BUSY, COOLING_DOWN, ADVERTISING_STALE, SCAN_STALE, BOTH_STALE, GATT_WEDGED, BLUETOOTH_RETURNED, SCAN_SILENT }
 
     enum class Action { NONE, RECOVER }
 
@@ -83,6 +93,9 @@ object BleHealth {
         if (!s.bluetoothOn) return Verdict.BLUETOOTH_OFF
         // never interrupt a working link or a group being formed
         if (s.linkBusy) return Verdict.BUSY
+        // v0.13.1: the adapter came back since the last recovery. The scanner and the advertiser
+        // the app asked for did not survive it, whatever their flags say. Exactly once per return.
+        if (s.bluetoothReturnedAt > 0 && s.lastRecoveryAt < s.bluetoothReturnedAt && s.now - s.bluetoothReturnedAt >= GRACE_MS) return Verdict.BLUETOOTH_RETURNED
         if (s.recoveries > 0 && s.now - s.lastRecoveryAt < cooldownMs(s.recoveries)) return Verdict.COOLING_DOWN
         // let a fresh start settle before judging it
         val settling = s.now - maxOf(s.startedAt, s.lastRecoveryAt) < GRACE_MS
@@ -97,11 +110,18 @@ object BleHealth {
         if (advStale) return Verdict.ADVERTISING_STALE
         // the reported pattern: reconnects to a known peer time out while nothing is being discovered
         if (s.gattTimeouts >= GATT_TIMEOUTS_WEDGED && s.expectPeers && silent) return Verdict.GATT_WEDGED
+        // v0.13.1: the scanner DID hear things once and has heard nothing at all for ten minutes,
+        // with nobody expected so no other rule looks. That is a wedge, not an empty field: a phone
+        // that never heard anyone (lastScanResultAt == 0) is alone and is left alone. Bounded by the
+        // normal backoff, never during a link.
+        if (s.scanning && s.lastScanResultAt > 0 && since(s.now, s.lastScanResultAt) > SILENT_MAX_MS &&
+            s.now - maxOf(s.startedAt, s.lastRecoveryAt) > SILENT_MAX_MS) return Verdict.SCAN_SILENT
         return Verdict.HEALTHY
     }
 
     fun action(v: Verdict): Action = when (v) {
-        Verdict.ADVERTISING_STALE, Verdict.SCAN_STALE, Verdict.BOTH_STALE, Verdict.GATT_WEDGED -> Action.RECOVER
+        Verdict.ADVERTISING_STALE, Verdict.SCAN_STALE, Verdict.BOTH_STALE, Verdict.GATT_WEDGED,
+        Verdict.BLUETOOTH_RETURNED, Verdict.SCAN_SILENT -> Action.RECOVER
         else -> Action.NONE
     }
 
@@ -115,5 +135,7 @@ object BleHealth {
         Verdict.SCAN_STALE -> "scan stale"
         Verdict.BOTH_STALE -> "scan and advertising stale"
         Verdict.GATT_WEDGED -> "connections time out and nothing is being discovered"
+        Verdict.BLUETOOTH_RETURNED -> "Bluetooth came back on: restarting the radio"
+        Verdict.SCAN_SILENT -> "the scanner has heard nothing for a long time"
     }
 }

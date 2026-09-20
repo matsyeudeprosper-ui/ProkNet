@@ -49,6 +49,8 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         private set
     @Volatile var lastOpportunityAt = 0L
         private set
+    @Volatile var lastForwardTo = ""
+        private set
 
     // ---- the two opt-ins and the server ------------------------------------------------------------------
 
@@ -150,6 +152,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 any = true
                 val copy = NetRequest.forwarded(r)
                 DiagLog.i(tag, "FORWARD " + r.id + " gen " + r.generation + " -> prok-" + p.shortId + " (" + why + ", hop " + copy.hops + ")")
+                lastForwardTo = "prok-" + p.shortId + " (" + r.id + ", " + why + ")"
                 node.sendControl(p.shortId, Wire.netRequest(NetRequest.encode(copy))) { ok ->
                     if (!ok) { synchronized(this) { state = RequestGossip.unmark(state, r, p.shortId) }; DiagLog.w(tag, "forward of " + r.id + " to prok-" + p.shortId + " failed; will retry") }
                 }
@@ -252,9 +255,27 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         io.execute { try { file.writeText(text, Charsets.UTF_8) } catch (e: Exception) { DiagLog.w(tag, "requests save: " + e.message) } }
     }
 
+    /** v0.13.1: the five lines that answer "why did nothing happen?" without reading the rest. */
+    private fun summary(now: Long): String {
+        val peers = node.peers().filter { it.inRange && it.hasId }
+        val lastSeen = node.peers().maxOfOrNull { it.lastSeen } ?: 0L
+        val mine = state.requests.values.filter { it.id in state.mine }.maxByOrNull { it.updatedAt }
+        val sb = StringBuilder()
+        sb.append("Nearby ProkNet phones: ").append(peers.size)
+            .append(if (peers.isEmpty()) "" else " (" + peers.joinToString(", ") { "prok-" + it.shortId } + ")").append("\n")
+        sb.append("Last peer seen: ").append(if (lastSeen == 0L) "never" else ((now - lastSeen) / 1000).toString() + " s ago")
+            .append(if (peers.isEmpty() && lastSeen > 0L) " (NOT IN RANGE now)" else "").append("\n")
+        sb.append("Request state: ").append(mine?.let { it.state.name + " (" + it.id + ", " + (if (it.expired(now)) "expired" else ((it.expiresAt - now) / 60_000).toString() + " min left") + ")" } ?: "no request from this phone").append("\n")
+        sb.append("Last request forwarded to: ").append(lastForwardTo.ifEmpty { "nobody yet" }).append("\n")
+        sb.append("Provider activation notification sent: ").append(if (lastOpportunityAt > 0) "YES, " + CoverageModel.ageWord(now - lastOpportunityAt) else "NO")
+            .append(if (lastOpportunityAt > 0) "" else " - " + lastRefusal.ifEmpty { "no request reached this phone" }).append("\n\n")
+        return sb.toString()
+    }
+
     fun diag(): String {
         val now = System.currentTimeMillis()
-        val sb = StringBuilder("network brain:\n")
+        val sb = StringBuilder(summary(now))
+        sb.append("network brain:\n")
         sb.append("  server: ").append(if (configured) brainUrl else "not configured (direct/local mode)").append("\n")
         sb.append("  last sync attempt: ").append(if (lastSyncAttempt == 0L) "-" else CoverageModel.ageWord(now - lastSyncAttempt)).append(" | last success: ").append(if (lastSyncOk == 0L) "-" else CoverageModel.ageWord(now - lastSyncOk))
             .append(" | syncs: ").append(syncCount).append(" | error: ").append(lastSyncError.ifEmpty { "-" }).append("\n")

@@ -1935,6 +1935,18 @@ coverage.
 
 ## 51. v0.13.0 the request that wakes a provider (THE test)
 
+**Put the two phones next to each other for about 30 seconds first.** Then,
+on the OnePlus, Développeur -> COPY NETWORK must already say:
+
+```
+Nearby ProkNet phones: 1 (prok-24e480e6)
+Last peer seen: 3 s ago
+```
+
+If it says 0 and "NOT IN RANGE now", the phones cannot hear each other yet
+and the test cannot work: wait, or toggle Bluetooth off and on once and
+wait 30 s more (v0.13.1 restarts the radio by itself after that).
+
 OUKITEL: Freebox Wi-Fi ON, mobile data OFF, Bluetooth ON, sharing OFF.
 Open ProkNet → Gagner → turn ON "Me prévenir quand quelqu'un cherche
 Internet près de moi". Put the phone down.
@@ -1977,3 +1989,17 @@ public HTTPS hostname exists.
 Provider activation is hardware-proven only when section 51 ends with
 CONNECTÉ and Wikipedia without a second tap on the OnePlus. 3-phone carry
 and relay stay unproven until phone #3 exists.
+
+## 53. v0.13.1 the two fixed bugs
+
+A fresh request never wears an old error. On the OnePlus: connect, then
+tap ARRÊTER, then tap the sphere again. It must go RECHERCHE, then DEMANDE.
+It must NOT show RÉESSAYER, "Connexion perdue" or "Rapprochez-vous du
+fournisseur" before anything has been tried. A real failure still shows its
+own sentence.
+
+The radio recovers after Bluetooth comes back. With ProkNet running, turn
+Bluetooth off on the OnePlus, wait ten seconds, turn it back on. Within
+about 25 seconds the log (COPY NETWORK) must show `Bluetooth is back on:
+the radio will be restarted once` and a recovery, and the two phones must
+see each other again without restarting the app.

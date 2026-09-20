@@ -175,7 +175,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (request?.active == true) return
         ensureRunning {
             if (buyerOn()) { refresh(); return@ensureRunning }
-            lostDismissed = false
+            // v0.13.1: a new request starts from a clean screen. The error of a session the user
+            // stopped earlier is not this request's error, and must never show as "Connexion perdue".
+            node.clearLastFailure()
+            lostDismissed = true
             val now = System.currentTimeMillis()
             val r = InternetRequest.oneTap(Crypto.randomBytes(8).toHex(), now, cover.zone())
             request = r; requestStartedAt = now
@@ -217,7 +220,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             InternetRequest.State.DIRECT_SOURCE_FOUND, InternetRequest.State.CONNECTING -> {
                 val b = buyerState()
                 if (b == ProductState.Buyer.ONLINE) { update(InternetRequest.online(r, now)); r.sourceId?.let { cover.onSuccess(it) }; network.end(r.id, NetRequest.State.FULFILLED) }
-                else if (b == ProductState.Buyer.LOST || (b == ProductState.Buyer.IDLE && !buyerOn())) { update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now)); network.end(r.id, NetRequest.State.CANCELLED) }
+                else if (b == ProductState.Buyer.LOST || (b == ProductState.Buyer.IDLE && !buyerOn())) {
+                    lostDismissed = false
+                    update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now)); network.end(r.id, NetRequest.State.CANCELLED)
+                }
             }
             else -> {}
         }
@@ -239,7 +245,15 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun buyerState(): ProductState.Buyer = ProductState.buyer(node.buyerWanted != null, node.buyPhase(), node.buyerLinkUp(),
         node.tunnel.state, ProkVpnService.running, buyError(), checking = node.linkChecking())
-    private fun buyError(): String = if (lostDismissed) "" else node.tunnel.lastError.ifEmpty { node.lastBuyError }
+    /**
+     * v0.13.1: never the reason of a session the user stopped on purpose, and never
+     * an error at all once a fresh request has taken the screen.
+     */
+    private fun buyError(): String {
+        if (lostDismissed) return ""
+        val e = node.tunnel.lastError.ifEmpty { node.lastBuyError }
+        return if (ProductState.isUserStop(e)) "" else e
+    }
     private fun locationOn(): Boolean = try {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
@@ -283,9 +297,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val now = System.currentTimeMillis()
         val r = request
         val sellerOn = s != ProductState.Seller.OFF
-        val buyerVisible = buyerOn() || (b == ProductState.Buyer.LOST && !lostDismissed)
-        val requestVisible = r != null && r.state != InternetRequest.State.CANCELLED
-        val status = sellerOn || buyerVisible || requestVisible
+        // v0.13.1: a live request outranks a lost card from a purchase that is over
+        val owner = ProductState.homeOwner(sellerOn, buyerOn(), r != null && r.state != InternetRequest.State.CANCELLED,
+            b == ProductState.Buyer.LOST && !lostDismissed)
+        val buyerVisible = owner == ProductState.HomeOwner.PURCHASE
+        val requestVisible = owner == ProductState.HomeOwner.REQUEST
+        val status = owner != ProductState.HomeOwner.IDLE
         show(R.id.homeAsk, !sellerOn); show(R.id.homeStatus, status)
         val sphere = v<PulseButtonView>(R.id.btnGetInternet)
         sphere.mode = when {
@@ -349,7 +366,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshInternet(b: ProductState.Buyer) {
-        val buyerVisible = buyerOn() || (b == ProductState.Buyer.LOST && !lostDismissed)
+        val buyerVisible = ProductState.homeOwner(false, buyerOn(), request?.let { it.state != InternetRequest.State.CANCELLED } == true,
+            b == ProductState.Buyer.LOST && !lostDismissed) == ProductState.HomeOwner.PURCHASE
         val confirm = !buyerVisible && pendingOffer != null
         show(R.id.netActive, buyerVisible); show(R.id.netConfirm, confirm); show(R.id.netOffers, !buyerVisible && !confirm)
         when {
@@ -625,6 +643,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (!node.hasKey(peer.shortId)) { toast(getString(R.string.toast_need_key)); return }
         if (ProductState.buyerNeedsWifi(o.bulkBt, o.upstreamType) && !node.wifi.wifiEnabled) { toast(getString(R.string.toast_need_wifi)); return }
         DiagLog.i(tag, "CONNECT pressed by hand: prok-" + peer.shortId + " " + o.pricePerMb + " CFA/MB")
+        node.clearLastFailure()
         lostDismissed = false
         request = null
         if (!node.buy(peer)) { toast(getString(R.string.toast_cannot_connect)); return }

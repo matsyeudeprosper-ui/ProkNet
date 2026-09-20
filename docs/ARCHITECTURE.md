@@ -746,6 +746,44 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Two bugs from the first v0.13 run (v0.13.1)
+
+**A new request wore an old session's error.** `getInternet()` set
+`lostDismissed = false` but nothing cleared the node's last error:
+`clearLastFailure()` only runs inside `node.buy()`, which never happens
+when no source is found. So "Wi-Fi link closed: customer stopped: stopped
+by user", left by a session the user had stopped, made `ProductState.buyer`
+return LOST (an error with `wanted = false` is LOST), and `buyerVisible`
+outranked the live request: the home screen showed RÉESSAYER / Connexion
+perdue while the request was searching. Three changes, each testable:
+`node.clearLastFailure()` is public and called when a request starts (a new
+request starts from a clean screen, exactly as a direct purchase does);
+`ProductState.isUserStop` means a session the user stopped is never an
+error for anybody; and `ProductState.homeOwner(sellerOn, purchaseActive,
+requestActive, showLost)` decides the screen, with an active request
+outranking a lost card from a purchase that is over. The lost card still
+shows when nothing is running, and a failing request sets `lostDismissed`
+back so its own reason appears.
+
+**Bluetooth OFF → ON left the radio wedged and "healthy".** `scanStale` is
+gated on `expectPeers`, which is false when the last peer is older than
+15 minutes. On the phone the last peer was 55 minutes old, so after the
+adapter went off and came back — with `scanning` and `advertising` still
+claiming true, because an adapter restart does not call the failure
+callbacks — every verdict was HEALTHY and nothing ever restarted. Two
+bounded rules now: `BLUETOOTH_RETURNED` recovers exactly once per OFF → ON
+transition (the node notices the transition in the watchdog itself, no
+receiver), and `SCAN_SILENT` recovers when the scanner **has heard peers
+before** and has then heard nothing at all for ten minutes. A phone that
+never heard anybody is alone in a field, not wedged, and is still left
+alone — the v0.9.10 rule stands. Both obey the existing guards: never
+during a link or a bulk session, never inside the backoff.
+
+**COPY NETWORK answers the test first.** Five lines at the top: nearby
+ProkNet phones (with their ids), last peer seen, this phone's request
+state, who the last request went to, and whether an activation
+notification was sent with the reason if not.
+
 ## The Network Brain (v0.13.0)
 
 The product target: a person with no Internet taps once; if no seller is

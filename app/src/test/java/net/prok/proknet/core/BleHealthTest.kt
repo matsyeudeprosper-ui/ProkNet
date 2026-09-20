@@ -32,8 +32,9 @@ class BleHealthTest {
         sessionEndedAt: Long = 0,
         lastRecoveryAt: Long = 0,
         recoveries: Int = 0,
+        bluetoothReturnedAt: Long = 0,
     ) = BleHealth.State(now, running, bluetoothOn, advertising, advertiseFailedAt, scanning, scanFailedAt,
-        lastScanResultAt, startedAt, gattTimeouts, expectPeers, linkBusy, sessionEndedAt, lastRecoveryAt, recoveries)
+        lastScanResultAt, startedAt, gattTimeouts, expectPeers, linkBusy, sessionEndedAt, lastRecoveryAt, recoveries, bluetoothReturnedAt)
 
     @Test
     fun a_working_radio_is_left_alone() {
@@ -125,5 +126,57 @@ class BleHealthTest {
         assertEquals(BleHealth.COOLDOWN_MS * 4, BleHealth.cooldownMs(3))
         assertEquals(BleHealth.COOLDOWN_MAX_MS, BleHealth.cooldownMs(20))
         for (v in BleHealth.Verdict.values()) assertTrue(BleHealth.verdictText(v).isNotEmpty())
+    }
+
+    // ---- v0.13.1: the phone that went quiet after Bluetooth came back --------------------------------
+
+    @Test
+    fun bluetooth_off_then_on_recovers_the_radio_exactly_once() {
+        // the OnePlus log: "Bluetooth is off" at 15:30, "healthy" at 15:58, adv on, scan on, peers 0,
+        // the last scan result thousands of seconds old, and nothing ever restarted. The stale flags
+        // survive the adapter restart, and the last peer was 55 minutes old so nobody was "expected".
+        val off = state(bluetoothOn = false)
+        assertEquals(BleHealth.Verdict.BLUETOOTH_OFF, BleHealth.verdict(off))
+        assertEquals(BleHealth.Action.NONE, BleHealth.action(BleHealth.verdict(off)))
+
+        val returned = t0 + 100_000
+        val back = state(now = returned + BleHealth.GRACE_MS, bluetoothReturnedAt = returned, expectPeers = false,
+            lastScanResultAt = t0 - 55 * 60_000, startedAt = t0 - 60 * 60_000)
+        assertEquals(BleHealth.Verdict.BLUETOOTH_RETURNED, BleHealth.verdict(back))
+        assertEquals(BleHealth.Action.RECOVER, BleHealth.action(BleHealth.verdict(back)))
+
+        // exactly once: after the recovery the same return is not a reason any more
+        val after = state(now = returned + BleHealth.GRACE_MS + 1000, bluetoothReturnedAt = returned,
+            lastRecoveryAt = returned + BleHealth.GRACE_MS, recoveries = 1, expectPeers = false, lastScanResultAt = returned)
+        assertEquals(BleHealth.Action.NONE, BleHealth.action(BleHealth.verdict(after)))
+        // and well past the backoff it is simply healthy again
+        assertEquals(BleHealth.Verdict.HEALTHY, BleHealth.verdict(state(now = returned + 10 * 60_000, bluetoothReturnedAt = returned,
+            lastRecoveryAt = returned + BleHealth.GRACE_MS, recoveries = 1, expectPeers = false, lastScanResultAt = returned + 9 * 60_000)))
+
+        // and it is given a moment to settle before being judged
+        assertEquals(BleHealth.Verdict.HEALTHY, BleHealth.verdict(state(now = returned + 1000, bluetoothReturnedAt = returned, expectPeers = false)))
+        // never during a link, and never when the node is stopped
+        assertEquals(BleHealth.Verdict.BUSY, BleHealth.verdict(back.let { state(now = it.now, bluetoothReturnedAt = returned, linkBusy = true, expectPeers = false) }))
+        assertEquals(BleHealth.Verdict.NOT_RUNNING, BleHealth.verdict(state(now = returned + 60_000, bluetoothReturnedAt = returned, running = false)))
+    }
+
+    @Test
+    fun a_scanner_that_has_heard_nothing_for_ten_minutes_restarts_even_with_nobody_expected() {
+        val quiet = t0 + 3 * BleHealth.SILENT_MAX_MS
+        // nobody expected (the last peer is an hour old), scanning claimed on, and total silence
+        val s = state(now = quiet, expectPeers = false, lastScanResultAt = t0, startedAt = t0)
+        assertEquals(BleHealth.Verdict.SCAN_SILENT, BleHealth.verdict(s))
+        assertEquals(BleHealth.Action.RECOVER, BleHealth.action(BleHealth.verdict(s)))
+        // a phone that never heard anybody is alone in a field, not wedged: left alone forever
+        assertEquals(BleHealth.Verdict.HEALTHY, BleHealth.verdict(state(now = quiet, expectPeers = false, lastScanResultAt = 0, startedAt = t0)))
+        // a result a minute ago is not silence
+        assertEquals(BleHealth.Verdict.HEALTHY, BleHealth.verdict(state(now = quiet, expectPeers = false, lastScanResultAt = quiet - 60_000, startedAt = t0)))
+        // a young node is not judged on this
+        assertEquals(BleHealth.Verdict.HEALTHY, BleHealth.verdict(state(now = t0 + BleHealth.SILENT_MAX_MS / 2, expectPeers = false, lastScanResultAt = 0, startedAt = t0)))
+        // the backoff still applies, so it cannot loop
+        assertEquals(BleHealth.Verdict.COOLING_DOWN, BleHealth.verdict(state(now = quiet, expectPeers = false, lastScanResultAt = t0, startedAt = t0,
+            lastRecoveryAt = quiet - 30_000, recoveries = 3)))
+        // and an active link is still untouchable
+        assertEquals(BleHealth.Verdict.BUSY, BleHealth.verdict(state(now = quiet, expectPeers = false, lastScanResultAt = t0, startedAt = t0, linkBusy = true)))
     }
 }
