@@ -130,6 +130,8 @@ class BluetoothBulkTransport(
     override fun linkState(): String = (if (!running) "off" else state.describe()) + (if (lastProbe != "not run") " | probe " + lastProbe else "")
 
     private fun set(s: BulkPlan.State, why: String = "") {
+        // v0.14.2: a fresh session starts clean; an intentional close belongs to the old one
+        if (s.active && s.session != state.session) { closingOnPurpose = false; lastCloseWasIntentional = false }
         state = s
         if (why.isNotEmpty()) DiagLog.i(tag, "BULK " + s.phase + ": " + why)
         listener?.onLinkState(name, s.describe())
@@ -230,11 +232,27 @@ class BluetoothBulkTransport(
         hooks?.onBulkDown(peer, why)
     }
 
+    /** v0.14.2: how many late callbacks from a finished session were dropped. */
+    @Volatile var staleCallbacksIgnored = 0
+        private set
+    /** v0.14.2: true while WE are closing the link, so a send failing because of it is not news. */
+    @Volatile private var closingOnPurpose = false
+    /** v0.14.2: the last close was ours, not the peer's or the radio's. */
+    @Volatile var lastCloseWasIntentional = false
+        private set
+
     /** Drop everything, on purpose. */
-    fun cancel(reason: String, quiet: Boolean = false) {
+    /**
+     * @param flushMs v0.14.2: a graceful session stop passes a small budget here so the
+     *        last signed frame is written before the link goes. Every other caller closes
+     *        at once, exactly as before.
+     */
+    fun cancel(reason: String, quiet: Boolean = false, flushMs: Long = 0) {
         val had = state.active
         val peer = state.peer.ifEmpty { null }
-        closeEverything()
+        closingOnPurpose = true
+        lastCloseWasIntentional = true
+        closeEverything(flushMs)
         if (had) {
             if (!quiet) DiagLog.i(tag, "BULK cancelled: " + reason)
             set(BulkPlan.reset(state))
@@ -243,11 +261,15 @@ class BluetoothBulkTransport(
         } else state = BulkPlan.IDLE
     }
 
-    private fun closeEverything() {
+    private fun closeEverything(flushMs: Long = 0) {
         clearTimer()
         try { server?.close() } catch (_: Exception) {}; server = null
         try { pendingSocket?.close() } catch (_: Exception) {}; pendingSocket = null
-        link?.close(); link = null
+        val l = link; link = null
+        if (l != null) {
+            // v0.14.2: off the main thread, so a graceful close never freezes the screen
+            if (flushMs > 0) io.execute { l.close(flushMs) } else l.close()
+        }
         resetProbe()
     }
 
@@ -289,15 +311,35 @@ class BluetoothBulkTransport(
             if (frames.isNotEmpty()) onEach(0, DeliveryResult.TRANSPORT_FAILED, "no Bluetooth bulk link to prok-" + peerShort)
             onDone(); return
         }
+        // v0.14.2: the send runs on a worker thread while the main thread may already be
+        // tearing this session down. Remember which session these frames belong to, so a
+        // failure that arrives after the session is gone cannot mark an idle transport
+        // FAILED. That is exactly what happened on the phones: the final control message
+        // was still in flight when Stop closed the link underneath it.
+        val gen = state.session
         io.execute {
             for ((i, f) in frames.withIndex()) {
                 val (res, detail) = l.sendAndWait(f)
                 val cont = try { onEach(i, res, detail) } catch (e: Exception) { false }
-                if (res == DeliveryResult.TRANSPORT_FAILED) { main.post { fail(detail) }; break }
+                if (res == DeliveryResult.TRANSPORT_FAILED) { main.post { failIfStillOurs(gen, detail) }; break }
                 if (!cont) break
             }
             onDone()
         }
+    }
+
+    /**
+     * v0.14.2: only a live session may be failed, and only by its own send. If we closed
+     * on purpose, or a newer session already owns the transport, the late report is noted
+     * and dropped instead of poisoning a clean IDLE.
+     */
+    private fun failIfStillOurs(gen: Int, why: String) {
+        if (!BulkPlan.sendFailureIsReal(state, gen, closingOnPurpose)) {
+            staleCallbacksIgnored++
+            DiagLog.i(tag, "late send report ignored (session " + BulkPlan.sessionHex(gen) + ", now " + state.phase + "): " + why)
+            return
+        }
+        fail(why)
     }
 
     // ---- the probe: buyer -> seller first, confirmed, then seller -> buyer, confirmed ----------------------------

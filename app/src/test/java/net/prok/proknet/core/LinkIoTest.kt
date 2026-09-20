@@ -153,4 +153,43 @@ class LinkIoTest {
         assertTrue(d.startsWith("NullPointerException")); assertTrue(d.contains("["))
         assertTrue(LinkIo.describe(IllegalStateException("boom")).contains("boom"))
     }
+    // ================= v0.14.2: closing must not eat the last frame =================
+
+    @Test
+    fun a_graceful_close_lets_the_queued_frames_go_out_first() {
+        // The frame at risk on a real stop is the buyer's countersignature on the closing
+        // figure. close() shuts the output stream at once, so a frame handed over a
+        // moment earlier could die in the queue and cost the seller the whole session.
+        val (host, client) = pair()
+        val got = LinkedBlockingQueue<ByteArray>()
+        val done = CountDownLatch(1)
+        host.startReader({ _, p -> got.offer(p) }, { done.countDown() })
+
+        client.startWriter { }
+        for (i in 1..20) assertTrue(client.enqueue(Wire.FRAME_PACKET, ByteArray(200) { i.toByte() }, block = true))
+        client.closeAfterFlush("customer stopped", 2_000)
+
+        assertFalse("the link really is closed afterwards", client.isOpen)
+        assertEquals("nothing may be left behind", 0, client.queuedFrames)
+        val seen = ArrayList<ByteArray>()
+        while (seen.size < 20) { val f = got.poll(2, TimeUnit.SECONDS) ?: break; seen.add(f) }
+        assertEquals("every queued frame must arrive", 20, seen.size)
+        assertEquals(20, seen.last()[0].toInt())
+        done.await(2, TimeUnit.SECONDS)
+    }
+
+    @Test
+    fun a_flush_that_cannot_finish_still_closes_within_its_bound() {
+        // a peer that has stopped reading must not hold the phone open
+        val (host, client) = pair()
+        host.close("the peer went away")
+        client.startWriter { }
+        for (i in 1..1000) client.enqueue(Wire.FRAME_PACKET, ByteArray(4000) { i.toByte() }, block = false)
+        val began = System.currentTimeMillis()
+        client.closeAfterFlush("customer stopped", 300)
+        val took = System.currentTimeMillis() - began
+        assertFalse(client.isOpen)
+        assertTrue("the bound must hold, took " + took + " ms", took < 3_000)
+    }
+
 }

@@ -148,6 +148,19 @@ object BulkPlan {
         else -> 0L
     }
 
+    /**
+     * v0.14.2: a send failed on a worker thread. Is that this transport's problem?
+     *
+     * On the phones a send was still in flight when Stop closed the link underneath it,
+     * so the failure it reported was caused entirely by our own shutdown and printed as
+     * "BULK FAILED at IDLE: no receipt within 15s" after everything was already clean.
+     *
+     * A failure is real only when we did not close on purpose, a session is still live,
+     * and the send belonged to THAT session.
+     */
+    fun sendFailureIsReal(s: State, sendSession: Int, closingOnPurpose: Boolean): Boolean =
+        !closingOnPurpose && s.active && s.session == sendSession
+
     /** A timer fired for [phase] and session [session]: does it still apply? */
     fun timerApplies(s: State, phase: Phase, session: Int): Boolean = s.phase == phase && s.session == session
 

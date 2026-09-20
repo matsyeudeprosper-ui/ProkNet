@@ -115,6 +115,28 @@ class LinkIo(input: InputStream, output: OutputStream, private val name: String 
         }, name + "-reader").apply { isDaemon = true; start() }
     }
 
+    /**
+     * v0.14.2: close, but let what is already queued actually go out first.
+     *
+     * [close] shuts the output stream immediately, so a frame handed to the writer a
+     * moment earlier can still be sitting in the queue. That is fine for a link that has
+     * already broken and fatal for a graceful stop: the frame at risk is the buyer's
+     * countersignature on the closing figure, and losing it costs the seller the money
+     * for the whole session.
+     *
+     * This is a wait on a condition with a bound, not a sleep: it returns as soon as the
+     * queue is empty.
+     */
+    fun closeAfterFlush(reason: String, maxWaitMs: Long) {
+        if (!isOpen) return
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        while (isOpen && queuedFrames > 0 && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(5) } catch (e: InterruptedException) { Thread.currentThread().interrupt(); break }
+        }
+        if (queuedFrames > 0) closeReason = "closed with " + queuedFrames + " frame(s) still queued"
+        close(reason)
+    }
+
     fun close(reason: String) {
         if (!isOpen) return
         isOpen = false

@@ -870,6 +870,78 @@ Carrying the true sub-CFA rate needs a signed offer in the advertisement,
 which this release does not add. It is not claimed anywhere that the buyer
 receives the exact internal rate.
 
+## Stopping is two steps (v0.14.2)
+
+v0.14.1 connected, browsed and billed correctly on the phones. Stopping was
+dirty. The log, on one Stop:
+
+```
+23:20:25.168 NODE:   CONTROL -> seller over bt-bulk
+23:20:25.169 BTBULK: BULK cancelled: customer stopped
+23:20:25.169 NODE:   CONTROL ... failed: no receipt over bt-bulk within 15s
+23:20:25.206 BTBULK: BULK FAILED at IDLE: no receipt over bt-bulk within 15s
+```
+
+Three milliseconds, not fifteen seconds. `stopInternet` sent the final control
+message, closed the Bluetooth link in the very next statement, and only then
+stopped the tunnel. So the message could never be acknowledged, the transport
+reported a failure caused entirely by our own shutdown, and the tunnel's
+SESSION_END went out over a link that no longer existed.
+
+The quiet half of the same bug was worse than the noise. The seller issues a
+usage checkpoint every 30 seconds, and its closing checkpoint had nowhere to
+arrive, so **a session stopped before the first periodic checkpoint settled at
+zero**. Browsing for twenty seconds and pressing Stop was free, repeatably.
+
+**The rule: never destroy the transport underneath a message the protocol
+still expects an answer to.** Stopping is now:
+
+```
+RUNNING -> SETTLING -> IDLE
+   stop new app traffic
+   say SESSION_END over the LIVE link
+   seller issues the closing checkpoint for what was really used
+   buyer verifies and countersigns it
+   (bounded: 4 s, then settle on the last figure both sides did sign)
+   close the VPN
+   close the tunnel session
+   flush what is queued, then close the bulk link
+   clear the purchase state
+```
+
+`core/Teardown.kt` is that machine, with no Android in it. `TunnelClient` and
+`Gateway` both drive it; neither can be built in a JVM test, so the decisions
+live where the tests can run the real ones, the same move that fixed the
+v0.14.1 contract bug.
+
+**An intentional close is not a failure.** `BulkPlan.sendFailureIsReal` decides:
+a send failure counts only when we were not closing on purpose, a session is
+still live, and the send belonged to that session. A late report from a
+finished session is counted and dropped instead of marking an idle transport
+FAILED. `StreamLink` also stopped claiming "no receipt within 15s" for a link
+that we closed a millisecond earlier; it now says the link closed.
+
+**The last signature has to actually leave the phone.** `LinkIo.close` shuts the
+output stream at once, so a frame handed to the writer a moment before could
+die in the queue. On a graceful stop that frame is the buyer's countersignature
+on the closing figure, and losing it costs the seller the whole session.
+`closeAfterFlush` waits for the queue to drain, bounded, on a worker thread. It
+is a wait on a condition, not a sleep: it returns the moment the queue is empty.
+
+**Stale callbacks.** Every transition out of SETTLING bumps a token. A timer
+armed by one stop cannot end the session that came after it, and the bulk
+transport judges a late send failure against the session it belonged to.
+
+**Stopping twice is stopping once.** `Teardown.begin` on a stop already under
+way returns the same state, `ProkNetNode.stoppingInternet` guards the node path
+and `TunnelClient.finishStop` guards itself, so the screen and the system
+lifecycle both calling cleanup produce one settlement, one close and one set of
+ledger entries.
+
+**If the peer is already gone**, there is nobody to sign a closing figure with:
+settle on the last figure both sides did sign, close locally, and do not wait.
+Nothing is ever invented for traffic nobody signed for.
+
 **The quote has a shelf life.** The buyer snapshots its quote when `buy()`
 admits the deal and does not re-read the budget preference mid-setup, so
 changing the budget during a connection cannot alter a purchase already under

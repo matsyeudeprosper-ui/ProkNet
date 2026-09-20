@@ -268,4 +268,33 @@ class BulkPlanTest {
         assertEquals(BulkPlan.SellerAccessPath.BLUETOOTH_BULK, again)
         assertFalse(BulkPlan.needsHotspotProbe(again))
     }
+    // ================= v0.14.2: a close we asked for is not a failure =================
+
+    @Test
+    fun a_send_failing_because_we_closed_the_link_is_not_a_transport_failure() {
+        // the exact hardware sequence: the final control message is still in flight when
+        // Stop closes the link, and its failure arrives after everything is already clean
+        val live = BulkPlan.request(BulkPlan.IDLE, 77, "abcd1234")
+        assertTrue("a real failure on a live session still counts",
+            BulkPlan.sendFailureIsReal(live, 77, closingOnPurpose = false))
+
+        assertFalse("not when we are the ones closing",
+            BulkPlan.sendFailureIsReal(live, 77, closingOnPurpose = true))
+        assertFalse("not from a session that has already gone",
+            BulkPlan.sendFailureIsReal(live, 12, closingOnPurpose = false))
+        assertFalse("and never against an idle transport",
+            BulkPlan.sendFailureIsReal(BulkPlan.IDLE, 77, closingOnPurpose = false))
+        assertFalse("nor one that already failed",
+            BulkPlan.sendFailureIsReal(BulkPlan.failed(live, "gone"), 77, closingOnPurpose = false))
+    }
+
+    @Test
+    fun a_new_session_is_never_judged_by_the_old_ones_send() {
+        val first = BulkPlan.request(BulkPlan.IDLE, 1, "abcd1234")
+        val second = BulkPlan.request(BulkPlan.reset(first), 2, "abcd1234")
+        assertFalse("session 1's late failure must not touch session 2",
+            BulkPlan.sendFailureIsReal(second, 1, closingOnPurpose = false))
+        assertTrue(BulkPlan.sendFailureIsReal(second, 2, closingOnPurpose = false))
+    }
+
 }

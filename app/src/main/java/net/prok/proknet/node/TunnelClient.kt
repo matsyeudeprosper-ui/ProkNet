@@ -23,6 +23,7 @@ import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.TcpFlow
 import net.prok.proknet.core.Tcpip
+import net.prok.proknet.core.Teardown
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.hexToBytes
 
@@ -48,6 +49,11 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         fun onChanged()
     }
 
+    companion object {
+        /** v0.14.2: the longest the phone waits for the seller's final signed figure. */
+        const val GRACEFUL_STOP_MS = 4_000L
+    }
+
     private val tag = "TUNNEL"
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newCachedThreadPool()
@@ -55,6 +61,15 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
 
     @Volatile var state = "DISCONNECTED"; private set
     @Volatile var lastError = ""; private set
+
+    // ---- v0.14.2: graceful shutdown, decided by core/Teardown ----
+    @Volatile private var teardown = Teardown.State()
+    /** True between Stop and the last signed figure. New app traffic is refused in this window. */
+    val stopping: Boolean get() = teardown.settling
+    /** PASS / waiting / timeout / unavailable / "-", for the diagnostic. */
+    val finalCheckpoint: String get() = Teardown.word(teardown.final)
+    /** The node closes the VPN and the transport only when this fires. */
+    @Volatile var onStopComplete: ((String) -> Unit)? = null
     /** v0.9.17: a new purchase starts from a clean screen, not from the last one's failure. */
     fun clearError() { lastError = "" }
     @Volatile var providerShort: String? = null; private set
@@ -152,15 +167,64 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     }
     private var pendingProposal: Pair<Market.Contract, ByteArray>? = null
 
+    /**
+     * v0.14.2: stopping is two steps, not one.
+     *
+     * v0.14.1 sent SESSION_END and tore the session down in the same breath, so the
+     * final checkpoint the seller issues in reply arrived at a buyer that had already
+     * forgotten the contract. A session stopped before the 30 s periodic checkpoint
+     * therefore settled at zero, which is both wrong for the seller and an obvious way
+     * to get short sessions for nothing.
+     *
+     * Now: STOPPING -> tell the seller -> it issues the final checkpoint -> we verify and
+     * countersign it -> only then does anything close. Bounded, so a peer that has already
+     * walked away cannot hold the phone open.
+     */
     fun stop(reason: String) {
-        if (session == null && contract == null && state == "DISCONNECTED") return
-        hooks.send(Tunnel.T_SESSION_END, 0, reason.toByteArray(Charsets.UTF_8))
-        endSession(reason)
+        if (teardown.settling) { DiagLog.i(tag, "stop already in progress, ignored: " + reason); return }
+        val live = session != null || contract != null || state != "DISCONNECTED"
+        if (!live) { teardown = Teardown.begin(Teardown.State(), reason, false); notifyStopped(reason); return }
+        if (teardown.phase != Teardown.Phase.RUNNING) teardown = Teardown.running(teardown)
+        // ask the seller for the closing figure; if the link is gone there is nobody to ask
+        val sent = hooks.send(Tunnel.T_SESSION_END, 0, reason.toByteArray(Charsets.UTF_8))
+        teardown = Teardown.begin(teardown, reason, sent)
+        if (!teardown.settling) { finishStop(reason, "the link was already gone"); return }
+        setState("STOPPING", reason)
+        val token = teardown.token
+        main.postDelayed({
+            val next = Teardown.onTimeout(teardown, token)
+            if (next !== teardown) { teardown = next; finishStop(reason, "no final checkpoint within " + (GRACEFUL_STOP_MS / 1000) + "s") }
+        }, GRACEFUL_STOP_MS)
     }
 
-    fun onLinkClosed(peerShort: String, reason: String) { if (providerShort == peerShort) fail("Wi-Fi link closed: " + reason) }
+    /** The graceful window is over, one way or another. Runs exactly once per stop. */
+    private fun finishStop(reason: String, why: String) {
+        if (endingNow) return
+        endingNow = true
+        DiagLog.i(tag, "SESSION END: user stopped (" + why + ", final checkpoint " + finalCheckpoint + ")")
+        endSession(reason)
+        endingNow = false
+        notifyStopped(reason)
+    }
+
+    /** Teardown may be reached from a timer, a checkpoint and a closing link at once. */
+    @Volatile private var endingNow = false
+
+    private fun notifyStopped(reason: String) {
+        try { onStopComplete?.invoke(reason) } catch (e: Exception) { DiagLog.w(tag, "stop callback: " + e) }
+    }
+
+    fun onLinkClosed(peerShort: String, reason: String) {
+        if (providerShort != peerShort) return
+        // v0.14.2: the link going away DURING our own graceful stop is the expected end of
+        // it, not a fault. Finish quietly rather than writing an error the user never caused.
+        if (teardown.settling) { teardown = Teardown.onLinkGone(teardown, reason); finishStop(reason, "the link closed while stopping"); return }
+        fail("Wi-Fi link closed: " + reason)
+    }
 
     private fun fail(reason: String) {
+        // v0.14.2: we are already closing on purpose; do not turn that into an error
+        if (teardown.settling) { teardown = Teardown.onLinkGone(teardown, reason); finishStop(reason, "failed while stopping: " + reason); return }
         lastError = reason
         // v0.14.1: nothing economic may survive into the next attempt
         pendingProposal = null
@@ -171,6 +235,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     }
 
     private fun endSession(reason: String) {
+        if (teardown.settling) teardown = Teardown.onLinkGone(teardown, reason)
         main.removeCallbacks(ticker)
         for (f in flows.values.toList()) synchronized(f) { execute(f, f.abort(reason)) }
         flows.clear(); flowsById.clear(); dnsPending.clear()
@@ -219,7 +284,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
                 lastKeepaliveReply = System.currentTimeMillis()
                 contract?.let { hooks.store().updateSession(it.sessionHex, status = "active") }
                 DiagLog.i(tag, "SESSION OK: seller prok-" + peerShort + " upstream " + Tunnel.upstreamName(ok.upstreamType) + (if (ok.validated) " (validated)" else " (not validated)"))
-                setState("TUNNEL UP", "session accepted, starting VPN")
+                markRunning(); setState("TUNNEL UP", "session accepted, starting VPN")
                 main.post(ticker)
                 hooks.onSessionUp()
             }
@@ -326,9 +391,18 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         DiagLog.i(tag, "CHECKPOINT #" + cp.seq + (if (cp.final) " (final)" else "") + " verified and countersigned: " + Market.mb(cp.billable) + " = " + Market.cfa(cp.costCentimes) +
             " (my own count " + Market.mb(s.bytesUp + s.bytesDown) + ")")
         hooks.onChanged()
+        // v0.14.2: this is what the graceful stop was waiting for. Settle on it now
+        // rather than on whatever the last periodic checkpoint happened to be.
+        if (cp.final && teardown.settling) {
+            teardown = Teardown.onFinalSigned(teardown)
+            finishStop(teardown.reason.ifEmpty { "stopped by user" }, "final checkpoint #" + cp.seq + " countersigned")
+        }
     }
 
     private fun markInternetOk(why: String) { if (state == "TUNNEL UP") setState("INTERNET OK", why) }
+
+    /** v0.14.2: a session is up and owes a closing figure when it ends. */
+    internal fun markRunning() { teardown = Teardown.running(teardown) }
 
     /** Live figures for the UI. */
     fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp + s.bytesDown) }
@@ -339,6 +413,9 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     fun onTunPacket(buf: ByteArray, len: Int) {
         val ip = Tcpip.parseIp4(buf, len) ?: return
         if (session == null) return
+        // v0.14.2: once the user has pressed Stop the byte count must stop moving, or the
+        // final checkpoint would be signed against a figure that is still changing
+        if (stopping) return
         when (ip.protocol) {
             Tcpip.PROTO_TCP -> {
                 val t = Tcpip.parseTcp(ip.payload) ?: return

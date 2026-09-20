@@ -73,7 +73,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     val ble = BleTransport(context, identity, ::identityRecord)
     val wifi = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
-        override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
+        override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, false, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
         override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
@@ -89,7 +89,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     val bulk = net.prok.proknet.transport.BluetoothBulkTransport(context, identity)
 
     val wifiUp = WifiTransport(context, identity, object : WifiTransport.ControlChannel {
-        override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, cb)
+        override fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) = this@ProkNetNode.sendControl(peerShort, body, false, cb)
         override fun knownPeerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun appVisible(): Boolean = net.prok.proknet.ProkNetApp.appVisible()
         override fun linkInUse(): Boolean = gateway.session != null || tunnel.session != null || relay.session != null
@@ -1211,7 +1211,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.postDelayed({ if (gateway.providing) onSharingReady("sharing switched on") }, 1200)
         } else {
             gateway.stop()
-            bulk.cancel("sharing stopped")
+            // v0.14.2: gateway.stop() issues the closing checkpoint; let it leave before
+            // the link does, so the buyer learns the session ended instead of just
+            // watching the link vanish
+            bulk.cancel("sharing stopped", flushMs = BULK_FLUSH_MS)
             // v0.13.3: nothing from the session may block the next request
             onSharingStopped?.invoke()
             p2pMemberAddress = ""; p2pMemberPeer = ""
@@ -1396,25 +1399,68 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** v0.14.1: after any failed or finished purchase, no economics may leak into the next tap. */
     private fun clearPurchaseEconomics() { buyQuote = null; buyQuoteAt = 0; buyPrice = 0 }
 
+    /**
+     * v0.14.2: one teardown path, in one order.
+     *
+     * v0.14.1 sent the final control message and then closed the Bluetooth link in the
+     * next statement, so the message could never be acknowledged and the transport
+     * reported a failure caused entirely by our own shutdown. Worse, the tunnel was
+     * stopped after the link was already gone, so the seller's final checkpoint had
+     * nowhere to arrive and a short session settled at zero.
+     *
+     * The rule: never destroy the transport underneath a message the protocol still
+     * expects an answer to. So the screen goes quiet at once, the protocol settles over
+     * the live link, and only then does anything close.
+     */
     fun stopInternet(reason: String) {
+        if (stoppingInternet) { DiagLog.i(tag, "Stop is already running, ignored"); return }
+        stoppingInternet = true
+        // wired here so it can never be missed by a start order or a lifecycle path
+        tunnel.onStopComplete = { r -> main.post { finishTeardown(r) } }
+        // the user's intent takes effect immediately, whatever the protocol still owes
+        stoppingPeer = buyerWanted
         clearPurchaseEconomics()
         p2pSessionToken++; p2pDeferredVisibility = null
+        buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
+        pushStatus()
+        // the tunnel settles what was really used, then calls finishTeardown below
+        tunnel.stop(reason)
+    }
+
+    /** Everything that may only happen once the last signed figure is in. */
+    private fun finishTeardown(reason: String) {
+        val peer = stoppingPeer
+        stoppingPeer = null
+        net.prok.proknet.vpn.ProkVpnService.stop(context)
         if (buyViaBulk) {
             val s = bulkSession
-            buyerWanted?.let { peer -> if (s != 0 && transportFor(peer) != null) sendControl(peer, Wire.bulkCancel(s, "customer stopped: " + reason.take(60))) {} }
+            // best effort: the seller also hears the link close, so this is a courtesy,
+            // not something to wait on or to report as a failure
+            if (s != 0 && peer != null && transportFor(peer) != null)
+                sendControl(peer, Wire.bulkCancel(s, "customer stopped: " + reason.take(60)), quiet = true) {}
             buyViaBulk = false; bulkSession = 0
-            bulk.cancel("customer stopped: " + reason)
+            // v0.14.2: let the countersigned closing figure leave before the link does
+            bulk.cancel("customer stopped: " + reason, flushMs = BULK_FLUSH_MS)
         }
         if (buyViaP2p) {
             // v0.9.24: tell the provider, so a reversed session on its side ends with ours
-            buyerWanted?.let { peer -> if (transportFor(peer) != null) sendControl(peer, Wire.wifiCancel(Wire.CANCEL_GENERIC, "customer stopped: " + reason.take(60))) {} }
+            if (peer != null && transportFor(peer) != null)
+                sendControl(peer, Wire.wifiCancel(Wire.CANCEL_GENERIC, "customer stopped: " + reason.take(60)), quiet = true) {}
             buyViaP2p = false; p2p.stop(); onSessionTornDown("buyer stopped a Wi-Fi Direct attempt")
         }
-        buyerWanted = null; buyViaRelay = false; introAttempts = 0; introRefused = false; lastBuyError = ""
-        tunnel.stop(reason)
-        net.prok.proknet.vpn.ProkVpnService.stop(context)
+        stoppingInternet = false
+        DiagLog.i(tag, "STOP COMPLETE: " + reason + " | final checkpoint " + tunnel.finalCheckpoint +
+            " | bulk close NORMAL | VPN DOWN | buyer " + tunnel.state)
         pushStatus()
     }
+
+    /** v0.14.2: the bound on letting already-queued frames go out during a graceful close. */
+    private val BULK_FLUSH_MS = 600L
+
+    /** v0.14.2: true from Stop until the last signed figure and the close are done. */
+    @Volatile var stoppingInternet = false
+        private set
+    private var stoppingPeer: String? = null
 
     fun onVpnChanged() { main.post { pushStatus() } }
 
@@ -1703,9 +1749,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Why the last control message to this peer failed, for the retry rules. */
     fun lastControlError(peerShort: String): String = controlErrors[peerShort] ?: "delivery failed"
 
-    fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) {
+    /**
+     * @param quiet v0.14.2: this message is a courtesy and nothing waits on it. A failure
+     *              is expected when we are closing the link ourselves, so it is not
+     *              recorded as a control-plane error.
+     */
+    fun sendControl(peerShort: String, body: ByteArray, quiet: Boolean = false, cb: (Boolean) -> Unit) {
         val key = store.peerKey(peerShort) ?: run { cb(false); return }
-        val transport = transportFor(peerShort) ?: run { DiagLog.w(tag, "no transport to prok-" + peerShort + " for control message"); cb(false); return }
+        val transport = transportFor(peerShort) ?: run { if (!quiet) DiagLog.w(tag, "no transport to prok-" + peerShort + " for control message"); cb(false); return }
         val msgId = Packet.newMsgId(); val ts = System.currentTimeMillis()
         val dest = key.fullId.hexToBytes()
         val header = Packet(identity.idBytes, dest, msgId, ts, ByteArray(0), Packet.TYPE_ENVELOPE)
@@ -1714,7 +1765,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "CONTROL -> prok-" + peerShort + " over " + transport.name + " (" + body.size + " bytes, encrypted)")
         transport.send(peerShort, Frame(msgId, pkt.encode())) { res, detail ->
             val ok = res == DeliveryResult.DELIVERED || res == DeliveryResult.DUPLICATE
-            if (ok) controlErrors.remove(peerShort) else {
+            if (ok) controlErrors.remove(peerShort)
+            else if (quiet) DiagLog.i(tag, "CONTROL to prok-" + peerShort + " not acknowledged (best effort, we are closing): " + res)
+            else {
                 controlErrors[peerShort] = detail.ifEmpty { res.toString() }
                 DiagLog.w(tag, "CONTROL to prok-" + peerShort + " failed: " + res + " " + detail)
             }

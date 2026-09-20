@@ -22,6 +22,7 @@ import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.Market
 import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.StoredSession
+import net.prok.proknet.core.Teardown
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.hexToBytes
 import net.prok.proknet.core.toHex
@@ -77,6 +78,14 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         private set
     private var lastCheckpointAt = 0L
     private var lastCheckpointBytes = 0L
+
+    // ---- v0.14.2: graceful finalisation, decided by core/Teardown ----
+    @Volatile private var teardown = Teardown.State()
+    /** True while the final checkpoint is out and we are waiting for the buyer to countersign it. */
+    val finalizing: Boolean get() = teardown.settling
+    /** PASS / waiting / timeout / unavailable / "-", for the diagnostic. */
+    val finalCheckpoint: String get() = Teardown.word(teardown.final)
+    private var finalIssued = false
     @Volatile var totalEarnedCentimes = 0L
         private set
     @Volatile var totalSoldBytes = 0L
@@ -161,10 +170,35 @@ class Gateway(private val context: Context, private val identity: Identity, priv
 
     fun onLinkClosed(peerShort: String, reason: String) { if (buyerShort == peerShort || contract?.buyerShort == peerShort) endSession("link closed: " + reason) }
 
+    /**
+     * v0.14.2: the buyer said it is stopping. Issue the final checkpoint for what it
+     * really used and give it a bounded moment to countersign, instead of settling on
+     * whatever the last periodic checkpoint was. A session shorter than the 30 s
+     * checkpoint interval used to settle at zero.
+     */
+    private fun beginFinalize(reason: String) {
+        if (session == null || contract == null) { endSession(reason); return }
+        if (teardown.settling) return
+        if (teardown.phase != Teardown.Phase.RUNNING) teardown = Teardown.running(teardown)
+        teardown = Teardown.begin(teardown, reason, true)
+        DiagLog.i(tag, "FINALIZING: " + reason + " - issuing the final checkpoint")
+        checkpointIfDue(true)
+        val token = teardown.token
+        main.postDelayed({
+            val next = Teardown.onTimeout(teardown, token)
+            if (next !== teardown) {
+                teardown = next
+                DiagLog.w(tag, "final checkpoint not countersigned within " + (FINALIZE_MS / 1000) + "s: settling on the last signed one")
+                endSession(reason + " (final checkpoint not countersigned)")
+            }
+        }, FINALIZE_MS)
+    }
+
     private fun endSession(reason: String) {
         val s = session
         val c = contract
         if (s == null && c == null) return
+        if (teardown.settling) teardown = Teardown.onLinkGone(teardown, reason)
         if (s != null) {
             // best-effort final checkpoint so the buyer can countersign the last figure
             checkpointIfDue(true)
@@ -206,7 +240,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         when (f.type) {
             Tunnel.T_CONTRACT_PROPOSE -> onProposal(peerShort, f)
             Tunnel.T_SESSION_START -> onSessionStart(peerShort, f)
-            Tunnel.T_SESSION_END -> endSession("buyer ended: " + String(f.data, Charsets.UTF_8))
+            Tunnel.T_SESSION_END -> beginFinalize("buyer ended: " + String(f.data, Charsets.UTF_8))
             Tunnel.T_KEEPALIVE -> hooks.send(Tunnel.T_KEEPALIVE, 0, f.data)
             Tunnel.T_OPEN_TCP -> openTcp(f)
             Tunnel.T_TCP_DATA -> { s!!.bytesUp += f.data.size; streams.get(f.streamId)?.let { it.lastActivity = System.currentTimeMillis(); it.bytesIn += f.data.size; writers[f.streamId]?.offer(f.data) }; enforceMax() }
@@ -243,7 +277,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         lastContractNote = "accepted"
         if (session != null) endSession("replaced by a new contract")
         val sellerSig = identity.sign(Market.contractSignData(c))
-        contract = c; lastIssued = null; lastSigned = null
+        contract = c; lastIssued = null; lastSigned = null; finalIssued = false; teardown = Teardown.running(teardown)
         hooks.store().insertSession(StoredSession(c.sessionHex, "seller", c.encode(), sb.sig, sellerSig, "agreed", c.startTs, 0, 0, 0, 0, null, 0, "", peerShort))
         hooks.send(Tunnel.T_CONTRACT_ACCEPT, 0, Tunnel.signed(c.hash(), sellerSig))
         DiagLog.i(tag, "CONTRACT AGREED with prok-" + peerShort + ": session " + c.sessionHex.substring(0, 8) + ", v" + c.version +
@@ -288,6 +322,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         val billable = s.bytesUp + s.bytesDown
         if (!final && now - lastCheckpointAt < Market.CHECKPOINT_INTERVAL_MS && billable - lastCheckpointBytes < Market.CHECKPOINT_INTERVAL_BYTES) return
         if (!final && billable == lastCheckpointBytes && lastIssued != null) return
+        // v0.14.2: one final checkpoint per session, whichever path asks for it
+        if (final) { if (finalIssued) return; finalIssued = true }
         val cp = Market.nextCheckpoint(c, lastIssued?.seq ?: 0, s.bytesUp, s.bytesDown, now, final)
         val sig = identity.sign(Market.checkpointSignData(cp))
         hooks.store().insertCheckpoint(c.sessionHex, cp.seq, cp.encode(), sig, null, now)
@@ -307,6 +343,13 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         val pub = hooks.peerPub(peerShort) ?: return
         if (!Crypto.verify(pub, Market.checkpointSignData(cp), sb.sig)) { DiagLog.w(tag, "USAGE_ACK #" + cp.seq + ": buyer signature INVALID"); return }
         lastSigned = cp
+        // v0.14.2: the figure we were waiting for is signed by both sides; settle on it now
+        if (cp.final && teardown.settling) {
+            val why = teardown.reason.ifEmpty { "buyer ended" }
+            teardown = Teardown.onFinalSigned(teardown)
+            DiagLog.i(tag, "final checkpoint #" + cp.seq + " countersigned: settling")
+            main.post { endSession(why) }
+        }
         hooks.store().setCheckpointBuyerSig(c.sessionHex, cp.seq, sb.sig)
         hooks.store().updateSession(c.sessionHex, bytesUp = cp.bytesUp, bytesDown = cp.bytesDown, lastSeq = cp.seq, lastCheckpoint = cp.encode())
         DiagLog.i(tag, "CHECKPOINT #" + cp.seq + " countersigned by buyer: " + Market.mb(cp.billable) + " = " + Market.cfa(cp.costCentimes) + " agreed")
@@ -338,6 +381,11 @@ class Gateway(private val context: Context, private val identity: Identity, priv
     fun currentFloorCentimesPerMb(): Int = try { sellerFloorProvider?.invoke() ?: sellerFloorCentimesPerMb } catch (e: Exception) { sellerFloorCentimesPerMb }
 
     // ---- v0.14.1: exactly why the last proposal failed, for the diagnostic ----
+    companion object {
+        /** v0.14.2: the longest the seller holds a session open for the buyer's countersignature. */
+        const val FINALIZE_MS = 4_000L
+    }
+
     @Volatile var lastContractVersion = -1; private set
     @Volatile var lastContractLen = 0; private set
     @Volatile var lastContractDecoded = false; private set

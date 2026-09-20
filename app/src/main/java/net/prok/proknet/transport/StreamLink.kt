@@ -164,13 +164,18 @@ class StreamLink(private val endpoint: Endpoint, val isHost: Boolean, private va
                 receiptLock.wait(left)
             }
             val st = receiptStatus; awaitingMsg = null
-            if (st < 0) return (if (io.isOpen) DeliveryResult.NO_RECEIPT else DeliveryResult.TRANSPORT_FAILED) to ("no receipt over " + host.transportName + " within " + (RECEIPT_TIMEOUT_MS / 1000) + "s")
+            // v0.14.2: a closed link is not a receipt timeout. Reporting "no receipt
+            // within 15s" one millisecond after we closed the link ourselves sent every
+            // reader looking for a peer problem that was never there.
+            if (st < 0) return if (io.isOpen) DeliveryResult.NO_RECEIPT to ("no receipt over " + host.transportName + " within " + (RECEIPT_TIMEOUT_MS / 1000) + "s")
+                else DeliveryResult.TRANSPORT_FAILED to ("link closed while sending: " + io.closeReason.ifEmpty { "closed" })
             return Routing.resultFor(st) to (host.transportName + " receipt " + st)
         }
     }
 
-    fun close() {
-        io.close("closed by transport")
+    /** @param flushMs v0.14.2: how long to let the queued frames go out first; 0 = close now. */
+    fun close(flushMs: Long = 0) {
+        if (flushMs > 0) io.closeAfterFlush("closed by transport", flushMs) else io.close("closed by transport")
         endpoint.close()
         synchronized(receiptLock) { receiptLock.notifyAll() }
     }

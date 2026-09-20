@@ -474,6 +474,13 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 .append(", budget ").append(Market.cfa(c.buyerBudgetCentimes)).append(", rate ").append(Market.cfa(c.rateCentimesPerMb.toLong()))
                 .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
         }
+        sb.append("session shutdown:\n")
+            .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")
+            .append("  reason: ").append(node.tunnel.lastError.ifEmpty { "user stopped" }).append("\n")
+            .append("  final checkpoint: ").append(node.tunnel.finalCheckpoint).append("\n")
+            .append("  final settlement: ").append(net.prok.proknet.core.Market.cfa(node.tunnel.agreedCost())).append("\n")
+            .append("  bulk close: ").append(if (node.bulk.lastCloseWasIntentional) "NORMAL" else node.bulk.state.phase.toString()).append("\n")
+            .append("  stale callbacks ignored: ").append(node.bulk.staleCallbacksIgnored).append("\n")
         sb.append("contract:\n").append(node.gateway.contractDiag()).append("\n")
         node.tunnel.lastContractReject.takeIf { it.isNotEmpty() }?.let { sb.append("  buyer saw rejection: ").append(it).append("\n") }
         sb.append("control plane:\n  ").append(node.bleControlPlaneLine().replace("\n", "\n  ")).append("\n")

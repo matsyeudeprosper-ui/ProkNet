@@ -2200,3 +2200,91 @@ amount actually used during those two minutes, not the budget.
 - Any consumer screen showing a CFA-per-megabyte figure. It is allowed only
   in Developer, in COPY NETWORK, and in the detail of an old v1 session.
 
+## 60. v0.14.2 stopping is boring (THE acceptance test)
+
+v0.14.1 connects and bills correctly on the phones. This section is only about
+what happens when you press Stop. Nothing in the connection path changed, so if
+anything in section 59 behaves differently, that is a regression and a FAIL.
+
+Same setup as section 59. OUKITEL on the Freebox with mobile data off and
+Équilibré; OnePlus with Wi-Fi and mobile off, budget 50 CFA.
+
+### 60a. A short paid session must not be free
+
+Connect normally. Open Wikipedia and read for about **5 to 10 seconds only**,
+which is deliberately less than the 30 second checkpoint interval. Press Stop.
+
+Expected on the OnePlus:
+
+```
+Vous avez dépensé N CFA sur votre budget de 50 CFA
+```
+
+with **N greater than zero** and far below 50. The OUKITEL must show "Vous avez
+gagné" with a figure above zero.
+
+This is the whole point of the release. Before v0.14.2 this session settled at
+zero because the closing checkpoint never arrived.
+
+COPY NETWORK on the OnePlus must show:
+
+```
+session shutdown:
+  state: DISCONNECTED
+  reason: user stopped
+  final checkpoint: PASS
+  final settlement: N CFA
+  bulk close: NORMAL
+  stale callbacks ignored: 0
+```
+
+`final checkpoint: PASS` is the line to check. `timeout` or `unavailable` means
+the closing figure did not come back, and the amount fell back to the last
+periodic one.
+
+### 60b. No invented failure
+
+Read the diagnostic after that Stop. These must **not** appear:
+
+- `BULK FAILED at IDLE`
+- `no receipt over bt-bulk within 15s`
+- `session failed:` anything, when you simply pressed Stop
+
+A normal stop is not an error and must leave no error behind.
+
+### 60c. Immediate reconnect, three times
+
+Without touching Bluetooth and without restarting either app, tap GET INTERNET
+again straight away. Expected each time: CONTRACT AGREED, SESSION OK, INTERNET
+OK. Do it three times, browsing a few seconds each time and stopping.
+
+Each session must bill something. No session may need a restart.
+
+### 60d. Stop pressed twice
+
+During one session, press Stop and then press it again immediately. Expected:
+one settlement, one amount on screen, and the phone still able to reconnect. The
+amount must not double.
+
+### 60e. Bluetooth pulled during the stop
+
+During a later session, press Stop and switch Bluetooth **off within a second**,
+then back on after ten seconds. Expected: the phone settles on the last figure
+both sides signed, returns to idle without hanging, and reconnects normally once
+Bluetooth is back. COPY NETWORK may show `final checkpoint: unavailable` here,
+which is honest and correct.
+
+### 60f. The seller stops first
+
+During a session, press the seller's stop-sharing on the OUKITEL instead. Both
+phones must converge to a clean state, the buyer must not be left with a VPN up
+and no tunnel behind it, and the next session must work.
+
+### What would make this a FAIL
+
+- A short session settling at 0 CFA.
+- `BULK FAILED` or a receipt error after an ordinary Stop.
+- A doubled charge from pressing Stop twice.
+- Any session needing an app restart or a Bluetooth toggle to start again.
+- Any regression in section 59.
+
