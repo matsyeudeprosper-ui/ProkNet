@@ -20,6 +20,7 @@ import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.node.NetworkNode
 import net.prok.proknet.core.ProductState
 import net.prok.proknet.ui.MainActivity
 
@@ -63,6 +64,14 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         DiagLog.i(tag, "onStartCommand action=" + action + " flags=" + flags + " (redelivered=" + ((flags and START_FLAG_REDELIVERY) != 0) + ")")
         when (action) {
             ACTION_STOP -> { stopNode(); return START_NOT_STICKY }
+            ACTION_SHARE_NOW -> {
+                // v0.13: PARTAGER on the request notification: this phone becomes a normal seller
+                startNode()
+                val err = node.setSelling(true)
+                DiagLog.i(tag, "PARTAGER from the request notification: " + (err ?: "sharing ON"))
+                try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_REQUEST) } catch (_: Exception) {}
+                ProkNetApp.network(this).syncSoon("provider activated")
+            }
             else -> startNode()
         }
         return START_STICKY
@@ -94,6 +103,10 @@ class ProkNetService : Service(), ProkNetNode.Listener {
             (if (!pm.isIgnoringBatteryOptimizations(packageName)) " (press Battery in the app if the phone kills ProkNet in the background)" else ""))
         DiagLog.i(tag, "screen is " + (if (pm.isInteractive) "ON" else "OFF") + " at service start")
         if (!node.isRunning) node.start() else DiagLog.i(tag, "node already running, service re-attached")
+        val net = ProkNetApp.network(this)
+        net.opportunityHook = { o -> main.post { notifyOpportunity(o) } }
+        net.cancelHook = { _ -> main.post { try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_REQUEST) } catch (_: Exception) {} } }
+        main.removeCallbacks(periodicSync); main.postDelayed(periodicSync, 60_000)
         updateNotification(consumerStatus())
     }
 
@@ -133,6 +146,37 @@ class ProkNetService : Service(), ProkNetNode.Listener {
     override fun onStatus(status: String) { updateNotification(status); checkApproval() }
 
     private var approvalNotified = false
+    /** v0.13: someone asks for Internet and this phone could share. One notification, one button. */
+    private fun notifyOpportunity(o: net.prok.proknet.core.ProviderActivation.Opportunity) {
+        try {
+            val share = PendingIntent.getService(this, 3, Intent(this, ProkNetService::class.java).setAction(ACTION_SHARE_NOW).putExtra("request", o.requestId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val open = PendingIntent.getActivity(this, 4, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(CHANNEL_ALERT) == null)
+                nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERT, getString(R.string.notif_alert_channel), NotificationManager.IMPORTANCE_HIGH))
+            @Suppress("DEPRECATION")
+            val action = Notification.Action.Builder(R.drawable.ic_notify, getString(R.string.notif_share_action), share).build()
+            nm.notify(NOTIF_REQUEST, Notification.Builder(this, CHANNEL_ALERT)
+                .setSmallIcon(R.drawable.ic_notify).setContentTitle(o.title).setContentText(o.text)
+                .setStyle(Notification.BigTextStyle().bigText(o.text))
+                .setContentIntent(open).addAction(action).setAutoCancel(true).setCategory(Notification.CATEGORY_RECOMMENDATION)
+                .setTimeoutAfter(maxOf(60_000L, o.expiresAt - System.currentTimeMillis())).build())
+            DiagLog.i(tag, "request notification posted (" + (if (o.local) "nearby" else "zone") + ")")
+        } catch (e: Exception) { DiagLog.w(tag, "request notification: " + e) }
+    }
+
+    private val periodicSync = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val net = ProkNetApp.network(this@ProkNetService)
+            net.sweep()
+            net.syncNow("periodic")
+            main.postDelayed(this, NetworkNode.PERIODIC_MS)
+        }
+    }
+
     /** The Wi-Fi join dialog only appears while a ProkNet screen is in front: ask the user to open the app. */
     private fun checkApproval() {
         val need = node.wifi.approvalNeeded && !ProkNetApp.appVisible()
@@ -225,6 +269,8 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         const val CHANNEL_ALERT = "proknet_alert"
         const val NOTIF_ID = 1001
         const val NOTIF_APPROVAL = 1002
+        const val NOTIF_REQUEST = 1003
+        const val ACTION_SHARE_NOW = "net.prok.proknet.SHARE_NOW"
 
         /** True between onCreate and onDestroy of the service instance. */
         @Volatile var running = false

@@ -104,6 +104,10 @@ object Wire {
     const val OP_BULK_OFFER = 12
     const val OP_BULK_READY = 13
     const val OP_BULK_CANCEL = 14
+    /** v0.13: a signed [NetRequest] (open generation or tombstone), store-carry-forwarded between phones. */
+    const val OP_NET_REQUEST = 15
+
+    fun netRequest(payload: ByteArray): ByteArray = byteArrayOf(OP_NET_REQUEST.toByte()) + payload
 
     fun bulkRequest(session: Int): ByteArray =
         ByteBuffer.allocate(5).put(OP_BULK_REQUEST.toByte()).putInt(session).array()
@@ -166,6 +170,8 @@ object Wire {
 
     sealed class Control {
         class WifiRequest(val port: Int) : Control()
+        /** v0.13: the encoded request; decoded and verified by the network layer. */
+        class NetRequestCtl(val payload: ByteArray) : Control()
         class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
         /** v0.9.9: buyer -> seller, "is your group ready?"; [deviceName] is this phone's P2P name. */
         class P2pRequest(val deviceName: String) : Control()
@@ -285,6 +291,7 @@ object Wire {
                 }
                 OP_P2P_JOIN_PLAN -> Control.P2pJoinPlan(if (b.remaining() >= 1) b.get().toInt() and 0xFF else JOIN_PLAN_WAIT)
                 OP_P2P_TOPOLOGY -> Control.P2pTopology(if (b.remaining() >= 1) b.get().toInt() and 0xFF else TOPOLOGY_SELLER_GROUP_OWNER)
+                OP_NET_REQUEST -> Control.NetRequestCtl(ByteArray(b.remaining()).also { b.get(it) })
                 OP_BULK_REQUEST -> if (b.remaining() >= 4) Control.BulkRequest(b.int) else null
                 OP_BULK_OFFER -> if (b.remaining() >= 7) Control.BulkOffer(b.int, b.get().toInt() and 0xFF, b.short.toInt() and 0xFFFF) else null
                 OP_BULK_READY -> if (b.remaining() >= 4) Control.BulkReady(b.int) else null

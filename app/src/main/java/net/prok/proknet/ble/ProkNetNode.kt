@@ -1594,7 +1594,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     /** Encrypted, signed control message (Wi-Fi negotiation), sent immediately over the best transport. Not stored. */
-    private fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) {
+    /** v0.13: the network layer receives signed requests carried over the control channel. */
+    @Volatile var onNetRequest: ((peerShort: String, payload: ByteArray) -> Unit)? = null
+
+    fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) {
         val key = store.peerKey(peerShort) ?: run { cb(false); return }
         val transport = transportFor(peerShort) ?: run { DiagLog.w(tag, "no transport to prok-" + peerShort + " for control message"); cb(false); return }
         val msgId = Packet.newMsgId(); val ts = System.currentTimeMillis()
@@ -1696,6 +1699,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             c is Wire.Control.BulkOffer -> onBulkOffer(peerShort, c)
             c is Wire.Control.BulkReady -> DiagLog.i(tag, "BULK READY from prok-" + peerShort)
             c is Wire.Control.BulkCancel -> onBulkCancel(peerShort, c)
+            c is Wire.Control.NetRequestCtl -> onNetRequest?.invoke(peerShort, c.payload)
             c is Wire.Control.P2pTopology -> onP2pTopology(peerShort, c)
             c is Wire.Control.P2pVisibility -> onP2pVisibility(peerShort, c)
             c is Wire.Control.P2pJoinPlan -> onP2pJoinPlan(peerShort, c)

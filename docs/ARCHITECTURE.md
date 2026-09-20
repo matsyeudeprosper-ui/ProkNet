@@ -746,6 +746,91 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The Network Brain (v0.13.0)
+
+The product target: a person with no Internet taps once; if no seller is
+active, the request enters the ProkNet network, nearby potential providers
+can be activated, and when one comes online ProkNet connects the requester
+by itself. The direct path is untouched and still first: GET INTERNET with a
+usable provider in reach connects immediately.
+
+**The offline rule.** A request never needs Internet to exist. After the
+15 s local search finds nothing usable, the phone signs a `NetRequest`
+(`core/NetRequest.kt`): 16-hex id, origin short id and public key, created /
+updated / expires, coarse zone, flexible MB and minutes, automatic price
+ceiling, urgency NOW, state, generation, hops, ECDSA P-256 signature over
+everything but the hops. ~230 bytes, inside an encrypted BLE control
+envelope (`Wire` op 15). States: CREATED, SEARCHING_LOCAL,
+DIRECT_SOURCE_FOUND, NETWORK_REQUESTED, CARRIED, UPLOADED, SUPPLY_POSSIBLE,
+PROVIDER_ACTIVATING, CONNECTING, ONLINE, FAILED, EXPIRED, CANCELLED,
+FULFILLED; the user only ever reads RECHERCHE / DEMANDE / CONNEXION /
+CONNECTÉ.
+
+**Store-carry-forward** (`core/RequestGossip.kt`, pure; `node/NetworkNode.kt`
+on the phone). One record per id, the latest generation wins, a tombstone
+(CANCELLED / FULFILLED) is final: an older carried copy is dropped, and even
+a validly signed newer open generation cannot replace a tombstone. Expired
+and hop-exhausted requests are dropped and counted. Forwarding is once per
+(id, generation, peer), never back to the sender, never to the origin; a
+failed send is unmarked and retried when the peer reappears. The store
+persists (`filesDir/requests.v1.txt`) and is swept: expired → EXPIRED kept
+2 h, tombstones kept 2 h, forward memory 6 h. Carrying means storing,
+moving, forwarding, uploading; it never means carrying Internet.
+
+**Provider activation** (`core/ProviderActivation.kt`). Opt-in on Gagner:
+"Me prévenir quand quelqu'un cherche Internet près de moi". A carried
+request meets the phone's eligibility: opted in, validated upstream, a local
+path (Bluetooth for home Wi-Fi, hotspot for mobile data), Bluetooth on if
+needed, not already sharing, not busy, and its sell price within the
+request's ceiling. Then one notification (rate-limited: 10 min per request,
+2 min globally) with honest wording: "Quelqu'un cherche Internet à
+proximité." when the request came over BLE, "Une demande Internet existe
+dans votre zone." when it came from the brain. PARTAGER is a service action:
+`setSelling(true)`, the normal seller. The requester, still polling the
+decision engine every second in DEMANDE, sees the advert, `GetInternet`
+selects it within the ceiling, and the proven stack runs; ONLINE marks the
+request FULFILLED and the tombstone travels and syncs. ARRÊTER cancels the
+same way. No second tap.
+
+**The brain** (`server/`, Python 3.11 stdlib + `cryptography`, SQLite with
+a migrations list). One operation, `POST /v1/sync`, one signed line-protocol
+message (`core/SyncProtocol.kt` ↔ `server/brain/protocol.py`,
+`prok-sync/1`): node id + key + timestamp, zone, coverage summaries (opt-in),
+availability heartbeat (opt-in), request generations, job changes, then the
+signature over every byte before it. The server verifies the signature,
+that the id is SHA-256(key)[:16], and the clock (±10 min); every write is an
+upsert; the same message twice leaves the same rows; per-node rate limit.
+Back: shared cells, the requests this node should act on, its jobs, the
+statuses of its own requests, one line of advice. `GET /health` for
+deployment. Matching (`server/brain/matching.py`, mirrors `core/Jobs.kt`):
+DIRECT_SOURCE → ACTIVATE_PROVIDER (opted in, heartbeat < 15 min, validated,
+not busy, not sharing, same zone or seen locally, within ceiling, cheapest;
+commercial delivery cost ≤ ceiling) → WAIT_FOR_SUPPLY → NO_PLAN; one
+PROVIDER_ACTIVATION job per (request, provider); a tombstone cancels its
+jobs. Cleanup is deterministic and tested with a fake clock.
+
+**Shared coverage honesty.** The brain's GREEN (a provider sharing now,
+seen < 10 min) becomes YELLOW on the phone: "seen 5 minutes ago" is never
+"you can connect". GREEN on a phone is only a source that phone reaches
+now. Carte shows "Vu par le réseau ProkNet" rows apart from the phone's own.
+
+**Sync behaviour.** Only when a server is configured (Développeur → BRAIN
+URL; empty by default). Triggers: request created / carried / ended,
+provider or coverage preference changed, PARTAGER, 60 s after service
+start, then every 15 min; exponential backoff 1 → 30 min on failure. The
+app itself is outside its own VPN, so a phone with only ProkNet Internet
+does not sync; the phone with real Internet does.
+
+**Jobs** (`core/Jobs.kt`). PROVIDER_ACTIVATION and CARRY_REQUEST execute;
+ANCHOR, RELAY, MOVE_TO_ZONE, COURIER are modelled (types, states OPEN →
+OFFERED → ACCEPTED → ACTIVE → COMPLETED / FAILED / EXPIRED / CANCELLED,
+fields, forward-only transitions) and nothing pretends they run. No reward
+today: the provider earns through the session.
+
+**Privacy.** Zones are cells, sources are hashed ids or ProkNet ids, no
+coordinate is uploaded or stored (a server test checks the schema), no
+password ever, both contributions are opt-in with one sentence each.
+
 ## Under the sphere (v0.12.5)
 
 Mike: the sphere and its animation are the design; the rest of the home

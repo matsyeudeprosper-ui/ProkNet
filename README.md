@@ -70,7 +70,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.12.2 | Accueil and Carte redesigned from scratch: a drawn sonar button (`PulseButtonView`, rings sweep while searching), three quiet tiles, two door cards; the map is a sonar of real sightings (you at the centre, fresh near, old far, tappable) or the cell grid once a position exists | built, 236 JVM tests pass |
 | v0.12.3 | The sphere drawn to look lit and heavy (specular highlight, dark edge, drop shadow, luminous rim), ambient blue + violet light and two faint scan arcs instead of a bullseye, the usable sources as green dots on the arc, a radar wedge while searching; tiles that never truncate | built, 236 JVM tests pass |
 | v0.12.4 | The sphere is the interface: it breathes at rest, arcs and source dots orbit, it pulses while searching, ripples when pressed, turns green when connected, one word per state; the home loses its question and status lines, tiles show values only, door rows are title + chevron | built, 236 JVM tests pass |
-| v0.12.5 | Under the sphere: one slim stat strip (sources · prix · dernière fois) and two icon action cards (Partager, Carte) | built, 236 JVM tests pass, one-tap hardware regression pending |
+| v0.12.5 | Under the sphere: one slim stat strip (sources · prix · dernière fois) and two icon action cards (Partager, Carte) | built, 236 JVM tests pass |
+| v0.13.0 | The Network Brain: an offline signed Internet request that the phones around store, carry and forward (once per peer, dedup, TTL, hop budget, tombstones); provider activation ("Quelqu'un cherche Internet à proximité" → PARTAGER); a Python Network Brain (one signed idempotent sync, SQLite, matching, TTL cleanup); shared coverage that never manufactures GREEN; the job model | built, 248 JVM + 11 server tests pass; brain BUILT + TESTED LOCALLY; the two-phone activation test pending |
 
 ### v0.1 - what it does
 
@@ -198,7 +199,25 @@ accounting and checkpoint working, Wikipedia loaded in Chrome with the
 ProkNet VPN as the phone's Internet path. Not generalised to every Android
 device: proven on this pair.
 
+## Hardware test pending (v0.13)
+
+- Offline request → local demand propagation → provider activation →
+  automatic seller discovery → automatic connection → real Internet, on
+  the OUKITEL + OnePlus pair. TESTING section 51. Until Mike runs it,
+  provider activation is BUILT / SOFTWARE TESTED, not proven.
+
 ## Built and software-tested (not yet hardware-proven)
+
+- Offline request gossip (`core/NetRequest.kt`, `core/RequestGossip.kt`,
+  `node/NetworkNode.kt`): signed requests, store-carry-forward over the
+  encrypted BLE control channel, dedup by id + generation, TTL, hop budget,
+  tombstones, persistence.
+- The Network Brain (`server/`): 11 tests, run locally end to end.
+- Shared coverage (`core/SyncProtocol.kt`): summaries in, cells out, never GREEN from history.
+- The job model and the matching (`core/Jobs.kt`, `server/brain/matching.py`).
+- Provider activation matching and the rate-limited notification.
+- Request carry: a signed request travels buyer → phone B → phone C with
+  Internet → brain in software; the 3-phone case has no hardware yet.
 
 - The one-tap decision engine (`core/GetInternet.kt`): 14 JVM tests on the
   ranking rules and the request state machine.
@@ -212,8 +231,10 @@ device: proven on this pair.
 
 ## Not yet hardware-proven, not claimed
 
-- 3-phone relay, relay / mover marketplace, citywide request fulfilment.
-  The models exist (hops, roles, cost classes); nothing executes them.
+- 3-phone request carry, 3-phone live Internet relay, multi-hop Internet,
+  mover jobs, citywide autonomous fulfilment. The models exist (hops,
+  roles, cost classes, job types); nothing executes them and no button
+  pretends to.
 
 ## Decided
 

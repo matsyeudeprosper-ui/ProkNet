@@ -110,6 +110,22 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
+        findViewById<Button>(R.id.btnCopyNetwork).setOnClickListener {
+            // v0.13: requests, carrying, provider state, the brain sync, the gossip counters
+            val net = ProkNetApp.network(this)
+            val text = "Prok NETWORK DIAG " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + "\n" +
+                "me: prok-" + node.identity.shortIdHex + "\n" + net.diag() + ProkNetApp.coverage(this).diag() + "--- last 60 log lines ---\n" + DiagLog.text().lines().takeLast(60).joinToString("\n") + "\n"
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("ProkNet network", text))
+            toast("Network diagnostic copied (" + text.length + " chars)")
+        }
+        findViewById<Button>(R.id.btnBrainUrl).setOnClickListener {
+            val net = ProkNetApp.network(this)
+            val input = android.widget.EditText(this).apply { setText(net.brainUrl); hint = "https://brain.example.org (empty = off)" }
+            AlertDialog.Builder(this).setTitle("Network Brain URL").setMessage("HTTPS base URL of the ProkNet Network Brain. Leave empty to run local/direct only.").setView(input)
+                .setPositiveButton("Save") { _, _ -> net.brainUrl = input.text.toString(); toast(if (net.configured) "Brain: " + net.brainUrl else "Brain off"); net.syncNow("url set") }
+                .setNeutralButton("Sync now") { _, _ -> net.syncNow("manual"); toast("Sync requested") }
+                .setNegativeButton("Cancel", null).show()
+        }
         findViewById<Button>(R.id.btnCopyCoverage).setOnClickListener {
             // v0.12: sources, observations, cells, the last GET INTERNET decision and why
             val text = "Prok COVERAGE DIAG " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + "\n" +

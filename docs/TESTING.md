@@ -1932,3 +1932,48 @@ connecté ✅" from OBTENIR INTERNET, with the OUKITEL chosen automatically
 one that worked"), and Wikipedia loads. The map is a foundation: it is
 checked for honesty (no source shown that was never seen), not for
 coverage.
+
+## 51. v0.13.0 the request that wakes a provider (THE test)
+
+OUKITEL: Freebox Wi-Fi ON, mobile data OFF, Bluetooth ON, sharing OFF.
+Open ProkNet → Gagner → turn ON "Me prévenir quand quelqu'un cherche
+Internet près de moi". Put the phone down.
+
+OnePlus: mobile data OFF, not on the Freebox, Bluetooth ON. Open ProkNet,
+tap the sphere. There is no seller, so the sphere goes RECHERCHE, then
+after about 15 s DEMANDE, with "Demande envoyée aux téléphones ProkNet
+autour de vous."
+
+OUKITEL: a notification "Quelqu'un cherche Internet à proximité." with
+PARTAGER. Tap PARTAGER. Nothing else.
+
+OnePlus, without another tap: CONNEXION, then CONNECTÉ. Open Wikipedia.
+
+That proves: offline request → local demand propagation → provider
+activation → automatic seller discovery → automatic connection → real
+Internet.
+
+If the OUKITEL never gets the notification: Développeur → COPY NETWORK on
+both phones. The OnePlus must show `REQUEST <id> created`, and `FORWARD
+<id> gen 1 -> prok-<oukitel>`; the OUKITEL must show `REQUEST <id> gen 1
+NETWORK_REQUESTED from prok-<oneplus>: NEW` and either `PROVIDER ACTIVATION
+opportunity` or `not activating for <id>: <reason>` (the reason is the
+fix).
+
+Then tap ARRÊTER on the OnePlus and STOP sharing on the OUKITEL, and run it
+once more.
+
+## 52. v0.13.0 the brain, if a server is configured
+
+Not required for section 51. If a Network Brain URL is set on both phones
+(Développeur → BRAIN URL), COPY NETWORK must show, on the OUKITEL: `SYNC
+(...)`, `SYNC ok`, `last success`, the availability sent while the
+preference is ON, and after section 51 the request as `FULFILLED`. Mike
+does not run any command; the brain is BUILT + TESTED LOCALLY until a
+public HTTPS hostname exists.
+
+### Claim rule
+
+Provider activation is hardware-proven only when section 51 ends with
+CONNECTÉ and Wikipedia without a second tap on the OnePlus. 3-phone carry
+and relay stay unproven until phone #3 exists.

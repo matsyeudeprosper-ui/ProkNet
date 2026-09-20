@@ -265,6 +265,13 @@ class CoverageEngine(private val context: Context) : ProkNetNode.Listener {
         io.execute { try { file.writeText(text, Charsets.UTF_8) } catch (e: Exception) { DiagLog.w(tag, "coverage save: " + e.message) } }
     }
 
+    // ---- shared coverage from the brain: history, never a claim this phone can connect ------------------
+    @Volatile var shared: List<net.prok.proknet.core.SyncProtocol.SharedCell> = emptyList()
+        private set
+    @Volatile var lastSharedAt = 0L
+        private set
+    fun setShared(cells: List<net.prok.proknet.core.SyncProtocol.SharedCell>) { shared = cells; lastSharedAt = System.currentTimeMillis() }
+
     // ---- diagnostics -----------------------------------------------------------------------------------
 
     fun diag(): String {

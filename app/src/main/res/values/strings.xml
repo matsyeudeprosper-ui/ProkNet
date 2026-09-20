@@ -273,6 +273,19 @@ INTERNET</string>
     <string name="row_share_caption_on">\u25cf Vous partagez</string>
     <string name="row_map_caption">Où Internet a été vu</string>
 
+    <!-- v0.13 the network -->
+    <string name="sphere_request">DEMANDE</string>
+    <string name="notif_share_action">PARTAGER</string>
+    <string name="earn_notify_title">Quelqu\'un cherche Internet ?</string>
+    <string name="earn_notify_sub">Si une personne à proximité cherche Internet et que vous pouvez partager, ProkNet vous prévient. Vous décidez à chaque fois.</string>
+    <string name="earn_notify_switch">Me prévenir quand quelqu\'un cherche Internet près de moi</string>
+    <string name="earn_cov_title">Aider ProkNet à améliorer la carte</string>
+    <string name="earn_cov_sub">Partage seulement des zones approximatives, jamais votre position précise.</string>
+    <string name="earn_cov_switch">Partager les zones où Internet a été vu</string>
+    <string name="map_shared">Vu par le réseau ProkNet</string>
+    <string name="map_local">Vu par ce téléphone</string>
+    <string name="map_shared_sources">%1$d source(s) connue(s)</string>
+
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>
     <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>

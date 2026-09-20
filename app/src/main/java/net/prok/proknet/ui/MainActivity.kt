@@ -42,7 +42,11 @@ import net.prok.proknet.core.ProductState.active
 import net.prok.proknet.core.ProductState.busy
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.Tunnel
+import net.prok.proknet.core.Crypto
+import net.prok.proknet.core.NetRequest
+import net.prok.proknet.core.toHex
 import net.prok.proknet.node.CoverageEngine
+import net.prok.proknet.node.NetworkNode
 import net.prok.proknet.service.ProkNetService
 import net.prok.proknet.vpn.ProkVpnService
 
@@ -56,6 +60,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private val tag = "UI"
     private lateinit var node: ProkNetNode
     private lateinit var cover: CoverageEngine
+    private lateinit var network: NetworkNode
     private val main = Handler(Looper.getMainLooper())
     private val dateFmt = SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE)
     private val timeFmt = SimpleDateFormat("HH:mm", Locale.FRANCE)
@@ -90,6 +95,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         setContentView(R.layout.activity_main)
         node = ProkNetApp.node(this)
         cover = ProkNetApp.coverage(this)
+        network = ProkNetApp.network(this)
+        v<Switch>(R.id.switchNotify).setOnClickListener { network.notifyOptIn = v<Switch>(R.id.switchNotify).isChecked; refresh() }
+        v<Switch>(R.id.switchShareCoverage).setOnClickListener { network.shareCoverage = v<Switch>(R.id.switchShareCoverage).isChecked; refresh() }
 
         v<View>(R.id.navHome).setOnClickListener { select(Tab.HOME) }
         v<View>(R.id.navInternet).setOnClickListener { select(Tab.INTERNET) }
@@ -169,7 +177,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             if (buyerOn()) { refresh(); return@ensureRunning }
             lostDismissed = false
             val now = System.currentTimeMillis()
-            val r = InternetRequest.oneTap(java.lang.Long.toHexString(now), now, cover.zone())
+            val r = InternetRequest.oneTap(Crypto.randomBytes(8).toHex(), now, cover.zone())
             request = r; requestStartedAt = now
             cover.recordRequest(r)
             DiagLog.i(tag, "GET INTERNET pressed: request " + r.id + " in zone " + r.zone)
@@ -200,14 +208,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                     if (node.buy(peer)) update(InternetRequest.connecting(found, now))
                     else update(InternetRequest.failed(found, node.lastBuyError.ifEmpty { "cannot start the purchase" }, now))
                 } else if (r.state == InternetRequest.State.SEARCHING && now - requestStartedAt > SEARCH_WINDOW_MS) {
-                    DiagLog.i(tag, "GET INTERNET: nothing usable after " + (SEARCH_WINDOW_MS / 1000) + " s: " + d.reason + "; still searching")
+                    DiagLog.i(tag, "GET INTERNET: nothing usable after " + (SEARCH_WINDOW_MS / 1000) + " s: " + d.reason + "; asking the network")
                     update(InternetRequest.apply(r, d, now))
+                    // v0.13: the request leaves this phone: signed, carried by the phones around, uploaded by one with Internet
+                    if (network.mine(r.id) == null) network.originate(r.id, r.zone)
                 }
             }
             InternetRequest.State.DIRECT_SOURCE_FOUND, InternetRequest.State.CONNECTING -> {
                 val b = buyerState()
-                if (b == ProductState.Buyer.ONLINE) { update(InternetRequest.online(r, now)); r.sourceId?.let { cover.onSuccess(it) } }
-                else if (b == ProductState.Buyer.LOST || (b == ProductState.Buyer.IDLE && !buyerOn())) update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now))
+                if (b == ProductState.Buyer.ONLINE) { update(InternetRequest.online(r, now)); r.sourceId?.let { cover.onSuccess(it) }; network.end(r.id, NetRequest.State.FULFILLED) }
+                else if (b == ProductState.Buyer.LOST || (b == ProductState.Buyer.IDLE && !buyerOn())) { update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now)); network.end(r.id, NetRequest.State.CANCELLED) }
             }
             else -> {}
         }
@@ -217,7 +227,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun stopAll() {
         val now = System.currentTimeMillis()
-        request?.let { if (!it.terminal) update(InternetRequest.cancelled(it, now)) }
+        request?.let { if (!it.terminal) { update(InternetRequest.cancelled(it, now)); network.end(it.id, NetRequest.State.CANCELLED) } }
         request = null
         DiagLog.i(tag, "Stop pressed")
         node.stopInternet("stopped by user"); lostDismissed = true; refresh()
@@ -288,6 +298,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             buyerVisible && b == ProductState.Buyer.ONLINE -> R.string.sphere_online
             buyerVisible && b == ProductState.Buyer.LOST -> R.string.sphere_retry
             buyerVisible -> R.string.sphere_connecting
+            r != null && r.state == InternetRequest.State.NETWORK_NEEDED -> R.string.sphere_request
             r != null && r.active -> R.string.sphere_searching
             r != null && r.state == InternetRequest.State.FAILED -> R.string.sphere_retry
             else -> R.string.sphere_idle
@@ -314,7 +325,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             requestVisible -> {
                 val rr = r!!
                 text(R.id.homeTitle, InternetRequest.title(rr.state, now - requestStartedAt > LONG_SEARCH_MS))
-                text(R.id.homeSub, if (rr.state == InternetRequest.State.FAILED) rr.note else if (rr.state == InternetRequest.State.ONLINE) rr.note else InternetRequest.hint(rr.state))
+                text(R.id.homeSub, when (rr.state) {
+                    InternetRequest.State.FAILED, InternetRequest.State.ONLINE -> rr.note
+                    InternetRequest.State.NETWORK_NEEDED -> NetRequest.hint(NetRequest.State.NETWORK_REQUESTED, now - requestStartedAt, false)
+                    InternetRequest.State.DIRECT_SOURCE_FOUND -> NetRequest.hint(NetRequest.State.NETWORK_REQUESTED, 0, true)
+                    else -> InternetRequest.hint(rr.state)
+                })
                 show(R.id.homeProgress, rr.active); show(R.id.homeMoney, false)
                 stop.text = getString(if (rr.active) R.string.cancel_big else R.string.close_big)
             }
@@ -424,6 +440,20 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             row.setOnClickListener { sourceDialog(s, st, now) }
             list.addView(row)
         }
+        // v0.13: what the network has seen, kept apart, never "available now"
+        val localZones = cover.state.sources.values.flatMap { it.zones }.toSet()
+        for (c in cover.shared.filter { it.status != Coverage.ZoneStatus.RED }.sortedByDescending { it.lastSeen }.take(8)) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; background = getDrawable(R.drawable.bg_card_alt); setPadding(dp(18), dp(15), dp(16), dp(15)) }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(8); row.layoutParams = lp
+            val dot = View(this).apply { background = getDrawable(R.drawable.dot_warn) }
+            dot.layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+            texts.addView(TextView(this).apply { text = getString(R.string.map_shared) + (if (c.zone in localZones || c.zone == zone) " · " + getString(R.string.map_here) else ""); setTextAppearance(R.style.H2) })
+            texts.addView(TextView(this).apply { text = CoverageModel.cellWord(c.status) + " · " + getString(R.string.map_shared_sources, c.potential) + " · " + CoverageModel.priceWord(c.bestPrice) + " · " + CoverageModel.ageWord(now - c.lastSeen); setTextAppearance(R.style.Muted) })
+            row.addView(dot); row.addView(texts)
+            list.addView(row)
+        }
+        show(R.id.mapEmpty, sources.isEmpty() && cover.shared.isEmpty())
     }
 
     private fun sourceDialog(s: CoverageModel.Source, st: Coverage.ZoneStatus, now: Long) {
@@ -489,6 +519,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val (n, bytes) = node.store.relayStats()
         text(R.id.earnRelayStats, if (n == 0L) getString(R.string.help_none) else if (n == 1L) getString(R.string.help_carried_one, ProductState.data(bytes)) else getString(R.string.help_carried_many, n.toInt(), ProductState.data(bytes)))
         v<Switch>(R.id.switchRelay).isChecked = node.relayOn
+        v<Switch>(R.id.switchNotify).isChecked = network.notifyOptIn
+        v<Switch>(R.id.switchShareCoverage).isChecked = network.shareCoverage
     }
 
     private fun startSharing() {

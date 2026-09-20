@@ -207,6 +207,15 @@
                     <TextView android:id="@+id/earnSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
                 </LinearLayout>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/earn_notify_title" style="@style/H2" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/earn_notify_sub" style="@style/Muted" />
+                    <Switch android:id="@+id/switchNotify" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="@string/earn_notify_switch" style="@style/Body" />
+                    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginTop="16dp" android:layout_marginBottom="16dp" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/earn_cov_title" style="@style/H2" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/earn_cov_sub" style="@style/Muted" />
+                    <Switch android:id="@+id/switchShareCoverage" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="@string/earn_cov_switch" style="@style/Body" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/help_title" style="@style/H2" />
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/help_text" style="@style/Muted" />
                     <TextView android:id="@+id/earnRelayStats" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />

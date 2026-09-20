@@ -14,6 +14,9 @@ class ProkNetApp : Application() {
     /** v0.12: the phone as a coverage sensor and the GET INTERNET executor. */
     lateinit var coverage: net.prok.proknet.node.CoverageEngine
         private set
+    /** v0.13: requests, carrying, provider activation, the brain sync. */
+    lateinit var network: net.prok.proknet.node.NetworkNode
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -21,6 +24,7 @@ class ProkNetApp : Application() {
         node = ProkNetNode(this)
         coverage = net.prok.proknet.node.CoverageEngine(this)
         coverage.attach(node)
+        network = net.prok.proknet.node.NetworkNode(this, node, coverage)
         DiagLog.i("APP", "process started, node created (not running)")
     }
 
@@ -29,6 +33,8 @@ class ProkNetApp : Application() {
             (context.applicationContext as ProkNetApp).node
         fun coverage(context: android.content.Context): net.prok.proknet.node.CoverageEngine =
             (context.applicationContext as ProkNetApp).coverage
+        fun network(context: android.content.Context): net.prok.proknet.node.NetworkNode =
+            (context.applicationContext as ProkNetApp).network
 
         /** Number of ProkNet activities currently started (visible). The Wi-Fi join dialog needs one. */
         @Volatile var visibleActivities = 0
