@@ -1,164 +1,125 @@
-# CLAUDE_REPORT - ProkNet v0.13.3 "the control plane has to be trustworthy"
+# CLAUDE_REPORT - ProkNet v0.14.0 "human pricing and the profit engine"
 
 Date: 2026-09-20
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 273/273 Android tests and 11/11 server tests pass,
-released. The proven transport stack, the v0.12.5 design, the gossip
-protocol and the brain are untouched. Acceptance needs 3 consecutive
-cycles + the Bluetooth recovery test (TESTING 55, 56, 57).**
+Status: **built, 285/285 Android tests and 11/11 server tests pass,
+released. The hardware-proven v0.13.3 activation path is untouched; the
+budget session rides on top of it. TESTING 58 is the pending hardware test.**
 
-## 1. Root causes
+## 1. Pricing architecture
 
-1. **A different buyer was suppressed by a clock.** A global two-minute
-   cooldown refused request B 53 s after request A ("activation …
-   rate-limited"). A rate limit should stop one unresolved opportunity from
-   nagging, never hide new demand.
-2. **Push was the only place demand existed.** A dismissed, missed or
-   forbidden notification lost the request completely; nothing in the app
-   could show it.
-3. **`isReady` was a Boolean that outlived reality.** After a Bluetooth
-   toggle Android had destroyed the ProkNet GATT service, but
-   `GattServerNode.isReady` stayed true, so `recoverRadio`'s
-   `if (server?.isReady != true)` skipped the server rebuild and ProkNet
-   kept advertising a control plane it no longer had: `peer has no ProkNet
-   service (services=2)` on every customer.
-4. **Retry storms.** `onPeers()` fires constantly and each fire re-queued
-   the same request to the same peer, giving the broken phone no quiet
-   moment to repair itself.
+`core/Pricing.kt`, pure, integer centimes only — no floating point touches
+money anywhere. It answers one question, *is there a deal that is good for
+both sides and what is its exact rate*, and refuses rather than invent one.
+Inputs: buyer budget, source kind and declared cost, seller policy, Prok
+fee, cost class, sponsor budget. Outputs: admissible, reason, internal
+centime rate, max billable bytes, expected gross / fee / seller net /
+source cost / seller profit, payer, subsidy, free.
 
-## 2. New ProviderOpportunity architecture
+The identity, asserted for every source, policy and budget:
 
-`core/ProviderInbox.kt` (pure, persisted to
-`filesDir/opportunities.v1.txt`): one `Opportunity` per request id with
-origin, source (LOCAL over BLE / BRAIN from the zone), zone, receivedAt,
-expiresAt, generation, notifiedAt and accepted. `offer` adds or updates by
-generation and never duplicates; `remove` is called by the tombstone, the
-expiry, the sweep and by a request this phone can no longer serve;
-`accept` marks PARTAGER. Notification and Gagner card both render from it.
-On startup `rebuildInbox` restores active opportunities from the carried
-requests, marking already-known ones as alerted so a restart does not
-re-notify.
+```
+buyer charge = Prok fee + seller's source cost + seller's profit
+```
 
-## 3. Notification aggregation and rate-limit rules
+## 2. Source-cost model
 
-The wall-clock limiter is **deleted** (`ProviderActivation.Limiter`,
-`GLOBAL_MS`, `PER_REQUEST_MS` are gone from the codebase, not just
-unused). The rule is now: **one alert per opportunity, by id.**
+FREE_PUBLIC, SPONSORED, PROK_FUNDED cost 0. AUTHORIZED_HOME_WIFI and
+AUTHORIZED_SHOP_WIFI cost what the owner declares (default 0: a fixed
+line's marginal cost really is near zero). MOBILE_DATA costs what the
+bundle cost, from `mobileCostPerMb(paidCentimes, mb)` — the seller says
+"1 000 CFA for 2 Go", never a CFA/MB. UNKNOWN is not sellable. An
+undeclared mobile bundle uses a conservative assumed cost, never zero, so
+silence cannot make a seller sell at a loss.
 
-- same request id, duplicate or gossip copy → never alerts again;
-- request A ends, B arrives a second later → B alerts immediately;
-- A still open, B arrives → one alert covering both, and only B is newly
-  marked;
-- 3 requests at once → "3 personnes cherchent Internet à proximité.", one
-  notification;
-- brain-only requests say "Une demande Internet existe dans votre zone" —
-  never "à proximité" without local BLE evidence.
+## 3. Seller auto-price rules
 
-## 4. Gagner inbox behaviour
+`sellerFloorPerMb = sourceCost + safety + earning`, `earning =
+max(flatPerPolicy, (sourceCost + safety) x marginPerPolicy)`. CHEAPER /
+BALANCED / EARN_MORE map to 1 / 2 / 4 CFing per MB flat and 15 / 30 / 60 %
+proportional; safety is 10 % of source cost. `rateForFloor` grosses the
+floor up by the fee so the fee never eats the floor. The advert carries
+`ceil(rate/100)` whole CFA — no wire change, and the on-air price can never
+sit below the floor. All constants live in `Pricing.Policy` and are tested,
+not scattered.
 
-A card above the sharing setup while sharing is off: the aggregated title,
-"À proximité · maintenant" (or "Dans votre zone · il y a 3 min"), and
-PARTAGER. It survives a dismissed notification, denied permission, an
-accidental tap, reopening the app, screen off/on, activity recreation and a
-process restart. While sharing is already active it becomes a quiet line —
-"2 autres personnes cherchent Internet". Home shows a small "1 demande"
-badge on the Partager card. No ids, TTLs, generations or protocol words
-anywhere in the consumer UI.
+## 4. Buyer budget rules
 
-## 5. One PARTAGER path
+The budget is a ceiling, never an amount to spend. 25 / 50 / 100 CFA,
+remembered, default 50, confirmed once before the first ever paid session.
+`quoteForOffer(budget, rate)` checks only the buyer's own business: is the
+budget above the minimum session, and does it buy at least one useful MB at
+this price? Free sources quote 0 and are not rationed by money.
 
-`NetworkNode.acceptOpportunity(requestId?)`, called identically by the
-notification action and the Gagner button. It re-checks: the request is
-still active, the phone's **current** Internet (v0.13.2 capability, not the
-gateway), the local path and Bluetooth, the price ceiling, and that it is
-not already busy — then calls the normal `setSelling(true)`. Otherwise it
-returns one sentence for the user and, for a dead request, removes the
-card.
+## 5. Contract changes
 
-## 6. Bluetooth generation / recovery design
+`Market.Contract` version 2 adds `rateCentimesPerMb`,
+`buyerBudgetCentimes`, `maxBillableBytes`, `sourceCostBasisCentimesPerMb`,
+`sellerPolicy`, `pricingMode`; `LEN_V2 = 84`. Both phones sign it.
+`costFor(bytes)` bills v2 at the exact centime rate, capped at the byte
+ceiling and at the signed budget; v1 bills exactly as before. `decode`
+accepts either length, so every stored contract still reads.
+`acceptableProposal` gained `myFloorCentimesPerMb`: for a budget contract
+the seller checks that the rate leaves it its floor after the fee and that
+the byte ceiling costs no more than the signed budget — it signs
+economics, not a price list. All five cost call sites now go through
+`costFor`.
 
-`core/BleLifecycle.kt` (pure): `generation`, `phase` (DOWN →
-SERVICE_PENDING → READY / FAILED), and `serviceGeneration`,
-`advertisingGeneration`, `scanGeneration`. `serviceReady` requires the
-confirmed generation to equal the current one; `mayAdvertise` requires
-`serviceReady`; `controlPlaneHealthy` requires both; `isStale(gen)` guards
-every callback. `bluetoothOff` invalidates everything; `bluetoothOn` bumps
-the generation.
+## 6. Ledger changes
 
-`BleTransport` has ONE rebuild path (`rebuild(why)`, which `recoverRadio`
-now is): close scanner, advertiser and GATT server; open a new
-`GattServerNode` stamped with the new generation; add the service; start
-the scanner (it needs nothing from us); **and start advertising only from
-`onServiceAdded`**, after Android confirms. A late `onServiceAdded` from an
-older generation is logged and ignored. `setCapabilities` refuses to
-advertise an offer when the service is not ready.
+None destructive. Amounts were already centimes; historic entries and v1
+contracts are untouched and still display as they always did (the two
+remaining `priceLine` uses are exactly those legacy paths). New sessions
+carry their economics inside the signed contract, so a session can be
+audited from its own terms.
 
-The invariant is enforced every watchdog tick by `checkInvariant()`: if
-advertising without a ready service → immediate rebuild; if the service is
-missing and the bounded backoff allows → rebuild. Never while `linkBusy`.
+## 7. Network Brain changes
 
-## 7. Retry / backoff design
+The provider heartbeat already carries a price; it now carries the
+automatic one. Matching and admission are unchanged and still refuse a plan
+whose delivery cost exceeds the customer ceiling. No raw pricing is exposed
+to the consumer UI. Server tests: 11, unchanged, green.
 
-`core/ControlRetry.kt` (pure): one attempt per
-`(requestId, generation, peerShort)`, phases IDLE → SENDING → BACKOFF /
-PARKED / DELIVERED, delays 1 / 3 / 10 / 30 s, max 6 attempts. Keyed by the
-signed ProkNet short id, so BLE address rotation is irrelevant. A
-"no ProkNet service" failure parks the **peer** for 45 s (doubled after 3),
-so no request hammers it; a delivery clears the peer's record. Our own BLE
-generation changing, or a parked peer reappearing, resets the backoff
-immediately. `keepOnly` prunes finished requests.
+## 8. Normal buyer UX
 
-## 8. Diagnostics (COPY NETWORK)
+Internet tab: "Combien voulez-vous dépenser au maximum ?", 25 / 50 / 100,
+the chosen one highlighted, and the honest note that ProkNet looks for the
+cheapest option and pays nothing if Internet is free. One tap on the sphere
+uses the remembered budget. During a session: "Vous avez dépensé 34 CFA sur
+votre budget de 50 CFA", plus "Il vous reste environ X CFA" only near the
+end. Offers read "Jusqu'à 50 CFA" or "Gratuit". No CFA/MB.
 
-Adds, on top of the v0.13.2 lines: `Provider opportunities: N (local L,
-brain B), oldest Ns` in the summary; a `provider opportunities:` block with
-one line per opportunity (id, origin, source, age, alerted / NOT alerted,
-ACCEPTED) and `notification: last shown …, total …, suppressed reason: …`;
-a `control plane:` block printing generation, GATT server, ProkNet service,
-advertising generation, scan generation and rebuild count; and
-`forwarding: sends … | in flight … | parked: prok-…` with the per-peer
-"advertises ProkNet but its GATT service is missing" note.
+## 9. Normal seller UX
 
-## 9. Files changed
+Gagner has no price box. "ProkNet fixe automatiquement un prix rentable
+pour vous", three choices (Moins cher / Équilibré / Gagner plus, default
+Équilibré), an optional "Mon forfait" (J'ai payé … Pour … Mo), a bounded
+earning estimate shown only when genuinely calculable, and COMMENCER.
+While sharing: "Vous avez gagné 27 CFA".
 
-New: `core/BleLifecycle.kt`, `core/ProviderInbox.kt`,
-`core/ControlRetry.kt`, `test/.../ActivationReliabilityTest.kt` (18 tests).
-Patched: `ble/GattServerNode.kt` (generation + service-added callback),
-`transport/BleTransport.kt` (one ordered rebuild, generation-stamped
-state, invariant check, advertise-after-service), `ble/ProkNetNode.kt`
-(adapter transitions to the transport, invariant in the watchdog, control
-error reporting, `onSharingStopped`, `bleGeneration`),
-`node/NetworkNode.kt` (inbox, retry, acceptOpportunity, rebuildInbox,
-persistence, diagnostics), `service/ProkNetService.kt` (aggregated alert,
-permission check, ACTION_SHARE_NOW → acceptOpportunity),
-`ui/MainActivity.kt` (Gagner card, home badge, inbox repaint),
-`core/ProviderActivation.kt` (limiter deleted), layouts, strings,
-`test/.../NetworkBrainTest.kt`, `build.gradle.kts`.
+## 10. Tests added (12, total 285 Android + 11 server)
 
-## 10. Tests
-
-**273 Android** (+18) and **11 server**. The new ones cover: one request →
-one opportunity, one alert, one card; duplicates never re-alert; a new
-buyer alerts immediately after the previous request ended; 3 requests
-aggregate into one alert; brain requests never claim "à proximité";
-cancelled / fulfilled / expired / accepted each remove the card and the
-alert; the inbox survives a process restart without re-alerting; a denied
-notification permission leaves the demand visible; a stale notification
-after the request ended cannot start sharing (and every refusal has a
-sentence); **three full cycles in a row with nothing left behind**; the
-generation machine (healthy only when service+advert+scan share the current
-generation; OFF→ON invalidates everything; stale callbacks ignored;
-advertising never before service-added; bounded service retry; advertising
-without a service reported as UNHEALTHY); and the retry rules (no resend on
-every onPeers tick, growing backoff that gives up, a service-missing peer
-parked not hammered, identity-keyed state, delivery clears the record).
+Commercial quotes never exceed the budget and always pay the seller, with
+the accounting identity checked for every source x policy x budget; the
+floor covers source cost, safety and a real earning, and rises with the
+policy; a mobile seller is never pushed below its bundle, an unaffordable
+budget is refused instead of sold at a loss, and an undeclared bundle is
+protected conservatively; free stays free whatever the budget; byte
+ceilings move the right way with budget and rate; the buyer pays for what
+was used, zero for nothing, and is capped at the ceiling; money does not
+drift over a thousand incremental billings; sponsored and growth sessions
+name their payer and respect their budgets while commercial ones are never
+silently subsidised; an unsellable source is never priced; every consumer
+sentence is CFA and mentions no MB or centimes; a v2 contract signs the
+ceiling, bills at the exact rate, cannot bill past the budget and survives
+the wire; v1 contracts still decode and bill exactly as before.
 
 ## 11. Version / build / commit / hash
 
-Build 54, versionName 0.13.3, SHA256 `ad6dddcd7ab6a4857a0e744e7b3e76e7e7988a1e2652d0dd368df845445f12ec`.
-Commit `cd15fd4` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.13.3
+Build 55, versionName 0.14.0, SHA256 `dbf76da2b1bbdfe70472577a5b2fa0e3d4d033e78071a8e72283ee7620b48f43`.
+Commit `ba2b910` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.14.0
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
@@ -166,26 +127,26 @@ C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 
 ## 12. Known limitations
 
-- Not yet run on the phones: 3 cycles, the Bluetooth recovery and the
-  background cases are TESTING 55 / 56 / 57.
-- The OUKITEL's own `p2p` interface and Wi-Fi Direct remain archived and
-  untouched.
-- A rebuild of the BLE stack drops any in-flight GATT client operation; the
-  retry layer re-sends, but a control message can be delayed by one
-  backoff step after a Bluetooth toggle.
-- Provider activation still serves one customer at a time: the inbox tracks
-  several requests and the matching layer will choose later; PARTAGER makes
-  the phone available rather than binding it to one buyer.
-- The brain is still BUILT + TESTED LOCALLY (no public HTTPS host).
-- 3-phone carry and relay remain modelled, not executed, not claimed.
+- Not yet run on the phones (TESTING 58); v0.13.3's three-cycle and
+  Bluetooth-recovery tests are also still outstanding.
+- The advertised price is whole CFA rounded up, so the buyer pays slightly
+  more than the exact internal floor; billing itself is exact to the
+  centime.
+- The buyer cannot see the seller's source cost, so its quote trusts the
+  advertised price; the seller re-checks its own floor before signing.
+- No speed or time classes: the budget controls money, bytes control
+  accounting. "50 CFA = 30 minutes" is deliberately not claimed.
+- Sponsored and growth-subsidy sessions are modelled, priced and tested but
+  no sponsor exists yet to pay for one.
+- MoMo settlement is not started; the ledger is still person-to-person.
+- 3-phone relay remains modelled, not executed.
 
-## 13. The exact hardware test
+## 13. The exact Mike test
 
-TESTING 55: three consecutive cycles, the third with the notification
-**swiped away** and PARTAGER pressed from Gagner instead.
-TESTING 56: Bluetooth OFF 10 s then ON on the OUKITEL, **without
-restarting the app**, then a new request — no "peer has no ProkNet
-service", and COPY NETWORK shows the generation moved with
-`ProkNet service: ADDED`.
-TESTING 57: screen off / app closed, then notifications denied — the
-Gagner card must appear in both cases.
+TESTING 58. OUKITEL: Gagner shows no price to type — leave Équilibré,
+COMMENCER when asked. OnePlus: budget card shows 50 CFA, tap the sphere,
+confirm the budget once, then the normal v0.13.3 flow to CONNECTÉ and
+Wikipedia. A few CFA of browsing is enough. Check: the OnePlus says "Vous
+avez dépensé N CFA sur votre budget de 50 CFA" with N small and never a
+CFA/MB figure, the OUKITEL says "Vous avez gagné …" above zero, and COPY
+NETWORK shows `live contract: v2 BUDGET`.
