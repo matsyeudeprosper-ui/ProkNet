@@ -267,6 +267,17 @@
                     </LinearLayout>
                 </LinearLayout>
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_note" style="@style/Muted" android:layout_marginBottom="16dp" />
+                <LinearLayout android:id="@+id/walletPayCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="16dp" android:visibility="gone">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_pay_title" style="@style/Caption" />
+                    <TextView android:id="@+id/walletPayWho" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Body" />
+                    <Button android:id="@+id/btnWalletPay" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_pay_button" style="@style/PrimaryButton" android:layout_marginTop="14dp" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="16dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_receive_with" style="@style/Caption" />
+                    <TextView android:id="@+id/walletReceiveWith" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Body" />
+                    <Button android:id="@+id/btnWalletReceive" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_receive_save" style="@style/SecondaryButton" android:layout_marginTop="12dp" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_receive_hint" style="@style/Muted" android:layout_marginTop="10dp" />
+                </LinearLayout>
                 <LinearLayout android:id="@+id/activityList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
                 <TextView android:id="@+id/activityEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:text="@string/activity_none" style="@style/Body" android:layout_marginBottom="24dp" />
 

@@ -97,6 +97,16 @@
     <string name="wallet_to_pay">À payer</string>
     <string name="wallet_to_receive">À recevoir</string>
     <string name="wallet_fees">Frais Prok</string>
+    <string name="wallet_pay_title">À régler</string>
+    <string name="wallet_pay_button">PAYER %1$s</string>
+    <string name="wallet_pay_none">Rien à payer</string>
+    <string name="wallet_receive_with">Recevoir avec</string>
+    <string name="wallet_receive_hint">Votre numéro Mobile Money. Il n\'est jamais diffusé sur le réseau : il n\'est montré qu\'à une personne qui vous doit réellement de l\'argent.</string>
+    <string name="wallet_receive_save">ENREGISTRER</string>
+    <string name="wallet_receive_saved">Numéro enregistré</string>
+    <string name="wallet_reference_title">Référence de la transaction</string>
+    <string name="wallet_reference_hint">Entrez la référence donnée par MTN ou Airtel</string>
+    <string name="wallet_reference_pending">Référence enregistrée. Paiement en attente de vérification.</string>
     <string name="wallet_note">Ce sont des montants à régler entre personnes. Prok ne détient pas votre argent.</string>
     <string name="activity_none">Aucune session pour l\'instant.</string>
     <string name="activity_bought">Internet de %1$s</string>

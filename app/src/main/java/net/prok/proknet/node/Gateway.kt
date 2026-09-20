@@ -22,6 +22,7 @@ import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.Market
 import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.StoredSession
+import net.prok.proknet.core.Settlement
 import net.prok.proknet.core.Teardown
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.hexToBytes
@@ -278,6 +279,13 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         for (e in entries) if (store.insertLedger(e)) booked++
         val split = Market.split(fin, c.feePct)
         totalEarnedCentimes += split.sellerNet; totalSoldBytes += lastSigned?.billable ?: 0L
+        // v0.15.0: the same obligation, derived independently. If the two phones agree,
+        // the figure is trustworthy without either of them trusting the other.
+        Settlement.fromSession(c, lastSigned, System.currentTimeMillis())?.let { o ->
+            val fresh = store.insertSettlementIfNew(o)
+            DiagLog.i(tag, "OBLIGATION " + o.settlementId.substring(0, 12) + " " + (if (fresh) "created" else "already known") +
+                ": prok-" + o.buyerId.substring(0, 8) + " owes me " + Market.cfa(o.sellerReceivable))
+        }
         DiagLog.i(tag, "SETTLEMENT (seller view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastSigned?.billable ?: 0) + " -> " + Market.cfa(fin) +
             " (" + (lastSigned?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), fee " + Market.cfa(split.fee) + ", seller net " + Market.cfa(split.sellerNet) + ", ledger entries booked " + booked)
     }

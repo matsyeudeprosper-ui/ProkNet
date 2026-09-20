@@ -2,20 +2,31 @@
 
     python -m brain.app --host 127.0.0.1 --port 8080 --db brain.db
 
-Two routes:
-    GET  /health      -> plain text: ok, version, counts (deployment diagnostics)
-    POST /v1/sync     -> body: a signed prok-sync/1 upload; response: a prok-sync/1 download
+Routes:
+    GET  /health              -> plain text: ok, version, counts (deployment diagnostics)
+    POST /v1/sync             -> body: a signed prok-sync/1 upload; response: a download
+    POST /v1/settlements      -> a phone reports what a finished session owed
+    GET  /v1/settlements/{id} -> one obligation and its audit trail
+    POST /v1/payments/initiate-> record that a payment was started (starting is not paying)
+    POST /v1/payments/webhook -> a rail reports an outcome; only a VERIFIED one may confirm
+    GET  /v1/wallet?node=     -> what one node owes and is owed
+
+The settlement routes are JSON. Nothing a phone says is taken as payment: only a webhook
+whose signature this server verified may move an obligation to CONFIRMED. See
+settlement.py for the three rules the service exists to enforce.
 
 Put it behind an HTTPS reverse proxy (Caddy, nginx). It never listens for
 anything else. Cleanup runs on a timer; every TTL is deterministic and tested
 with an injected clock.
 """
 import argparse
+import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import protocol
+from . import settlement
 from .db import Brain
 
 MAX_BODY = 256 * 1024
@@ -26,9 +37,14 @@ RATE_MAX_PER_NODE = 30
 class State:
     def __init__(self, db_path: str):
         self.brain = Brain(db_path)
+        self.settlements = settlement.Settlements(db_path)
         self.lock = threading.Lock()
         self.rate = {}          # node_id -> [timestamps]
         self.started = int(time.time() * 1000)
+        # No operator signing secret ships in this repository, so no webhook can be
+        # verified here yet and none may therefore confirm a payment. Set it from the
+        # environment in production.
+        self.webhook_secret = ""
         self.syncs = 0
         self.rejected = 0
 
@@ -58,7 +74,46 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _json(self, code: int, obj):
+        data = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0 or length > MAX_BODY:
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8", errors="replace"))
+        except Exception:
+            return None
+
     def do_GET(self):
+        if self.path.startswith("/v1/settlements/"):
+            sid = self.path[len("/v1/settlements/"):].split("?")[0]
+            with STATE.lock:
+                row = STATE.settlements.get(sid)
+                trail = STATE.settlements.audit(sid)
+            if row is None:
+                self._json(404, {"error": "unknown settlement"})
+            else:
+                self._json(200, {"settlement": dict(row), "audit": trail})
+            return
+        if self.path.startswith("/v1/wallet"):
+            node = ""
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("node="):
+                        node = part[5:]
+            if not node:
+                self._json(400, {"error": "node required"})
+                return
+            with STATE.lock:
+                self._json(200, STATE.settlements.wallet(node))
+            return
         if self.path == "/health":
             c = STATE.brain.counts()
             lines = ["ok", "protocol prok-sync/%d" % protocol.VERSION, "uptime_s %d" % ((int(time.time() * 1000) - STATE.started) // 1000),
@@ -68,6 +123,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n")
 
     def do_POST(self):
+        if self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments"):
+            self._settlement_post()
+            return
         if self.path != "/v1/sync":
             self._send(404, "not found\n")
             return
@@ -91,8 +149,56 @@ class Handler(BaseHTTPRequestHandler):
             STATE.syncs += 1
         self._send(200, protocol.render_download(d["server_time"], d["cells"], d["requests"], d["jobs"], d["statuses"], d["advice"]))
 
+    def _settlement_post(self):
+        body = self._body()
+        if body is None:
+            self._json(400, {"error": "bad or oversized JSON body"})
+            return
+        now = int(time.time() * 1000)
+        with STATE.lock:
+            if self.path == "/v1/settlements":
+                # `actor` must come from a verified signature. Until the signed-submission
+                # path is wired end to end, the pilot runs on a trusted network and this
+                # is recorded as claimed rather than proven. It is not payment either way.
+                actor = body.get("actor", "buyer")
+                if actor not in ("buyer", "seller"):
+                    self._json(400, {"error": "actor must be buyer or seller"})
+                    return
+                try:
+                    self._json(200, STATE.settlements.report(body, actor, now))
+                except KeyError as e:
+                    self._json(400, {"error": "missing field %s" % e})
+                return
+            if self.path == "/v1/payments/initiate":
+                self._json(200, STATE.settlements.initiate(
+                    body.get("settlement_id", ""), body.get("rail", "NONE"), body.get("reference", ""), now))
+                return
+            if self.path == "/v1/payments/webhook":
+                # verified=False until an operator signing secret exists. A webhook that
+                # cannot be verified is recorded for the audit trail and changes nothing.
+                verified = bool(STATE.webhook_secret) and _webhook_signature_ok(
+                    self.headers.get("X-Prok-Signature", ""), body, STATE.webhook_secret)
+                self._json(200 if verified else 202, STATE.settlements.webhook(body, now, verified))
+                return
+        self._json(404, {"error": "not found"})
+
     def log_message(self, fmt, *args):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
+
+
+def _webhook_signature_ok(header: str, body: dict, secret: str) -> bool:
+    """HMAC over the exact JSON body, as the operator signed it.
+
+    Production integration point: the operator's documented signing scheme. Until that is
+    configured this is never reached, because `webhook_secret` is empty and the caller
+    short-circuits to unverified.
+    """
+    import hashlib
+    import hmac
+    expected = hmac.new(secret.encode("utf-8"),
+                        json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header.strip())
 
 
 def cleanup_loop(state: State, every_s: int):
@@ -101,6 +207,7 @@ def cleanup_loop(state: State, every_s: int):
         try:
             with state.lock:
                 n = state.brain.cleanup()
+                n["settlements_expired"] = state.settlements.expire(int(time.time() * 1000))
             if any(n.values()):
                 print("cleanup: %s" % n, flush=True)
         except Exception as e:  # never let the timer die

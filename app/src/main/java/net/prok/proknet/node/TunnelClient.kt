@@ -23,6 +23,7 @@ import net.prok.proknet.core.MessageStore
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.TcpFlow
 import net.prok.proknet.core.Tcpip
+import net.prok.proknet.core.Settlement
 import net.prok.proknet.core.Teardown
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.hexToBytes
@@ -256,6 +257,13 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         var booked = 0
         for (e in Market.sessionEntries(c, fin, System.currentTimeMillis())) if (store.insertLedger(e)) booked++
         totalSpentCentimes += fin
+        // v0.15.0: the obligation, derived from the signed session and nothing else
+        Settlement.fromSession(c, lastAccepted, System.currentTimeMillis())?.let { o ->
+            val fresh = store.insertSettlementIfNew(o)
+            DiagLog.i(tag, "OBLIGATION " + o.settlementId.substring(0, 12) + " " + (if (fresh) "created" else "already known") +
+                ": I owe " + Market.cfa(o.buyerOwes) + " to prok-" + o.sellerId.substring(0, 8) +
+                " (seller " + Market.cfa(o.sellerNetCentimes) + " + fee " + Market.cfa(o.prokFeeCentimes) + ")")
+        }
         DiagLog.i(tag, "SETTLEMENT (buyer view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastAccepted?.billable ?: 0) + " -> " + Market.cfa(fin) +
             " (" + (lastAccepted?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), my own count " + Market.mb((s?.bytesUp ?: 0) + (s?.bytesDown ?: 0)) +
             ", ledger entries booked " + booked + (if (disputed.isNotEmpty()) ", DISPUTED: " + disputed else ""))

@@ -110,6 +110,14 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
+        // v0.15: simulated payments. Developer screen only, off by default, and a long
+        // press is required so it cannot be switched on by accident during a demo.
+        findViewById<Button>(R.id.btnCopyNetwork).setOnLongClickListener {
+            node.mockPaymentsEnabled = !node.mockPaymentsEnabled
+            DiagLog.w(tag, "MOCK PAYMENTS " + (if (node.mockPaymentsEnabled) "ENABLED (developer only, not real money)" else "disabled"))
+            toast(if (node.mockPaymentsEnabled) "Mock payments ON (developer only)" else "Mock payments OFF")
+            true
+        }
         findViewById<Button>(R.id.btnCopyNetwork).setOnClickListener {
             // v0.13: requests, carrying, provider state, the brain sync, the gossip counters
             val net = ProkNetApp.network(this)

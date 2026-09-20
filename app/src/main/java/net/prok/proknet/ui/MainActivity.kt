@@ -37,7 +37,10 @@ import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
 import net.prok.proknet.core.Market
+import net.prok.proknet.core.PaymentRails
 import net.prok.proknet.core.ProductState
+import net.prok.proknet.core.Settlement
+import net.prok.proknet.core.Wallet
 import net.prok.proknet.core.ProductState.active
 import net.prok.proknet.core.ProductState.busy
 import net.prok.proknet.core.Pricing
@@ -643,8 +646,15 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun refreshActivity(running: Boolean) {
         val ledger = node.store.ledger(1000)
-        val w = ProductState.wallet(ledger, node.me)
-        text(R.id.walletPay, ProductState.cfaShort(w.toPay)); text(R.id.walletReceive, ProductState.cfaShort(w.toReceive)); text(R.id.walletFees, ProductState.cfaShort(w.prokFees))
+        // v0.15: the three figures now come from real signed obligations, not from the
+        // internal ledger view. They are amounts owed between people; Prok holds nothing.
+        val obligations = node.obligations()
+        val w = Wallet.view(obligations, node.identity.idHex, System.currentTimeMillis())
+        text(R.id.walletPay, ProductState.cfaShort(w.toPayCentimes))
+        text(R.id.walletReceive, ProductState.cfaShort(w.toReceiveCentimes))
+        text(R.id.walletFees, ProductState.cfaShort(obligations.filter { Settlement.isOutstanding(it.status) && it.sellerId == node.identity.idHex }.sumOf { it.prokFeeCentimes }))
+        renderPayCard(obligations)
+        renderReceiveWith()
         val list = v<LinearLayout>(R.id.activityList); list.removeAllViews()
         val sessions = node.store.sessions(100)
         show(R.id.activityEmpty, sessions.isEmpty())
@@ -671,6 +681,88 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<Switch>(R.id.switchNode).isChecked = ProkNetService.running
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         v<Button>(R.id.btnBattery).text = getString(if (pm.isIgnoringBatteryOptimizations(packageName)) R.string.background_allowed else R.string.allow_background)
+    }
+
+    // ---- v0.15: paying, and being paid ----------------------------------------------------------
+
+    /** The one creditor it makes most sense to settle with now. Small sessions add up first. */
+    private fun biggestCreditor(obligations: List<Settlement.Obligation>): Pair<String, Long>? {
+        val me = node.identity.idHex
+        return obligations.filter { it.buyerId == me && Settlement.isOutstanding(it.status) }
+            .groupBy { it.sellerId }
+            .map { (seller, list) -> seller to list.sumOf { it.buyerOwes } }
+            .maxByOrNull { it.second }
+    }
+
+    private fun renderPayCard(obligations: List<Settlement.Obligation>) {
+        val due = biggestCreditor(obligations)
+        show(R.id.walletPayCard, due != null)
+        if (due == null) return
+        val (seller, amount) = due
+        text(R.id.walletPayWho, node.peerName(seller.substring(0, 8)) + " · " + Market.cfa(amount))
+        v<Button>(R.id.btnWalletPay).text = getString(R.string.wallet_pay_button, Market.cfa(amount))
+        v<Button>(R.id.btnWalletPay).setOnClickListener { payDialog(seller, amount) }
+    }
+
+    private fun payDialog(sellerId: String, amount: Long) {
+        val rails = node.paymentRails.filter { it.available() }
+        if (rails.isEmpty()) { toast(getString(R.string.wallet_pay_none)); return }
+        val names = rails.map { it.displayName() }.toTypedArray()
+        AlertDialog.Builder(this).setTitle(Market.cfa(amount)).setItems(names) { _, i ->
+            val note = node.payTo(sellerId, rails[i])
+            if (rails[i].rail == Settlement.Rail.MANUAL_PILOT) referenceDialog(sellerId, note)
+            else { toast(note); refresh() }
+        }.setNegativeButton(R.string.close, null).show()
+    }
+
+    /**
+     * The buyer pays through the operator and types the reference. That reference is a
+     * claim, never a confirmation: the obligation stays "en attente de vérification".
+     */
+    private fun referenceDialog(sellerId: String, instruction: String) {
+        val input = EditText(this).apply { hint = getString(R.string.wallet_reference_hint) }
+        AlertDialog.Builder(this).setTitle(R.string.wallet_reference_title).setMessage(instruction).setView(input)
+            .setPositiveButton(R.string.wallet_receive_save) { _, _ ->
+                val ref = input.text.toString().trim()
+                val manual = PaymentRails.ManualPilotRail()
+                if (!manual.looksLikeReference(ref)) { toast(getString(R.string.wallet_reference_hint)); return@setPositiveButton }
+                val me = node.identity.idHex
+                for (o in Wallet.payableTo(node.obligations(), me, sellerId))
+                    node.store.saveSettlement(Settlement.applyPayment(o, manual.check(ref), Settlement.Rail.MANUAL_PILOT, ref, System.currentTimeMillis()))
+                toast(getString(R.string.wallet_reference_pending)); refresh()
+            }.setNegativeButton(R.string.close, null).show()
+    }
+
+    private fun renderReceiveWith() {
+        val d = node.store.paymentDestination(node.identity.idHex)
+        text(R.id.walletReceiveWith, if (d == null) "—" else railName(d.rail) + " · " + d.masked())
+        v<Button>(R.id.btnWalletReceive).setOnClickListener { receiveWithDialog() }
+    }
+
+    private fun railName(r: Settlement.Rail): String = when (r) {
+        Settlement.Rail.MTN_MOMO -> "MTN Mobile Money"
+        Settlement.Rail.AIRTEL_MONEY -> "Airtel Money"
+        else -> "Mobile Money"
+    }
+
+    private fun receiveWithDialog() {
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+            setText(node.store.paymentDestination(node.identity.idHex)?.msisdn ?: "")
+        }
+        val rails = arrayOf(Settlement.Rail.MTN_MOMO, Settlement.Rail.AIRTEL_MONEY)
+        AlertDialog.Builder(this).setTitle(R.string.wallet_receive_with).setView(input)
+            .setItems(rails.map { railName(it) }.toTypedArray()) { _, _ -> }
+            .setPositiveButton("MTN") { _, _ -> saveDestination(Settlement.Rail.MTN_MOMO, input.text.toString()) }
+            .setNeutralButton("Airtel") { _, _ -> saveDestination(Settlement.Rail.AIRTEL_MONEY, input.text.toString()) }
+            .setNegativeButton(R.string.close, null).show()
+    }
+
+    private fun saveDestination(rail: Settlement.Rail, msisdn: String) {
+        val d = PaymentRails.Destination(rail, msisdn.filter { it.isDigit() || it == '+' }, node.identity.displayName)
+        if (!d.valid) { toast(getString(R.string.wallet_reference_hint)); return }
+        node.store.savePaymentDestination(node.identity.idHex, d, System.currentTimeMillis())
+        toast(getString(R.string.wallet_receive_saved)); refresh()
     }
 
     private fun sessionDialog(ss: StoredSession, e: Market.Entry?) {

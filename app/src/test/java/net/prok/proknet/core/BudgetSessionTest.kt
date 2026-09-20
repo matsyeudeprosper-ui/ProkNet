@@ -210,6 +210,10 @@ class BudgetSessionTest {
         /** What the buyer was told when the seller ended it. */
         var buyerEnded = ""
 
+        /** v0.15: what the session settled on, kept after the live state is cleared. */
+        var settledContract: Market.Contract? = null
+        var settledCheckpoint: Market.Checkpoint? = null
+
         /** A callback from a finished session arriving late must change nothing. */
         fun lateCallback(token: Int) {
             val next = Teardown.onTimeout(buyerStop, token)
@@ -221,6 +225,7 @@ class BudgetSessionTest {
             val c = sellerContract ?: return 0
             val cost = Market.finalCost(c, lastSigned)
             for (e in Market.sessionEntries(c, cost, at)) ledger.insert(e)
+            settledContract = c; settledCheckpoint = lastSigned
             sellerContract = null; buyerContract = null; lastIssued = null; lastSigned = null; lastAccepted = null
             buyerUp = 0; buyerDown = 0
             buyerStop = Teardown.State(); sellerStop = Teardown.State()
@@ -623,6 +628,94 @@ class BudgetSessionTest {
             assertEquals(Teardown.Phase.IDLE, link.sellerStop.phase)
         }
         assertEquals(3, link.used.size)
+    }
+
+    // ================= v0.15.0: what the session owes =================
+
+    @Test
+    fun a_finished_session_produces_one_obligation_both_phones_agree_on() {
+        val link = Link(budget = 5_000, rate = 300)
+        assertNull(link.agree())
+        assertTrue(link.sessionStart())
+        val cost = link.stop(400_000, 1_100_000, at = now + 8_000)
+        assertTrue("a short session still owes something", cost > 0)
+
+        // the buyer derives it from its copy of the signed session, the seller from its own
+        val fromBuyer = Settlement.fromSession(link.settledContract!!, link.settledCheckpoint, now)!!
+        val fromSeller = Settlement.fromSession(
+            Market.Contract.decode(link.settledContract!!.encode())!!,
+            Market.Checkpoint.decode(link.settledCheckpoint!!.encode()), now + 3_000)!!
+        assertTrue("neither phone has to trust the other", Settlement.agree(fromBuyer, fromSeller))
+        assertEquals(cost, fromBuyer.buyerOwes)
+        assertEquals("buyer obligation is seller receivable plus the Prok fee",
+            fromBuyer.buyerOwes, fromSeller.sellerReceivable + fromSeller.prokFeeCentimes)
+        assertTrue(fromBuyer.balanced && fromBuyer.valid)
+        assertEquals(Settlement.Status.PENDING, fromBuyer.status)
+    }
+
+    @Test
+    fun it_owes_the_same_whoever_pressed_stop() {
+        // the Part A invariant, carried all the way into the money layer
+        val byBuyer = Link(budget = 5_000, rate = 300)
+        assertNull(byBuyer.agree()); assertTrue(byBuyer.sessionStart())
+        byBuyer.stop(500_000, 1_300_000, at = now + 9_000)
+        val a = Settlement.fromSession(byBuyer.settledContract!!, byBuyer.settledCheckpoint, now)!!
+
+        val bySeller = Link(budget = 5_000, rate = 300)
+        assertNull(bySeller.agree()); assertTrue(bySeller.sessionStart())
+        bySeller.sellerStop(500_000, 1_300_000, at = now + 9_000)
+        val b = Settlement.fromSession(bySeller.settledContract!!, bySeller.settledCheckpoint, now)!!
+
+        assertEquals("the same usage owes the same money whoever ended it", a.grossCentimes, b.grossCentimes)
+        assertEquals(a.sellerNetCentimes, b.sellerNetCentimes)
+        assertEquals(a.prokFeeCentimes, b.prokFeeCentimes)
+    }
+
+    @Test
+    fun three_small_sessions_become_one_payment_and_then_the_limit_bites() {
+        val me = "aa".repeat(16)
+        val seller = "bb".repeat(16)
+        val owed = ArrayList<Settlement.Obligation>()
+        for (i in 1..3) {
+            val link = Link(budget = 5_000, rate = 300)
+            assertNull(link.agree(sessionId = i.toByte(), at = now + i * 1000))
+            assertTrue(link.sessionStart())
+            link.stop(300_000L * i, 900_000L * i, at = now + i * 1000)
+            val o = Settlement.fromSession(link.settledContract!!, link.settledCheckpoint, now)!!
+            // re-home it onto one buyer/seller pair so the netting is the thing under test
+            owed.add(Settlement.Obligation(o.settlementId + i, o.sessionHex, me, seller, o.finalCheckpointHash,
+                o.grossCentimes, o.sellerNetCentimes, o.prokFeeCentimes, o.createdAt, o.expiresAt))
+        }
+        val net = Wallet.netOwedTo(owed, me, seller)
+        assertEquals("one payment clears all three", owed.sumOf { it.buyerOwes }, net)
+        assertEquals(3, Wallet.payableTo(owed, me, seller).size)
+
+        // under a low pilot limit, the next paid session is refused BEFORE any transport
+        val tight = SettlementPolicy.Policy(creditLimitCentimes = net - 1, goodHistoryBonusCentimes = 0)
+        val blocked = SettlementPolicy.admit(false, Coverage.Kind.COMMERCIAL, net, 5_000, 0, 0, true, tight)
+        assertEquals(SettlementPolicy.Decision.REQUIRE_SETTLEMENT, blocked.decision)
+        assertFalse(blocked.mayStart)
+        // and a free source still works, whatever is owed
+        assertTrue(SettlementPolicy.admit(true, Coverage.Kind.COMMERCIAL, net, 5_000, 0, 0, false, tight).mayStart)
+    }
+
+    @Test
+    fun a_free_session_and_an_unsigned_one_owe_nothing() {
+        val link = Link(budget = 5_000, rate = 300)
+        val free = Market.Contract(ByteArray(8) { 9 }, link.buyer.id, link.seller.id, 0, 0, 0, fee, now,
+            Market.PRICING_VERSION_BUDGET, 0, 0, 0, 0, 1, 1)
+        val wire = Tunnel.signed(free.encode(), link.buyer.sign(Market.contractSignData(free)))
+        assertNull(link.onAnswer(link.propose(wire), free))
+        assertTrue(link.sessionStart())
+        assertEquals(0L, link.stop(5_000_000, 20_000_000))
+        assertNull("free Internet creates no obligation", Settlement.fromSession(free, link.settledCheckpoint, now))
+
+        // and a session where the buyer vanished before signing anything
+        val gone = Link(budget = 5_000, rate = 300)
+        assertNull(gone.agree())
+        assertEquals(0L, gone.sellerStop(900_000, 1_100_000, linkUp = false))
+        assertNull("nobody may be billed for usage they never signed for",
+            Settlement.fromSession(gone.settledContract!!, gone.settledCheckpoint, now))
     }
 
 }

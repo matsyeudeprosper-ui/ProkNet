@@ -1237,6 +1237,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
             lastBuyError = quote.reason
             return false
         }
+        // v0.15.0: and what this phone already owes, asked BEFORE any Bluetooth channel,
+        // handshake or probe is paid for
+        val admission = settlementAdmission(quote.free)
+        if (!admission.mayStart) {
+            DiagLog.w(tag, "BUY refused before any setup: " + admission.decision + " - " + admission.reason)
+            lastBuyError = if (admission.decision == net.prok.proknet.core.SettlementPolicy.Decision.REQUIRE_SETTLEMENT)
+                net.prok.proknet.core.SettlementPolicy.settleSentence(admission.mustSettleCentimes) else admission.reason
+            return false
+        }
         // v0.14.1: the attempt is frozen on this quote. Changing the budget preference
         // mid-setup must never alter a purchase that is already under way.
         buyQuote = quote
@@ -1447,6 +1456,88 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "STOP COMPLETE: " + reason + " | final checkpoint " + tunnel.finalCheckpoint +
             " | bulk close NORMAL | VPN DOWN | buyer " + tunnel.state)
         pushStatus()
+    }
+
+    // ---- v0.15.0: the wallet ----------------------------------------------------------------------
+
+    /**
+     * v0.15.0: simulated payments, off unless a developer turns them on in the Lab
+     * screen. Nothing in the consumer flow can set this, so a mock payment can never be
+     * shown to a real user as a real one.
+     */
+    @Volatile var mockPaymentsEnabled = false
+
+    /** Business policy, not protocol. Adjustable for the pilot. */
+    @Volatile var settlementPolicy = net.prok.proknet.core.SettlementPolicy.DEFAULT
+
+    /** The rails this phone can pay with. MOCK appears only in developer mode. */
+    val paymentRails: List<net.prok.proknet.core.PaymentRails.Adapter> by lazy {
+        net.prok.proknet.core.PaymentRails.all { mockPaymentsEnabled }
+    }
+
+    fun obligations(): List<net.prok.proknet.core.Settlement.Obligation> = store.settlements()
+
+    fun wallet(): net.prok.proknet.core.Wallet.View =
+        net.prok.proknet.core.Wallet.view(obligations(), identity.idHex, System.currentTimeMillis())
+
+    /** May a paid session start, given what this phone already owes? */
+    fun settlementAdmission(free: Boolean): net.prok.proknet.core.SettlementPolicy.Verdict {
+        val all = obligations()
+        val me = identity.idHex
+        return net.prok.proknet.core.SettlementPolicy.admit(
+            free = free,
+            costClass = net.prok.proknet.core.Coverage.Kind.COMMERCIAL,
+            outstandingCentimes = net.prok.proknet.core.Wallet.totalOwed(all, me),
+            sessionEstimateCentimes = buyBudgetCentimes,
+            disputedCount = all.count { it.buyerId == me && it.status == net.prok.proknet.core.Settlement.Status.DISPUTED },
+            confirmedPayments = store.confirmedSettlementCount(me),
+            railAvailable = net.prok.proknet.core.PaymentRails.anyAvailable(paymentRails),
+            policy = settlementPolicy)
+    }
+
+    /**
+     * Pay one seller everything owed to them at once. Three 5 CFA sessions become one
+     * payment, because authorising a Mobile Money transfer for 5 CFA is absurd.
+     */
+    fun payTo(sellerId: String, rail: net.prok.proknet.core.PaymentRails.Adapter): String {
+        val me = identity.idHex
+        val due = net.prok.proknet.core.Wallet.payableTo(obligations(), me, sellerId)
+        if (due.isEmpty()) return "Rien à payer"
+        if (!rail.available()) return rail.displayName() + " n'est pas disponible"
+        val dest = store.paymentDestination(sellerId)
+            ?: return "Le fournisseur n'a pas encore indiqué où être payé"
+        var note = ""
+        for (o in due) {
+            val init = rail.initiate(o, dest)
+            note = init.instruction
+            if (!init.ok) break
+            val next = net.prok.proknet.core.Settlement.applyPayment(o, init.status, rail.rail, init.reference, System.currentTimeMillis())
+            store.saveSettlement(next)
+            DiagLog.i(tag, "PAYMENT " + rail.rail + " started for " + o.settlementId.substring(0, 12) + ": " + init.status)
+        }
+        pushStatus()
+        return note
+    }
+
+    /**
+     * Ask the rail what really happened. This is the only path to CONFIRMED: a buyer
+     * saying they paid moves nothing.
+     */
+    fun refreshPayments(): Int {
+        val now = System.currentTimeMillis()
+        var changed = 0
+        for (o in store.unsettled()) {
+            val rail = paymentRails.firstOrNull { it.rail == o.rail } ?: continue
+            if (o.paymentReference.isEmpty()) continue
+            val status = rail.check(o.paymentReference)
+            if (status != o.status) {
+                store.saveSettlement(net.prok.proknet.core.Settlement.applyPayment(o, status, o.rail, o.paymentReference, now))
+                changed++
+                DiagLog.i(tag, "PAYMENT " + o.settlementId.substring(0, 12) + " -> " + status)
+            }
+        }
+        if (changed > 0) pushStatus()
+        return changed
     }
 
     /** v0.15.0: everything that may only happen once the seller owes nothing. */

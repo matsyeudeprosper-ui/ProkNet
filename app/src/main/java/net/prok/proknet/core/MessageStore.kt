@@ -103,7 +103,7 @@ class StoredSession(
     val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
 )
 
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 5) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 6) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -229,6 +229,45 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "origin_id TEXT NOT NULL DEFAULT ''," +
                 "delivered_at INTEGER NOT NULL DEFAULT 0)"
         )
+        createSettlements(db)
+    }
+
+    /**
+     * v0.15.0: what a finished session owes. The primary key is the settlement id, which
+     * is a hash of the signed session facts, so re-deriving the same obligation after a
+     * restart, or receiving it twice from a sync, can never create a second row and can
+     * never ask anybody to pay twice.
+     */
+    private fun createSettlements(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS settlements(" +
+                "settlement_id TEXT PRIMARY KEY," +
+                "session_id TEXT NOT NULL," +
+                "buyer_id TEXT NOT NULL," +
+                "seller_id TEXT NOT NULL," +
+                "checkpoint_hash TEXT NOT NULL," +
+                "gross INTEGER NOT NULL," +
+                "seller_net INTEGER NOT NULL," +
+                "prok_fee INTEGER NOT NULL," +
+                "created_at INTEGER NOT NULL," +
+                "expires_at INTEGER NOT NULL," +
+                "status TEXT NOT NULL," +
+                "rail TEXT NOT NULL DEFAULT 'NONE'," +
+                "payment_ref TEXT NOT NULL DEFAULT ''," +
+                "note TEXT NOT NULL DEFAULT ''," +
+                "synced_at INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status)")
+        // v0.15.0: where a seller wants to be paid. Local only: never advertised, never
+        // gossiped, and only revealed to a buyer that owes a real settled obligation.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS payment_destinations(" +
+                "peer_id TEXT PRIMARY KEY," +
+                "rail TEXT NOT NULL," +
+                "msisdn TEXT NOT NULL," +
+                "holder TEXT NOT NULL DEFAULT ''," +
+                "updated_at INTEGER NOT NULL)"
+        )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -265,6 +304,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
             db.execSQL("UPDATE messages SET status='expired', last_error='v0.5: carried plaintext packet dropped on upgrade' WHERE direction='carry' AND status IN ('carrying','forwarding')")
         }
         if (oldVersion < 5) createV5(db)
+        if (oldVersion < 6) createSettlements(db)
     }
 
     // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
@@ -332,6 +372,100 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
     }
 
     fun checkpointCount(sessionHex: String): Long = DatabaseUtils.queryNumEntries(readableDatabase, "checkpoints", "session_id=?", arrayOf(sessionHex))
+
+    // ---- v0.15.0: settlement obligations --------------------------------------------------------
+
+    /**
+     * Insert or update one obligation. Inserting the same settlement id twice is a no-op
+     * on the amounts: the money a session owes is fixed by what was signed, and nothing
+     * arriving later may change it.
+     */
+    fun saveSettlement(o: Settlement.Obligation, syncedAt: Long = 0) {
+        val cv = ContentValues().apply {
+            put("settlement_id", o.settlementId); put("session_id", o.sessionHex)
+            put("buyer_id", o.buyerId); put("seller_id", o.sellerId); put("checkpoint_hash", o.finalCheckpointHash)
+            put("gross", o.grossCentimes); put("seller_net", o.sellerNetCentimes); put("prok_fee", o.prokFeeCentimes)
+            put("created_at", o.createdAt); put("expires_at", o.expiresAt)
+            put("status", o.status.name); put("rail", o.rail.name); put("payment_ref", o.paymentReference); put("note", o.note)
+            put("synced_at", syncedAt)
+        }
+        val db = writableDatabase
+        if (db.insertWithOnConflict("settlements", null, cv, SQLiteDatabase.CONFLICT_IGNORE) == -1L) {
+            // already known: only the payment state may move, never the amounts
+            val upd = ContentValues().apply {
+                put("status", o.status.name); put("rail", o.rail.name)
+                put("payment_ref", o.paymentReference); put("note", o.note); put("synced_at", syncedAt)
+            }
+            db.update("settlements", upd, "settlement_id=?", arrayOf(o.settlementId))
+        }
+    }
+
+    /** True when this obligation was new. Used to prove one session books one obligation. */
+    fun insertSettlementIfNew(o: Settlement.Obligation): Boolean {
+        val cv = ContentValues().apply {
+            put("settlement_id", o.settlementId); put("session_id", o.sessionHex)
+            put("buyer_id", o.buyerId); put("seller_id", o.sellerId); put("checkpoint_hash", o.finalCheckpointHash)
+            put("gross", o.grossCentimes); put("seller_net", o.sellerNetCentimes); put("prok_fee", o.prokFeeCentimes)
+            put("created_at", o.createdAt); put("expires_at", o.expiresAt)
+            put("status", o.status.name); put("rail", o.rail.name); put("payment_ref", o.paymentReference); put("note", o.note)
+        }
+        return writableDatabase.insertWithOnConflict("settlements", null, cv, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun settlement(id: String): Settlement.Obligation? =
+        settlements("settlement_id=?", arrayOf(id), 1).firstOrNull()
+
+    fun settlements(limit: Int = 200): List<Settlement.Obligation> = settlements(null, null, limit)
+
+    private fun settlements(where: String?, args: Array<String>?, limit: Int): List<Settlement.Obligation> {
+        val out = ArrayList<Settlement.Obligation>()
+        val c = readableDatabase.query("settlements", null, where, args, null, null, "created_at DESC", limit.toString())
+        c.use {
+            while (it.moveToNext()) {
+                out.add(Settlement.Obligation(
+                    it.getString(it.getColumnIndexOrThrow("settlement_id")),
+                    it.getString(it.getColumnIndexOrThrow("session_id")),
+                    it.getString(it.getColumnIndexOrThrow("buyer_id")),
+                    it.getString(it.getColumnIndexOrThrow("seller_id")),
+                    it.getString(it.getColumnIndexOrThrow("checkpoint_hash")),
+                    it.getLong(it.getColumnIndexOrThrow("gross")),
+                    it.getLong(it.getColumnIndexOrThrow("seller_net")),
+                    it.getLong(it.getColumnIndexOrThrow("prok_fee")),
+                    it.getLong(it.getColumnIndexOrThrow("created_at")),
+                    it.getLong(it.getColumnIndexOrThrow("expires_at")),
+                    runCatching { Settlement.Status.valueOf(it.getString(it.getColumnIndexOrThrow("status"))) }.getOrDefault(Settlement.Status.PENDING),
+                    runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE),
+                    it.getString(it.getColumnIndexOrThrow("payment_ref")),
+                    it.getString(it.getColumnIndexOrThrow("note"))))
+            }
+        }
+        return out
+    }
+
+    /** Obligations that still need something to happen, oldest first, for the sync. */
+    fun unsettled(limit: Int = 100): List<Settlement.Obligation> =
+        settlements(limit).filter { Settlement.isOutstanding(it.status) }.sortedBy { it.createdAt }
+
+    fun confirmedSettlementCount(myId: String): Int =
+        settlements(2_000).count { it.buyerId == myId && it.status == Settlement.Status.CONFIRMED }
+
+    // ---- v0.15.0: where a seller wants to be paid ------------------------------------------------
+
+    fun savePaymentDestination(peerId: String, d: PaymentRails.Destination, now: Long) {
+        val cv = ContentValues().apply {
+            put("peer_id", peerId); put("rail", d.rail.name); put("msisdn", d.msisdn); put("holder", d.holderName); put("updated_at", now)
+        }
+        writableDatabase.insertWithOnConflict("payment_destinations", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun paymentDestination(peerId: String): PaymentRails.Destination? {
+        val c = readableDatabase.query("payment_destinations", null, "peer_id=?", arrayOf(peerId), null, null, null, "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            val rail = runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE)
+            return PaymentRails.Destination(rail, it.getString(it.getColumnIndexOrThrow("msisdn")), it.getString(it.getColumnIndexOrThrow("holder")))
+        }
+    }
 
     fun insertLedger(e: Market.Entry): Boolean {
         val cv = ContentValues().apply {
