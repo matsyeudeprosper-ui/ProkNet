@@ -11,8 +11,8 @@ android {
         applicationId = "net.prok.proknet.lab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 53
-        versionName = "0.13.2"
+        versionCode = 54
+        versionName = "0.13.3"
     }
 
     buildTypes {

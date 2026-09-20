@@ -60,6 +60,7 @@
                         <ImageView android:layout_width="44dp" android:layout_height="44dp" android:src="@drawable/ic_coins" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:contentDescription="@string/row_share_title" />
                         <TextView android:id="@+id/rowShareTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="@string/row_share_short" android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text" />
                         <TextView android:id="@+id/rowShareSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="@string/row_share_caption" android:textSize="12sp" android:textColor="@color/text_muted" />
+                        <TextView android:id="@+id/rowShareBadge" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="@drawable/bg_pill_ok" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="3dp" android:paddingBottom="3dp" android:text="" android:textSize="11sp" android:textStyle="bold" android:textColor="@color/legend_text" android:visibility="gone" />
                     </LinearLayout>
                     <LinearLayout android:id="@+id/rowMap" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="18dp" android:layout_marginStart="6dp" android:clickable="true" android:focusable="true">
                         <ImageView android:layout_width="44dp" android:layout_height="44dp" android:src="@drawable/ic_map" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:contentDescription="@string/row_map_title" />
@@ -155,6 +156,13 @@
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/earn_title" style="@style/H1" android:layout_marginBottom="16dp" />
 
+                <!-- v0.13.3: demand the provider can always see, notification or not -->
+                <LinearLayout android:id="@+id/earnInbox" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="22dp" android:layout_marginBottom="14dp" android:visibility="gone">
+                    <TextView android:id="@+id/earnInboxTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text" />
+                    <TextView android:id="@+id/earnInboxSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                    <Button android:id="@+id/btnInboxShare" android:text="@string/notif_share_action" style="@style/PrimaryButton" android:layout_marginTop="16dp" />
+                </LinearLayout>
+
                 <LinearLayout android:id="@+id/netShareSetup" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
                     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
                         <TextView android:id="@+id/shareUpstream" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
@@ -198,6 +206,7 @@
                         </LinearLayout>
                     </LinearLayout>
                     <TextView android:id="@+id/shareCustomer" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card_alt" android:padding="18dp" android:text="" style="@style/Body" android:layout_marginBottom="14dp" />
+                    <TextView android:id="@+id/shareOtherDemand" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" android:layout_marginBottom="14dp" android:visibility="gone" />
                     <Button android:id="@+id/btnStopSharing" android:text="@string/stop_sharing" style="@style/DangerButton" android:layout_marginBottom="16dp" />
                 </LinearLayout>
 

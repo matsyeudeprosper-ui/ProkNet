@@ -1175,6 +1175,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         } else {
             gateway.stop()
             bulk.cancel("sharing stopped")
+            // v0.13.3: nothing from the session may block the next request
+            onSharingStopped?.invoke()
             p2pMemberAddress = ""; p2pMemberPeer = ""
             p2pDecision.reset(); p2pGuestName = ""; p2pGuest.clear()
             if (p2pFallbackActive) { p2pFallbackActive = false; p2p.stop() }
@@ -1350,10 +1352,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     private fun bleState(): BleHealth.State {
         val now = System.currentTimeMillis()
-        if (!ble.isBluetoothOn) bluetoothWasOff = true
+        if (!ble.isBluetoothOn) { if (!bluetoothWasOff) { bluetoothWasOff = true; ble.onBluetoothOff() } }
         else if (bluetoothWasOff) {
             bluetoothWasOff = false; bluetoothReturnedAt = now
-            DiagLog.i(tag, "Bluetooth is back on: the radio will be restarted once")
+            DiagLog.i(tag, "Bluetooth is back on: rebuilding the whole BLE control plane")
+            ble.onBluetoothReturned()
         }
         val lastSeen = store.knownPeers().maxOfOrNull { it.lastSeen } ?: 0L
         val msSince = if (lastSeen > 0) now - lastSeen else -1L
@@ -1378,6 +1381,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun run() {
             if (!isRunning) return
             val s = bleState()
+            // v0.13.3: ProkNet must never advertise while its GATT service is missing
+            if (!s.linkBusy && ble.isRunning && ble.isBluetoothOn && !ble.checkInvariant()) { main.postDelayed(this, 10_000); return }
             val v = BleHealth.verdict(s)
             if (v != lastBleVerdict && (v != BleHealth.Verdict.HEALTHY || lastBleVerdict != BleHealth.Verdict.NOT_RUNNING))
                 DiagLog.i(tag, "BLE health: " + BleHealth.verdictText(v))
@@ -1415,6 +1420,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!ble.isBluetoothOn) { DiagLog.e(tag, "Bluetooth is OFF - turn it on and press Start again"); pushStatus(); return false }
         DiagLog.i(tag, "starting node id=" + identity.idHex + " name=" + identity.displayName + " fingerprint=" + identity.fingerprint +
             (identity.legacyIdHex?.let { " (migrated from " + it.substring(0, 8) + ")" } ?: "") + ", known keys=" + store.peerKeyCount())
+        ble.onGenerationChanged = { gen -> main.post { bleGenerationChanged?.invoke(gen) } }
         val bleOk = ble.start(this)
         wifi.tunnelSink = tunnelSink
         wifi.start(this)
@@ -1605,6 +1611,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Encrypted, signed control message (Wi-Fi negotiation), sent immediately over the best transport. Not stored. */
     /** v0.13: the network layer receives signed requests carried over the control channel. */
     @Volatile var onNetRequest: ((peerShort: String, payload: ByteArray) -> Unit)? = null
+    /** v0.13.3: sharing stopped; the provider must be ready for the next request at once. */
+    @Volatile var onSharingStopped: (() -> Unit)? = null
+    /** v0.13.3: the BLE stack was rebuilt; parked control traffic may try again. */
+    @Volatile var bleGenerationChanged: ((Int) -> Unit)? = null
+    fun bleGeneration(): Int = ble.generation
+    fun bleControlPlaneLine(): String = ble.controlPlaneLine()
+    private val controlErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Why the last control message to this peer failed, for the retry rules. */
+    fun lastControlError(peerShort: String): String = controlErrors[peerShort] ?: "delivery failed"
 
     fun sendControl(peerShort: String, body: ByteArray, cb: (Boolean) -> Unit) {
         val key = store.peerKey(peerShort) ?: run { cb(false); return }
@@ -1617,7 +1632,10 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "CONTROL -> prok-" + peerShort + " over " + transport.name + " (" + body.size + " bytes, encrypted)")
         transport.send(peerShort, Frame(msgId, pkt.encode())) { res, detail ->
             val ok = res == DeliveryResult.DELIVERED || res == DeliveryResult.DUPLICATE
-            if (!ok) DiagLog.w(tag, "CONTROL to prok-" + peerShort + " failed: " + res + " " + detail)
+            if (ok) controlErrors.remove(peerShort) else {
+                controlErrors[peerShort] = detail.ifEmpty { res.toString() }
+                DiagLog.w(tag, "CONTROL to prok-" + peerShort + " failed: " + res + " " + detail)
+            }
             if (transport.name == Routing.TRANSPORT_BLE) ble.noteGatt(ok)
             cb(ok)
         }

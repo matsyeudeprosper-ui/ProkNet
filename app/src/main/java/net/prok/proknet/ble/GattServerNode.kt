@@ -27,6 +27,9 @@ import net.prok.proknet.core.Packet
 class GattServerNode(
     private val context: Context,
     private val identityRecord: () -> ByteArray,
+    /** v0.13.3: the BLE generation this server belongs to; a late callback from an old one is ignored. */
+    val generation: Int,
+    private val onServiceAdded: (generation: Int, ok: Boolean) -> Unit,
     private val onPacket: (Packet) -> Int,
 ) {
     private val tag = "GATT-S"
@@ -40,8 +43,10 @@ class GattServerNode(
 
     private val callback = object : BluetoothGattServerCallback() {
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
-            isReady = status == BluetoothGatt.GATT_SUCCESS
-            DiagLog.i(tag, "service added status=" + status + " ready=" + isReady)
+            val ok = status == BluetoothGatt.GATT_SUCCESS
+            isReady = ok
+            DiagLog.i(tag, "service added status=" + status + " ready=" + ok + " (generation " + generation + ")")
+            this@GattServerNode.onServiceAdded(generation, ok)
         }
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {

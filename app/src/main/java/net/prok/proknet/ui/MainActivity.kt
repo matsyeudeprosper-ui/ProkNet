@@ -40,6 +40,7 @@ import net.prok.proknet.core.Market
 import net.prok.proknet.core.ProductState
 import net.prok.proknet.core.ProductState.active
 import net.prok.proknet.core.ProductState.busy
+import net.prok.proknet.core.ProviderInbox
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.Tunnel
 import net.prok.proknet.core.Crypto
@@ -115,6 +116,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<Button>(R.id.btnStopInternet).setOnClickListener { stopAll() }
         v<Button>(R.id.btnStartSharing).setOnClickListener { ensureRunning { startSharing() } }
         v<Button>(R.id.btnStopSharing).setOnClickListener { stopSharing() }
+        v<Button>(R.id.btnInboxShare).setOnClickListener { shareForDemand() }
         v<TextView>(R.id.btnShareOptions).setOnClickListener { val o = v<View>(R.id.shareOptions); o.visibility = if (o.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         v<Button>(R.id.btnMapLocation).setOnClickListener { askLocation() }
         v<CoverageMapView>(R.id.mapView).onCellTap = { zone, cell -> cellDialog(zone, cell) }
@@ -140,6 +142,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         ProkNetApp.visibleActivities++
         node.addListener(this)
         node.vpnRequested = { startVpnWithConsent() }
+        network.inboxChanged = { main.post { refresh() } }
+        if (intent?.getStringExtra("tab") == "earn") select(Tab.EARN)
         DiagLog.i(tag, "consumer screen visible; service " + (if (ProkNetService.running) "RUNNING" else "stopped"))
         if (!ProkNetService.running && missingPermissions().isEmpty() && !notificationPermissionMissing() && node.isBluetoothOn()) ProkNetService.start(this)
         cover.onForeground()
@@ -150,6 +154,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         ProkNetApp.visibleActivities = maxOf(0, ProkNetApp.visibleActivities - 1)
         main.removeCallbacks(ticker)
         node.removeListener(this)
+        network.inboxChanged = null
         cover.onBackground()
         super.onStop()
     }
@@ -240,6 +245,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun stopSharing() { node.setSelling(false); DiagLog.i(tag, "Stop sharing pressed"); toast(getString(R.string.toast_sharing_stopped)); refresh() }
+
+    /**
+     * v0.13.3: PARTAGER on the Gagner demand card. The same function the
+     * notification calls, so a dismissed or forbidden notification never loses
+     * the request: everything is re-checked here.
+     */
+    private fun shareForDemand() {
+        ensureRunning {
+            val err = network.acceptOpportunity(null)
+            toast(err ?: getString(R.string.toast_sharing_started))
+            refresh()
+        }
+    }
 
     // ---- refresh (everything derives from the node through ProductState) -------------------------
 
@@ -362,6 +380,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))
         v<TextView>(R.id.rowShareSub).apply { text = getString(if (sellerOn) R.string.row_share_caption_on else R.string.row_share_caption); setTextColor(getColor(if (sellerOn) R.color.ok else R.color.text_muted)) }
+        // v0.13.3: a quiet badge so waiting demand is visible without opening Gagner
+        val waiting = ProviderInbox.active(network.inbox, now).count { !it.accepted }
+        v<TextView>(R.id.rowShareBadge).text = if (waiting == 1) getString(R.string.inbox_badge_one) else getString(R.string.inbox_badge_many, waiting)
+        show(R.id.rowShareBadge, waiting > 0)
         text(R.id.homeNote, if (running && !node.isBluetoothOn()) getString(R.string.home_bluetooth_off) else "")
     }
 
@@ -508,6 +530,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun startOfToday(): Long = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
 
     private fun refreshEarn(s: ProductState.Seller) {
+        val now = System.currentTimeMillis()
+        val demand = ProviderInbox.active(network.inbox, now)
+        // the demand card is visible whatever the notification did, and only while sharing is off
+        val waiting = demand.filter { !it.accepted }
+        show(R.id.earnInbox, waiting.isNotEmpty() && s == ProductState.Seller.OFF)
+        if (waiting.isNotEmpty()) {
+            text(R.id.earnInboxTitle, ProviderInbox.cardTitle(network.inbox, now))
+            text(R.id.earnInboxSub, ProviderInbox.cardSub(network.inbox, now))
+        }
+        val other = ProviderInbox.otherDemandLine(network.inbox, now)
+        text(R.id.shareOtherDemand, other); show(R.id.shareOtherDemand, other.isNotEmpty() && s != ProductState.Seller.OFF)
         val on = s != ProductState.Seller.OFF
         show(R.id.netShareSetup, !on); show(R.id.netShareActive, on)
         if (!on) {

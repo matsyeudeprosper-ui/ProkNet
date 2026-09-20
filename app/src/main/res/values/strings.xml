@@ -286,6 +286,11 @@ INTERNET</string>
     <string name="map_local">Vu par ce téléphone</string>
     <string name="map_shared_sources">%1$d source(s) connue(s)</string>
 
+    <!-- v0.13.3 provider inbox -->
+    <string name="inbox_badge_one">1 demande</string>
+    <string name="inbox_badge_many">%1$d demandes</string>
+    <string name="toast_sharing_started">Vous partagez votre Internet</string>
+
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>
     <string name="notif_channel_desc">Affiché pendant que Prok fonctionne en arrière-plan</string>

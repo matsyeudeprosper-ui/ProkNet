@@ -175,14 +175,9 @@ class NetworkBrainTest {
     }
 
     @Test
-    fun notifications_are_rate_limited_and_the_heartbeat_carries_no_position() {
-        var l = ProviderActivation.Limiter()
-        assertTrue(ProviderActivation.allow(l, "r1", now)); l = ProviderActivation.noted(l, "r1", now)
-        assertFalse("same request again in seconds", ProviderActivation.allow(l, "r1", now + 5_000))
-        assertFalse("another request within the global window", ProviderActivation.allow(l, "r2", now + 5_000))
-        assertTrue(ProviderActivation.allow(l, "r2", now + ProviderActivation.GLOBAL_MS))
-        assertFalse(ProviderActivation.allow(l, "r1", now + ProviderActivation.GLOBAL_MS))
-        assertTrue(ProviderActivation.allow(l, "r1", now + ProviderActivation.PER_REQUEST_MS))
+    fun the_availability_heartbeat_carries_no_position() {
+        // v0.13.3: the wall-clock rate limit this test used to pin is gone; alerting once
+        // per opportunity lives in ProviderInbox and is tested in ActivationReliabilityTest.
         val a = ProviderActivation.availability(elig(), "z1:2", Tunnel.UP_WIFI)
         assertTrue(a.potential); assertFalse(a.sharing); assertEquals("z1:2", a.zone)
         assertFalse(ProviderActivation.availability(elig(optIn = false), "z1:2", Tunnel.UP_WIFI).potential)

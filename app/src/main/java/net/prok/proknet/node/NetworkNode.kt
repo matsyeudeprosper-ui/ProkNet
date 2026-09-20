@@ -13,7 +13,9 @@ import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.NetRequest
+import net.prok.proknet.core.ControlRetry
 import net.prok.proknet.core.ProviderActivation
+import net.prok.proknet.core.ProviderInbox
 import net.prok.proknet.core.RequestGossip
 import net.prok.proknet.core.SyncProtocol
 import net.prok.proknet.core.Tunnel
@@ -42,8 +44,16 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
 
     @Volatile var state: RequestGossip.State = RequestGossip.State()
         private set
-    private var limiter = ProviderActivation.Limiter()
-    @Volatile var opportunityHook: ((ProviderActivation.Opportunity) -> Unit)? = null
+    /** v0.13.3: the one source of truth behind the notification AND the Gagner card. */
+    @Volatile var inbox: ProviderInbox.State = ProviderInbox.State()
+        private set
+    @Volatile private var retry = ControlRetry.State()
+    private val inboxFile = File(context.filesDir, "opportunities.v1.txt")
+    /** Show one aggregated alert; the hook answers whether it could be shown. */
+    @Volatile var alertHook: ((ProviderInbox.Alert) -> Boolean)? = null
+    /** Nothing is waiting any more: take the alert away. */
+    @Volatile var clearAlertHook: (() -> Unit)? = null
+    @Volatile var inboxChanged: (() -> Unit)? = null
     @Volatile var cancelHook: ((String) -> Unit)? = null
     @Volatile var lastRefusal = ""
         private set
@@ -72,8 +82,30 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
 
     init {
         load()
+        loadInbox()
         node.addListener(this)
         node.onNetRequest = { peer, body -> onControl(peer, body) }
+        // a rebuilt radio is a real reason for every parked send to try again
+        node.bleGenerationChanged = { gen -> main.post { retry = ControlRetry.onBleGenerationChanged(retry, gen); forwardTo(node.peers(), "BLE generation " + gen) } }
+        // v0.13.3: opportunities outlive the process. Rebuild the inbox from what is still carried.
+        main.post { rebuildInbox("process started") }
+    }
+
+    /** After a restart the card must come back, without alerting everything all over again. */
+    private fun rebuildInbox(why: String) {
+        val now = System.currentTimeMillis()
+        var changed = false
+        for (r in RequestGossip.carried(state, now)) {
+            if (ProviderActivation.refusal(eligibility(), r, now) != null) continue
+            val before = inbox.items[r.id]
+            inbox = ProviderInbox.offer(inbox, r, ProviderInbox.Source.LOCAL, now)
+            // it was already known before the restart: do not alert it again
+            if (before == null && inbox.items[r.id]?.notifiedAt == 0L) inbox = ProviderInbox.noted(inbox, listOf(r.id), now)
+            changed = true
+        }
+        inbox = ProviderInbox.sweep(inbox, now)
+        if (changed || inbox.items.isNotEmpty()) DiagLog.i(tag, "provider inbox (" + why + "): " + ProviderInbox.active(inbox, now).size + " active opportunity(ies)")
+        saveInbox(); inboxChanged?.invoke()
     }
 
     // ---- own requests ------------------------------------------------------------------------------------
@@ -111,8 +143,12 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         DiagLog.i(tag, "REQUEST " + r.id + " gen " + r.generation + " " + r.state + " from " + (if (local) "prok-" + from else from) + ": " + why)
         if (why == RequestGossip.Receipt.NEW || why == RequestGossip.Receipt.NEWER_GENERATION) {
             save()
-            if (r.tombstone) cancelHook?.invoke(r.id)
-            else if (r.id !in state.mine) considerActivation(r, local)
+            if (r.tombstone) {
+                // v0.13.3: the card and the notification go together, from the one source of truth
+                if (inbox.items.containsKey(r.id)) { inbox = ProviderInbox.remove(inbox, r.id); saveInbox(); inboxChanged?.invoke() }
+                if (ProviderInbox.active(inbox, now).isEmpty()) clearAlertHook?.invoke()
+                cancelHook?.invoke(r.id)
+            } else if (r.id !in state.mine) considerActivation(r, local)
             forwardTo(node.peers(), "carry")
             if (local) syncSoon("request carried")
         }
@@ -139,35 +175,117 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
 
     private fun considerActivation(r: NetRequest.Request, local: Boolean) {
         val now = System.currentTimeMillis()
-        val e = eligibility()
-        val refusal = ProviderActivation.refusal(e, r, now)
-        if (refusal != null) { lastRefusal = refusal.name + " for " + r.id; DiagLog.i(tag, "not activating for " + r.id + ": " + refusal); return }
-        if (!ProviderActivation.allow(limiter, r.id, now)) { DiagLog.i(tag, "activation for " + r.id + " rate-limited"); return }
-        limiter = ProviderActivation.noted(limiter, r.id, now)
-        lastOpportunityAt = now
-        val o = ProviderActivation.opportunity(e, r, now, local)!!
-        DiagLog.i(tag, "PROVIDER ACTIVATION opportunity for " + r.id + " (" + (if (local) "seen over BLE" else "from the brain, zone " + r.zone) + ")")
-        opportunityHook?.invoke(o)
+        val refusal = ProviderActivation.refusal(eligibility(), r, now)
+        if (refusal != null) {
+            lastRefusal = refusal.name + " for " + r.id
+            DiagLog.i(tag, "not activating for " + r.id + ": " + refusal)
+            // a request this phone cannot serve must not sit in the inbox pretending it can
+            if (inbox.items.containsKey(r.id)) { inbox = ProviderInbox.remove(inbox, r.id); saveInbox(); inboxChanged?.invoke() }
+            return
+        }
+        inbox = ProviderInbox.offer(inbox, r, if (local) ProviderInbox.Source.LOCAL else ProviderInbox.Source.BRAIN, now)
+        DiagLog.i(tag, "PROVIDER ACTIVATION opportunity for " + r.id + " (" + (if (local) "seen over BLE" else "from the brain, zone " + r.zone) + "); inbox " + ProviderInbox.active(inbox, now).size)
+        saveInbox(); inboxChanged?.invoke()
+        alertNow()
     }
 
-    override fun onPeers(peers: List<Peer>) { forwardTo(peers, "peers changed") }
+    /**
+     * v0.13.3: one alert for everything waiting, each opportunity alerted once.
+     * A different buyer is never suppressed because another request was recent:
+     * the old global two-minute cooldown lost real demand on the phones.
+     */
+    private fun alertNow() {
+        val now = System.currentTimeMillis()
+        val a = ProviderInbox.alert(inbox, now) ?: return
+        val shown = try { alertHook?.invoke(a) ?: false } catch (e: Exception) { DiagLog.w(tag, "alert: " + e); false }
+        inbox = if (shown) ProviderInbox.noted(inbox, a.requestIds, now).also { lastOpportunityAt = now }
+            else ProviderInbox.suppressed(inbox, "notification not shown (permission denied or Android refused)")
+        if (!shown) DiagLog.w(tag, "the alert could not be shown; the request stays visible in Gagner")
+        saveInbox()
+    }
+
+    /**
+     * PARTAGER, from the notification or from the Gagner card: the same path.
+     * Everything is re-checked, because the alert may be minutes old.
+     * Returns null when sharing started, or one plain sentence for the user.
+     */
+    fun acceptOpportunity(requestId: String?): String? {
+        val now = System.currentTimeMillis()
+        val id = requestId ?: ProviderInbox.active(inbox, now).firstOrNull { !it.accepted }?.requestId
+        val r = id?.let { state.requests[it] }
+        if (id == null || r == null) {
+            DiagLog.w(tag, "PARTAGER for " + (requestId ?: "any") + ": nothing active")
+            return "Cette demande n'est plus active."
+        }
+        val refusal = ProviderActivation.refusal(eligibility(), r, now)
+        if (refusal != null) {
+            DiagLog.w(tag, "PARTAGER refused for " + id + ": " + refusal)
+            if (refusal == ProviderActivation.Refusal.REQUEST_NOT_OPEN) { inbox = ProviderInbox.remove(inbox, id); saveInbox(); inboxChanged?.invoke() }
+            return ProviderInbox.refusalSentence(refusal)
+        }
+        DiagLog.i(tag, "PARTAGER accepted for " + id + ": starting the normal seller flow")
+        val err = node.setSelling(true)
+        if (err != null) { DiagLog.w(tag, "setSelling refused: " + err); return "Le partage n'a pas pu démarrer." }
+        inbox = ProviderInbox.accept(inbox, id, now)
+        saveInbox(); inboxChanged?.invoke()
+        syncSoon("provider activated")
+        return null
+    }
+
+    /** Sharing stopped: nothing from the last session may block the next request. */
+    fun onSharingStopped() {
+        val now = System.currentTimeMillis()
+        val live = state.requests.filterValues { it.open && !it.expired(now) }.keys
+        val before = inbox.items.size
+        inbox = ProviderInbox.State(inbox.items.filterKeys { it in live }.mapValues { (_, o) -> o.copy(accepted = false) },
+            inbox.lastSuppressed, inbox.lastNotifiedAt, inbox.notifications)
+        if (before != inbox.items.size) DiagLog.i(tag, "sharing stopped: inbox now " + inbox.items.size + " opportunity(ies)")
+        saveInbox(); inboxChanged?.invoke()
+        if (ProviderInbox.active(inbox, now).isEmpty()) clearAlertHook?.invoke()
+    }
+
+    private var lastSeenIds: Set<String> = emptySet()
+    override fun onPeers(peers: List<Peer>) {
+        // a peer we had parked is back: give it one clean chance, then forward within the retry rules
+        val ids = peers.filter { it.inRange && it.hasId }.map { it.shortId }.toSet()
+        for (id in ids - lastSeenIds) retry = ControlRetry.onPeerReappeared(retry, id)
+        lastSeenIds = ids
+        forwardTo(peers, "peers changed")
+    }
     override fun onMessagesChanged() {}
     override fun onStatus(status: String) {}
 
-    /** Hand every live generation a peer has not seen to it, once. */
+    /**
+     * v0.13.3: hand every live generation to each peer once, and never more than
+     * one attempt at a time per (request generation, peer). onPeers() fires
+     * constantly; the phone log showed the same request re-sent on every tick,
+     * which is a radio storm and gives a broken peer no time to repair itself.
+     */
     private fun forwardTo(peers: List<Peer>, why: String) {
         val now = System.currentTimeMillis()
+        val gen = node.bleGeneration()
         var any = false
         for (p in peers) {
             if (!p.inRange || !p.hasId || !node.hasKey(p.shortId)) continue
             for (r in RequestGossip.toForward(state, p.shortId, now)) {
+                if (!ControlRetry.mayStart(retry, r.id, r.generation, p.shortId, now, gen)) continue
+                retry = ControlRetry.started(retry, r.id, r.generation, p.shortId, now, gen)
                 synchronized(this) { state = RequestGossip.markForwarded(state, r, p.shortId, now) }
                 any = true
                 val copy = NetRequest.forwarded(r)
                 DiagLog.i(tag, "FORWARD " + r.id + " gen " + r.generation + " -> prok-" + p.shortId + " (" + why + ", hop " + copy.hops + ")")
                 lastForwardTo = "prok-" + p.shortId + " (" + r.id + ", " + why + ")"
                 node.sendControl(p.shortId, Wire.netRequest(NetRequest.encode(copy))) { ok ->
-                    if (!ok) { synchronized(this) { state = RequestGossip.unmark(state, r, p.shortId) }; DiagLog.w(tag, "forward of " + r.id + " to prok-" + p.shortId + " failed; will retry") }
+                    main.post {
+                        if (ok) retry = ControlRetry.delivered(retry, r.id, r.generation, p.shortId, System.currentTimeMillis())
+                        else {
+                            val err = node.lastControlError(p.shortId)
+                            retry = ControlRetry.failed(retry, r.id, r.generation, p.shortId, System.currentTimeMillis(), err)
+                            synchronized(this) { state = RequestGossip.unmark(state, r, p.shortId) }
+                            val note = ControlRetry.peerNote(retry.peers[p.shortId], System.currentTimeMillis())
+                            DiagLog.w(tag, "forward of " + r.id + " to prok-" + p.shortId + " failed: " + err + (if (note.isEmpty()) "" else " - " + note))
+                        }
+                    }
                 }
             }
         }
@@ -179,6 +297,15 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         val before = state.requests.size
         synchronized(this) { state = RequestGossip.sweep(state, now) }
         if (state.requests.size != before) save()
+        // the inbox never keeps demand that expired, ended, or that this phone can no longer serve
+        val live = state.requests.filterValues { it.open && !it.expired(now) }.keys
+        val kept = ProviderInbox.sweep(inbox, now)
+        val pruned = kept.copy(items = kept.items.filterKeys { it in live })
+        if (pruned.items.size != inbox.items.size) {
+            inbox = pruned; saveInbox(); inboxChanged?.invoke()
+            if (ProviderInbox.active(inbox, now).isEmpty()) clearAlertHook?.invoke()
+        }
+        retry = ControlRetry.keepOnly(retry, state.requests.keys)
     }
 
     // ---- the brain -----------------------------------------------------------------------------------------------
@@ -263,6 +390,15 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         DiagLog.i(tag, "requests loaded: " + state.requests.size + " (" + state.mine.size + " mine)")
     }
 
+    private fun loadInbox() {
+        try { if (inboxFile.exists()) inbox = ProviderInbox.decode(inboxFile.readText(Charsets.UTF_8)) } catch (e: Exception) { DiagLog.w(tag, "inbox load: " + e.message) }
+    }
+
+    private fun saveInbox() {
+        val text = ProviderInbox.encode(inbox)
+        io.execute { try { inboxFile.writeText(text, Charsets.UTF_8) } catch (e: Exception) { DiagLog.w(tag, "inbox save: " + e.message) } }
+    }
+
     private fun save() {
         val text = RequestGossip.encode(state)
         io.execute { try { file.writeText(text, Charsets.UTF_8) } catch (e: Exception) { DiagLog.w(tag, "requests save: " + e.message) } }
@@ -280,6 +416,9 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             .append(if (peers.isEmpty() && lastSeen > 0L) " (NOT IN RANGE now)" else "").append("\n")
         sb.append("Request state: ").append(mine?.let { it.state.name + " (" + it.id + ", " + (if (it.expired(now)) "expired" else ((it.expiresAt - now) / 60_000).toString() + " min left") + ")" } ?: "no request from this phone").append("\n")
         sb.append("Last request forwarded to: ").append(lastForwardTo.ifEmpty { "nobody yet" }).append("\n")
+        sb.append("Provider opportunities: ").append(ProviderInbox.active(inbox, now).size)
+            .append(" (local ").append(ProviderInbox.localCount(inbox, now)).append(", brain ").append(ProviderInbox.brainCount(inbox, now)).append(")")
+            .append(ProviderInbox.oldest(inbox, now)?.let { ", oldest " + ((now - it.receivedAt) / 1000) + "s" } ?: "").append("\n")
         sb.append("Provider activation notification sent: ").append(if (lastOpportunityAt > 0) "YES, " + CoverageModel.ageWord(now - lastOpportunityAt) else "NO")
             .append(if (lastOpportunityAt > 0) "" else " - " + lastRefusal.ifEmpty { "no request reached this phone" }).append("\n")
         sb.append("This phone could share: ").append(Upstream.describe(currentUpstream())).append(" -> ").append(eligibility().accessPath)
@@ -312,6 +451,18 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         sb.append("  notifications: ").append(if (e.optIn) "ON" else "OFF").append(" | internet validated: ").append(e.upstreamValidated)
             .append(" | bluetooth: ").append(e.bluetoothOn).append(" | busy: ").append(e.busy).append(" | price: ").append(e.sellPriceCentimesPerMb).append("c\n")
         sb.append("  last opportunity: ").append(if (lastOpportunityAt == 0L) "-" else CoverageModel.ageWord(now - lastOpportunityAt)).append(" | last refusal: ").append(lastRefusal.ifEmpty { "-" }).append("\n")
+        sb.append("provider opportunities:\n")
+        sb.append("  active: ").append(ProviderInbox.active(inbox, now).size).append(" | local: ").append(ProviderInbox.localCount(inbox, now))
+            .append(" | brain: ").append(ProviderInbox.brainCount(inbox, now))
+            .append(ProviderInbox.oldest(inbox, now)?.let { " | oldest: " + ((now - it.receivedAt) / 1000) + "s" } ?: "").append("\n")
+        for (o in ProviderInbox.active(inbox, now)) sb.append("  ").append(o.requestId).append(" from prok-").append(o.originShort)
+            .append(" ").append(o.source).append(" received ").append(CoverageModel.ageWord(now - o.receivedAt))
+            .append(if (o.notifiedAt > 0) ", alerted" else ", NOT alerted").append(if (o.accepted) ", ACCEPTED" else "").append("\n")
+        sb.append("  notification: last shown ").append(if (inbox.lastNotifiedAt == 0L) "never" else CoverageModel.ageWord(now - inbox.lastNotifiedAt))
+            .append(", total ").append(inbox.notifications).append(", suppressed reason: ").append(inbox.lastSuppressed.ifEmpty { "none" }).append("\n")
+        sb.append("control plane:\n  ").append(node.bleControlPlaneLine().replace("\n", "\n  ")).append("\n")
+        sb.append("  forwarding: ").append(ControlRetry.describe(retry, now)).append("\n")
+        for ((peer, h) in retry.peers) ControlRetry.peerNote(h, now).let { if (it.isNotEmpty()) sb.append("  prok-").append(peer).append(": ").append(it).append("\n") }
         sb.append("  shared coverage: ").append(if (shareCoverage) "ON" else "OFF").append(" | shared cells known: ").append(cover.shared.size).append(" | last shared update: ").append(if (cover.lastSharedAt == 0L) "-" else CoverageModel.ageWord(now - cover.lastSharedAt)).append("\n")
         val s = state.stats
         sb.append("gossip:\n  received ").append(s.received).append(" | accepted ").append(s.accepted).append(" | forwards ").append(s.forwards).append(" | dedup drops ").append(s.dedupDrops)

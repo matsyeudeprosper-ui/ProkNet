@@ -61,17 +61,10 @@ object ProviderActivation {
     fun opportunity(e: Eligibility, r: NetRequest.Request, now: Long, local: Boolean): Opportunity? =
         if (refusal(e, r, now) == null) Opportunity(r.id, r.zone, local, r.ceilingCentimesPerMb, r.expiresAt) else null
 
-    // ---- the rate limit -------------------------------------------------------------------------------------
-
-    const val PER_REQUEST_MS = 10 * 60_000L
-    const val GLOBAL_MS = 2 * 60_000L
-
-    data class Limiter(val lastByRequest: Map<String, Long> = emptyMap(), val lastGlobal: Long = 0L)
-
-    fun allow(l: Limiter, requestId: String, now: Long): Boolean =
-        (l.lastByRequest[requestId]?.let { now - it >= PER_REQUEST_MS } ?: true) && now - l.lastGlobal >= GLOBAL_MS
-
-    fun noted(l: Limiter, requestId: String, now: Long): Limiter = Limiter(l.lastByRequest + (requestId to now), now)
+    // v0.13.3: the wall-clock rate limit is GONE. It suppressed a second, real buyer
+    // request 53 seconds after the first ("activation ... rate-limited") and lost the
+    // demand entirely. [ProviderInbox] alerts each opportunity once, by id, so a
+    // duplicate never alerts twice and a different buyer is never blocked by a clock.
 
     // ---- the availability heartbeat (what the brain may know; never a position) ------------------------------
 

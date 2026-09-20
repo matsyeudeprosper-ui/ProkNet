@@ -746,6 +746,70 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## The control plane has to be trustworthy (v0.13.3)
+
+Three failures on the phones, all of the same family: our code said ready,
+Android disagreed, and a real Internet request was lost.
+
+**A second buyer was swallowed by a clock.** Request A alerted at 17:57:35;
+request B, a different buyer, was refused 53 seconds later as
+"rate-limited" by a global two-minute cooldown. A rate limit exists to stop
+one unresolved opportunity from nagging, never to hide new demand. The
+wall-clock limiter is deleted. `ProviderInbox` alerts each opportunity
+**once, by id**: a duplicate or a gossip copy never alerts again, and a
+different buyer always gets through. Several requests arriving together
+produce one aggregated alert ("3 personnes cherchent Internet à proximité")
+rather than three.
+
+**Push was the only place demand existed.** Now it is an alert, not the
+truth. `ProviderInbox` is one persistent source of truth
+(`filesDir/opportunities.v1.txt`) that both the notification and the new
+Gagner card render from. A request survives a dismissed notification, a
+denied notification permission, a tap on the wrong thing, the screen going
+off, the activity being recreated and the process being restarted: on
+startup the inbox is rebuilt from the carried requests, without re-alerting
+what was already alerted. It leaves only when the request really ends —
+tombstone, expiry, acceptance, or the phone becoming unable to serve it —
+and then it leaves the card and the notification at the same moment.
+PARTAGER on the notification and PARTAGER on the card call the same
+`NetworkNode.acceptOpportunity(id)`, which re-checks the request, the
+current Internet, Bluetooth, the price ceiling and the session before
+starting the normal seller flow, and otherwise answers in one sentence
+("Votre Internet n'est plus disponible.", "Cette demande n'est plus
+active.").
+
+**"peer has no ProkNet service (services=2)".** After a Bluetooth toggle
+the OUKITEL reported `server ready, adv on, scan on` while every customer
+failed service discovery. `GattServerNode.isReady` was a Boolean set once
+by `onServiceAdded` and never invalidated, so the old recovery
+(`if (server?.isReady != true)`) skipped the server rebuild and kept
+advertising a control plane that no longer existed. Booleans cannot
+describe an asynchronous stack. `BleLifecycle` is a generation machine:
+every piece — GATT server, ProkNet service, advertiser, scanner — is
+stamped with the generation it was built under and counts only while that
+stamp is current. An adapter that returns bumps the generation, which
+invalidates everything at once, including callbacks still in flight
+(`isStale`). `BleTransport` now has ONE rebuild path that reconstructs in
+order: close everything, open the server, add the service, **wait for
+Android to confirm it**, and only then advertise. The invariant — *if
+ProkNet advertises, its GATT service must really be there* — is checked by
+the watchdog on every tick and repaired immediately, and a service that
+cannot be added is retried with a bounded backoff while the phone
+advertises nothing.
+
+**Retry storms.** `onPeers()` fires constantly, and every fire re-queued the
+same request to the same peer. `ControlRetry` allows one attempt per
+(request generation, peer identity) with a 1 / 3 / 10 / 30 s backoff, keyed
+by the signed ProkNet short id so BLE address rotation changes nothing. A
+peer whose GATT service is missing is parked for 45 s rather than hammered,
+and the diagnostic says "peer advertises ProkNet but its GATT service is
+missing". Our own stack being rebuilt, or a parked peer reappearing, clears
+the backoff at once.
+
+**After a session.** Stopping sharing calls `onSharingStopped`, which drops
+opportunities whose request is gone and un-accepts the rest, so the next
+request is never blocked by anything left behind.
+
 ## Could this phone become a seller? (v0.13.2)
 
 The OUKITEL received the request, verified the signature, stored it — and

@@ -2022,3 +2022,56 @@ only when PARTAGER is tapped.
 
 Then run section 51. The log must now show `PROVIDER ACTIVATION
 opportunity for <id>` instead of `not activating for <id>: NO_INTERNET`.
+
+## 55. v0.13.3 three cycles in a row (THE acceptance test)
+
+One successful run is not acceptance. Setup as in section 51: OUKITEL on
+the Freebox, mobile data OFF, Bluetooth ON, sharing OFF, "Me prévenir…" ON.
+OnePlus: mobile data OFF, NOT on any Wi-Fi, Bluetooth ON. Side by side.
+
+**Cycle 1.** OnePlus: tap the sphere → RECHERCHE → DEMANDE. OUKITEL: the
+notification AND a card in Gagner. Tap PARTAGER. OnePlus, no more taps:
+CONNEXION → CONNECTÉ. Open Wikipedia. Stop the buyer, stop the seller.
+
+**Cycle 2, immediately.** Same thing. A new notification and card must
+appear **at once** — there is no two-minute wait any more. It must connect
+again.
+
+**Cycle 3, the important one.** Start the request, then on the OUKITEL
+**swipe the notification away without tapping it**. Open ProkNet → Gagner.
+The demand card must still be there with PARTAGER. Tap it. The OnePlus must
+connect. That proves the notification is not the source of truth.
+
+## 56. v0.13.3 Bluetooth recovery, without restarting the app
+
+After those cycles, on the OUKITEL: turn Bluetooth OFF, wait 10 seconds,
+turn it ON. **Do not restart the app.** Wait about 30 seconds, then make a
+new request from the OnePlus.
+
+Expected: the OUKITEL is found again, the request is delivered, the
+notification and the card appear, and there is NO "peer has no ProkNet
+service". Then PARTAGER and Internet must work.
+
+For us, COPY NETWORK on the OUKITEL must show the generation having moved:
+
+```
+BLE control plane:
+  generation: 3
+  GATT server: OPEN
+  ProkNet service: ADDED
+  advertising generation: 3
+  scan generation: 3
+  rebuilds: 2 (last: Bluetooth returned)
+```
+
+`ProkNet service: MISSING` together with an advertising generation equal to
+the current one is the bug returning.
+
+## 57. v0.13.3 background and notifications off
+
+With the OUKITEL screen off and ProkNet not visible, send a request from
+the OnePlus. Unlock the OUKITEL, open ProkNet → Gagner: the card must be
+there. Then turn ProkNet's notifications off in Android settings and repeat:
+no push, but the Gagner card must still appear, and COPY NETWORK must say
+`suppressed reason: notification not shown (permission denied…)` with the
+opportunity still active.

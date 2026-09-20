@@ -65,12 +65,14 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         when (action) {
             ACTION_STOP -> { stopNode(); return START_NOT_STICKY }
             ACTION_SHARE_NOW -> {
-                // v0.13: PARTAGER on the request notification: this phone becomes a normal seller
+                // v0.13.3: the notification button and the Gagner button call the SAME function,
+                // which re-checks the request, the Internet, Bluetooth, the price and the session.
                 startNode()
-                val err = node.setSelling(true)
-                DiagLog.i(tag, "PARTAGER from the request notification: " + (err ?: "sharing ON"))
-                try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_REQUEST) } catch (_: Exception) {}
-                ProkNetApp.network(this).syncSoon("provider activated")
+                val id = intent?.getStringExtra("request")?.takeIf { it.isNotEmpty() }
+                val err = ProkNetApp.network(this).acceptOpportunity(id)
+                DiagLog.i(tag, "PARTAGER from the notification: " + (err ?: "sharing ON"))
+                clearAlert()
+                if (err != null) toastOnMain(err)
             }
             else -> startNode()
         }
@@ -104,10 +106,18 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         DiagLog.i(tag, "screen is " + (if (pm.isInteractive) "ON" else "OFF") + " at service start")
         if (!node.isRunning) node.start() else DiagLog.i(tag, "node already running, service re-attached")
         val net = ProkNetApp.network(this)
-        net.opportunityHook = { o -> main.post { notifyOpportunity(o) } }
-        net.cancelHook = { _ -> main.post { try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_REQUEST) } catch (_: Exception) {} } }
+        net.alertHook = { a -> notifyAlert(a) }
+        net.clearAlertHook = { main.post { clearAlert() } }
+        net.cancelHook = { _ -> main.post { if (net_prok_inboxEmpty()) clearAlert() } }
         main.removeCallbacks(periodicSync); main.postDelayed(periodicSync, 60_000)
         updateNotification(consumerStatus())
+    }
+
+    private fun net_prok_inboxEmpty(): Boolean =
+        net.prok.proknet.core.ProviderInbox.active(ProkNetApp.network(this).inbox, System.currentTimeMillis()).isEmpty()
+
+    private fun toastOnMain(text: String) = main.post {
+        try { android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show() } catch (_: Exception) {}
     }
 
     private fun stopNode() {
@@ -146,25 +156,38 @@ class ProkNetService : Service(), ProkNetNode.Listener {
     override fun onStatus(status: String) { updateNotification(status); checkApproval() }
 
     private var approvalNotified = false
-    /** v0.13: someone asks for Internet and this phone could share. One notification, one button. */
-    private fun notifyOpportunity(o: net.prok.proknet.core.ProviderActivation.Opportunity) {
-        try {
-            val share = PendingIntent.getService(this, 3, Intent(this, ProkNetService::class.java).setAction(ACTION_SHARE_NOW).putExtra("request", o.requestId),
+    /**
+     * v0.13.3: ONE notification for everything waiting, rendered from the inbox.
+     * Returns false when Android would not show it, so the request stays visible
+     * in Gagner instead of disappearing with the alert.
+     */
+    private fun notifyAlert(a: net.prok.proknet.core.ProviderInbox.Alert): Boolean {
+        if (!notificationsAllowed()) { DiagLog.w(tag, "request alert not shown: notifications are not permitted; the Gagner card still has it"); return false }
+        return try {
+            val share = PendingIntent.getService(this, 3, Intent(this, ProkNetService::class.java).setAction(ACTION_SHARE_NOW).putExtra("request", a.requestIds.firstOrNull() ?: ""),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val open = PendingIntent.getActivity(this, 4, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            val open = PendingIntent.getActivity(this, 4, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("tab", "earn"),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ALERT) == null)
                 nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERT, getString(R.string.notif_alert_channel), NotificationManager.IMPORTANCE_HIGH))
-            @Suppress("DEPRECATION")
             val action = Notification.Action.Builder(R.drawable.ic_notify, getString(R.string.notif_share_action), share).build()
             nm.notify(NOTIF_REQUEST, Notification.Builder(this, CHANNEL_ALERT)
-                .setSmallIcon(R.drawable.ic_notify).setContentTitle(o.title).setContentText(o.text)
-                .setStyle(Notification.BigTextStyle().bigText(o.text))
-                .setContentIntent(open).addAction(action).setAutoCancel(true).setCategory(Notification.CATEGORY_RECOMMENDATION)
-                .setTimeoutAfter(maxOf(60_000L, o.expiresAt - System.currentTimeMillis())).build())
-            DiagLog.i(tag, "request notification posted (" + (if (o.local) "nearby" else "zone") + ")")
-        } catch (e: Exception) { DiagLog.w(tag, "request notification: " + e) }
+                .setSmallIcon(R.drawable.ic_notify).setContentTitle(a.title).setContentText(a.text)
+                .setStyle(Notification.BigTextStyle().bigText(a.text))
+                .setContentIntent(open).addAction(action).setAutoCancel(true).setCategory(Notification.CATEGORY_RECOMMENDATION).build())
+            DiagLog.i(tag, "request alert posted: " + a.title)
+            true
+        } catch (e: Exception) { DiagLog.w(tag, "request alert: " + e); false }
+    }
+
+    private fun notificationsAllowed(): Boolean = try {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.areNotificationsEnabled()
+    } catch (e: Exception) { true }
+
+    private fun clearAlert() {
+        try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_REQUEST) } catch (_: Exception) {}
     }
 
     private val periodicSync = object : Runnable {
