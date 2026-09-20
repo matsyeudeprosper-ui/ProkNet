@@ -69,7 +69,8 @@ lab screen kept as a developer screen), built milestone by milestone.
 | v0.12.1 | The design pass: one design system (colors light + night, type scale, bg_* drawables), a glowing one-tap button, bordered rounded cards, readable legend pills, status chip with a dot, a real nav bar; the map card no longer contradicts itself | built, 236 JVM tests pass |
 | v0.12.2 | Accueil and Carte redesigned from scratch: a drawn sonar button (`PulseButtonView`, rings sweep while searching), three quiet tiles, two door cards; the map is a sonar of real sightings (you at the centre, fresh near, old far, tappable) or the cell grid once a position exists | built, 236 JVM tests pass |
 | v0.12.3 | The sphere drawn to look lit and heavy (specular highlight, dark edge, drop shadow, luminous rim), ambient blue + violet light and two faint scan arcs instead of a bullseye, the usable sources as green dots on the arc, a radar wedge while searching; tiles that never truncate | built, 236 JVM tests pass |
-| v0.12.4 | The sphere is the interface: it breathes at rest, arcs and source dots orbit, it pulses while searching, ripples when pressed, turns green when connected, one word per state; the home loses its question and status lines, tiles show values only, door rows are title + chevron | built, 236 JVM tests pass, one-tap hardware regression pending |
+| v0.12.4 | The sphere is the interface: it breathes at rest, arcs and source dots orbit, it pulses while searching, ripples when pressed, turns green when connected, one word per state; the home loses its question and status lines, tiles show values only, door rows are title + chevron | built, 236 JVM tests pass |
+| v0.12.5 | Under the sphere: one slim stat strip (sources · prix · dernière fois) and two icon action cards (Partager, Carte) | built, 236 JVM tests pass, one-tap hardware regression pending |
 
 ### v0.1 - what it does
 

@@ -328,7 +328,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceWord(usable.minOf { it.priceCentimesPerMb }).replace(" par Mo", "/Mo"))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))
-        text(R.id.rowShareSub, getString(R.string.row_share_on_short)); show(R.id.rowShareSub, sellerOn)
+        v<TextView>(R.id.rowShareSub).apply { text = getString(if (sellerOn) R.string.row_share_caption_on else R.string.row_share_caption); setTextColor(getColor(if (sellerOn) R.color.ok else R.color.text_muted)) }
         text(R.id.homeNote, if (running && !node.isBluetoothOn()) getString(R.string.home_bluetooth_off) else "")
     }
 

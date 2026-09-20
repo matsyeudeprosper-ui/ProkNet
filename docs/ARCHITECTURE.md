@@ -746,6 +746,16 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Under the sphere (v0.12.5)
+
+Mike: the sphere and its animation are the design; the rest of the home
+needed a professional treatment. The three boxed tiles became one slim
+pill strip (`bg_strip`) with three values and thin dividers, lowercase
+labels, no captions in caps. The two text rows became two square action
+cards side by side: a brand-tinted icon in a soft circle
+(`bg_icon_circle`), a one-word title, a tiny caption; the Partager card
+turns its caption green ("● Vous partagez") while sharing.
+
 ## The sphere is the interface (v0.12.4)
 
 Mike liked the sphere and asked for less writing, more intuition, and a
