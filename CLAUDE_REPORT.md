@@ -1,131 +1,130 @@
-# CLAUDE_REPORT - ProkNet v0.13.0 "the Network Brain"
+# CLAUDE_REPORT - ProkNet v0.13.1 "the stale error and the deaf radio"
 
 Date: 2026-09-20
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built; 248/248 Android JVM tests and 11/11 server tests pass; the
-brain runs end to end locally; released. Provider activation on the two
-phones (TESTING section 51) is the pending hardware test. Nothing proven
-before is touched.**
+Status: **built, 252/252 Android tests and 11/11 server tests pass,
+released. Two bug fixes and one diagnostic. The proven transport stack and
+the v0.12.5 design are untouched. TESTING section 51 is still the pending
+hardware test.**
 
-## 1. Version / build / commit / hash / tests
+## 1. Version / build / commit / hash
 
-Build 51, versionName 0.13.0, SHA256 `246c746057adfc9df6ebe1abe99674fb4c6540485e24000e00a111385f5744f6`.
-Commit `0920f5b` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.13.0
-Android JVM tests: 248 (+12). Server tests: 11.
+Build 52, versionName 0.13.1, SHA256 `89e68355a243a5fe56d8b5bff2e766397313bc3db7fd0952f1408805504926e3`.
+Commit `b55cc1c` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.13.1
+Android JVM tests 252 (+4); server tests 11 (unchanged, rerun green).
 
 ```
 C:\Projects\ProkNet\dist\ProkNetLab-debug.apk
 ```
 
-## 2. Server deployment status
+## 2. Root cause of the stale LOST UI
 
-**BUILT + TESTED LOCALLY.** Ran on the VPS at 127.0.0.1:8089: `/health` ok;
-a provider heartbeat, a buyer request uploaded by a third node, the
-provider's next sync returning the activation job and the request, and a
-tampered message rejected with HTTP 400, all with real P-256 keys. No
-public HTTPS hostname exists for this box, so no address is hardcoded: the
-app ships with the brain OFF (Développeur → BRAIN URL to set one) and works
-fully in direct / local mode. `server/README.md` has the exact run command,
-the test command, and the reverse-proxy requirement.
+`MainActivity.getInternet()` set `lostDismissed = false` and created the
+request, but nothing cleared the node's last error. `clearLastFailure()`
+(which clears `tunnel.lastError` and `lastBuyError`) only runs inside
+`node.buy()`, and with no usable source `buy()` is never called. So the
+string left by the previous session, "Wi-Fi link closed: customer stopped:
+stopped by user", was still there; `ProductState.buyer` returns LOST for a
+non-empty error with `wanted = false`; and `buyerVisible = buyerOn() || (b
+== LOST && !lostDismissed)` was checked before the request in the
+when-chain, so the lost card owned the screen: RÉESSAYER / Connexion perdue
+/ Rapprochez-vous du fournisseur, on a request that had not tried anything.
 
-## 3. Request gossip architecture
+## 3. The fix
 
-`core/NetRequest.kt`: the signed object (id, origin, key, times, zone,
-flexible MB / minutes, automatic ceiling, urgency NOW, state, generation,
-hops, ECDSA P-256 signature over everything but hops), ~230 bytes, `Wire`
-op 15 inside the existing encrypted BLE control envelope. `core/
-RequestGossip.kt` (pure): one record per id, latest generation wins,
-tombstones final, expired / hop-exhausted dropped and counted, forward
-once per (id, generation, peer), never back, never to the origin,
-persistence codec, sweep. `node/NetworkNode.kt`: originate, end, receive,
-forward on peers-changed with unmark-on-failure, activation, sync,
-diagnostics. A request travels buyer → B → C → brain in software; 3-phone
-carry is not hardware-proven.
+Three layers, all pure-testable:
 
-## 4. Provider activation behaviour
+1. `ProkNetNode.clearLastFailure()` is public and called by
+   `getInternet()`: a new request starts from a clean screen, exactly like
+   a direct purchase. `lostDismissed` starts true for the request.
+2. `ProductState.isUserStop(lastError)`: "stopped by user", "customer
+   stopped", "sharing stopped" and friends are decisions, not failures;
+   `buyError()` never returns one.
+3. `ProductState.homeOwner(sellerOn, purchaseActive, requestActive,
+   showLost)`: SELLER > PURCHASE > REQUEST > lost card > IDLE. An active
+   request can no longer be hidden by a card about a purchase that is over.
+   Used by the home and the Internet tab.
 
-Opt-in on Gagner. Eligibility: opted in, validated upstream, local path
-(Bluetooth on home Wi-Fi / hotspot on mobile data), Bluetooth on if needed,
-not sharing, not busy, sell price within the request ceiling. One
-notification, rate-limited (10 min per request, 2 min global), honest
-wording (nearby over BLE / zone from the brain), PARTAGER → `setSelling
-(true)`. The requester polls the decision engine in DEMANDE; the advert is
-selected within the ceiling; the proven stack runs; ONLINE → FULFILLED
-tombstone; ARRÊTER → CANCELLED tombstone. No second tap.
+A real failure still shows: the driver sets `lostDismissed = false` when it
+marks the request FAILED, so the request's own reason appears; manual
+CONNECTER also clears first, then shows its own errors.
 
-## 5. Shared coverage architecture
+## 4. Did BLE recovery need a code change? Yes
 
-Opt-in "Aider ProkNet à améliorer la carte". Summaries only: hashed Wi-Fi
-ids / ProkNet ids, zone, freshness, validation, price, trust. The server
-keeps one source per key with a distinct-observer count (a Freebox seen by
-15 phones is one source), rebuilds cells on every sync and cleanup:
-GREEN only with a provider sharing now and seen < 10 min, YELLOW when
-recent, RED otherwise. The phone downgrades any server GREEN to YELLOW:
-history is never "available now". Carte shows "Vu par le réseau ProkNet"
-rows apart from the phone's own.
+`scanStale` is gated on `expectPeers`, false when the last peer is older
+than `PEER_MEMORY_MS` (15 min). The OnePlus last saw the OUKITEL 55 minutes
+earlier, so after Bluetooth went OFF (15:30) and came back (15:58) every
+verdict was HEALTHY, while `scanning` and `advertising` still claimed true
+(an adapter restart does not call the failure callbacks) and no scan result
+had arrived for thousands of seconds. Nothing could ever recover.
 
-## 6. Network Brain API
+Two bounded rules in `BleHealth`:
 
-`GET /health` (plain text). `POST /v1/sync`, `prok-sync/1`, one signed
-line message (documented in `server/README.md` and `core/SyncProtocol.kt`).
-Signature verified, id = SHA-256(key)[:16] enforced, clock ±10 min,
-per-node rate limit 30/min, body ≤ 256 KB, every write idempotent.
+- `BLUETOOTH_RETURNED`: the node itself notices OFF → ON inside the
+  watchdog (no receiver, caught within 10 s) and passes
+  `bluetoothReturnedAt`. One recovery per transition
+  (`lastRecoveryAt < bluetoothReturnedAt`), after the 12 s grace.
+- `SCAN_SILENT`: the scanner **has heard peers before**
+  (`lastScanResultAt > 0`) and has heard nothing at all for 10 minutes,
+  with nobody "expected" so no other rule looks.
 
-## 7. Privacy rules
+A phone that never heard anybody is alone in a field, not wedged, and is
+still left alone: the v0.9.10 test `a_working_radio_is_left_alone` failed
+against my first, blanket version of this rule, and it was right to — I
+narrowed the rule instead of changing that test. Both new verdicts sit
+after the `linkBusy` guard and inside the existing backoff, so they never
+touch an active bulk or tunnel session and never loop.
 
-Zones (~500 m cells), never coordinates; Wi-Fi as SHA-256(BSSID)[:16];
-providers as ProkNet ids; no password or credential ever; both
-contributions opt-in with one sentence each; a server test asserts no
-table has a coordinate column.
+## 5. COPY NETWORK
 
-## 8. TTL / dedup rules
+Five lines at the top, before anything technical:
 
-NOW request 30 min; hop budget 6; dedup by id + generation; tombstones and
-expired kept 2 h; forward memory 6 h; availability stale 15 min, deleted
-60 min; activation job 10 min; finished jobs 24 h; sources 30 days;
-freshness 1.0 at 10 min → 0.2 at 24 h. Deterministic, tested with fake
-clocks on both sides.
+```
+Nearby ProkNet phones: 1 (prok-24e480e6)
+Last peer seen: 3 s ago
+Request state: NETWORK_REQUESTED (e6d0623b39ba8fe0, 27 min left)
+Last request forwarded to: prok-24e480e6 (e6d0623b39ba8fe0, new request)
+Provider activation notification sent: NO - no request reached this phone
+```
 
-## 9. Job model and matching
+## 6. Tests added (4)
 
-Types PROVIDER_ACTIVATION, CARRY_REQUEST (execute) and ANCHOR, RELAY,
-MOVE_TO_ZONE, COURIER (modelled only); states OPEN / OFFERED / ACCEPTED /
-ACTIVE / COMPLETED / FAILED / EXPIRED / CANCELLED, forward-only. Matching:
-DIRECT_SOURCE → ACTIVATE_PROVIDER (cheapest eligible, locally-seen beats
-same-zone, commercial delivery ≤ ceiling) → WAIT_FOR_SUPPLY → NO_PLAN, on
-the phone (`core/Jobs.kt`) and the server (`brain/matching.py`) alike.
+- a live request outranks a lost card from a purchase that is over, and the
+  lost card still shows when nothing is running (`homeOwner`, all cases);
+- a session the user stopped is not an error for the next request, using
+  the exact diagnostic string from the phone, while real failures stay
+  errors and an empty error is IDLE not LOST;
+- Bluetooth OFF → ON recovers the radio exactly once, is given its grace,
+  respects the backoff, and never fires during a link or when stopped;
+- a scanner that heard peers before and has been silent for ten minutes
+  restarts, while one that never heard anybody is left alone.
 
-## 10. Files changed
+## 7. Point 2 of the report: no propagation without a peer
 
-New: `core/NetRequest.kt`, `core/RequestGossip.kt`,
-`core/ProviderActivation.kt`, `core/Jobs.kt`, `core/SyncProtocol.kt`,
-`node/NetworkNode.kt`, `test/.../NetworkBrainTest.kt` (12 tests),
-`server/brain/{protocol,matching,db,app}.py`, `server/tests/test_brain.py`
-(11 tests), `server/README.md`, `server/requirements.txt`. Patched:
-`core/Wire.kt` (op 15), `ble/ProkNetNode.kt` (control hook, public
-sendControl), `ProkNetApp.kt`, `service/ProkNetService.kt` (PARTAGER
-notification and action, periodic sync), `node/CoverageEngine.kt` (shared
-cells), `ui/MainActivity.kt` (originate / end, DEMANDE, hints, opt-ins,
-shared map rows), `ui/LabActivity.kt` (COPY NETWORK, BRAIN URL),
-`transport/WifiTransport.kt` (exhaustive when), layouts, strings,
-`build.gradle.kts`.
+Confirmed and unchanged: the request was created correctly and there was
+simply nobody to hand it to (`ble: peers 0`, the OUKITEL 55 minutes stale).
+Nothing pretends it propagated. What v0.13.1 changes is that the phone can
+now get its radio back by itself after Bluetooth returns, and that COPY
+NETWORK says "Nearby ProkNet phones: 0" at the top so the cause is obvious
+in one line.
 
-## 11. Known limitations (honest)
+## 8. Point 3: the buyer's own Wi-Fi
 
-- Provider activation is not yet hardware-proven (section 51 pending).
-- 3-phone carry, relay, multi-hop, movers, citywide fulfilment: modelled, not executed, not claimed.
-- The brain is local-tested, not deployed: no public HTTPS hostname on this box.
-- The DEMANDE search continues while the service runs; the sphere's polling runs while the app is open, so the automatic connection needs the app in front or recently backgrounded (the foreground service keeps the request alive and the notification path works regardless).
-- Sync needs the app's own Internet (it is outside its VPN): buyers on ProkNet Internet do not sync; providers do.
-- Availability heartbeats only reach the brain when a URL is configured.
+Behaviour is correct and unchanged ("this phone already has validated
+Internet over Wi-Fi" → CONNECT_NOW on the free source). For the offline
+test the OnePlus must not be on any Wi-Fi; that is now written into
+TESTING section 51's setup.
 
-## 12. The exact simple hardware test
+## 9. The exact simple hardware test
 
+Put the phones side by side for ~30 s. On the OnePlus, COPY NETWORK must
+say `Nearby ProkNet phones: 1`.
 OUKITEL: Freebox ON, mobile data OFF, Bluetooth ON, sharing OFF, Gagner →
 "Me prévenir quand quelqu'un cherche Internet près de moi" ON.
-OnePlus: mobile data OFF, not on the Freebox, Bluetooth ON. Tap the sphere.
-RECHERCHE → DEMANDE. OUKITEL: "Quelqu'un cherche Internet à proximité" →
-PARTAGER. OnePlus, no more taps: CONNEXION → CONNECTÉ → Wikipedia.
-TESTING section 51; COPY NETWORK on both if anything fails.
+OnePlus: mobile data OFF, **not on any Wi-Fi**, Bluetooth ON. Tap the
+sphere: RECHERCHE → after ~15 s DEMANDE.
+OUKITEL: "Quelqu'un cherche Internet à proximité" → PARTAGER.
+OnePlus, no more taps: CONNEXION → CONNECTÉ → Wikipedia.
+TESTING sections 51 and 53.
