@@ -870,6 +870,111 @@ Carrying the true sub-CFA rate needs a signed offer in the advertisement,
 which this release does not add. It is not claimed anywhere that the buyer
 receives the exact internal rate.
 
+## Stopping is symmetric (v0.15.0)
+
+v0.14.2 gave the BUYER a two-step stop and left the seller path as it was.
+`Gateway.stop()` called `endSession` straight away, which issued a closing
+checkpoint and settled in the same breath on `lastSigned` — the **previous**
+one, because the buyer had not countersigned the new one yet — and then
+cleared the contract, so the buyer's countersignature arrived at a seller
+that had forgotten what it signed. A short session was therefore still free
+whenever the SELLER was the one to stop. `ProkNetNode.setSelling(false)` had
+the same shape one level up: it cancelled the bulk link in the statement
+after `gateway.stop()`.
+
+Both directions now run one machine, `core/Teardown.kt`, which gained a
+`Cause` (LOCAL_STOP, PEER_STOP, LINK_LOST, TIMEOUT). **The role decides which
+frame goes out first. It never decides what the session costs.** A test pins
+that: the same signed usage settles at the same figure, to the centime,
+including the split, whichever phone pressed Stop.
+
+Seller stop is now: stop accepting buyer traffic, keep the link up, issue the
+closing checkpoint, wait for the countersignature under the existing bound,
+settle, tell the buyer, release the providing state. Nothing — contract,
+session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
+complete. The buyer treats SESSION_END as an ending rather than a fault: it
+closes the VPN and says "Le fournisseur a arrêté le partage."
+
+## The wallet is an obligation layer, not a bank (v0.15.0)
+
+ProkNet coordinates and verifies payment. **It does not hold anybody's money.**
+Every design decision below follows from that one sentence, and the wording
+follows from it too: the wallet shows "À payer", "À recevoir", "Payé", "Reçu"
+and "Gagné", and never a balance, because a balance would be a promise Prok
+cannot keep.
+
+**An obligation comes only from signed truth.** `Settlement.fromSession` takes
+a v2 contract and the checkpoint BOTH phones signed and returns an
+`Obligation`, or null. The UI can never name an amount. Null is a normal
+outcome: a free session (rate 0) owes nothing, a session with nothing mutually
+signed owes nothing because nobody may be billed for usage they never signed
+for, and a legacy v1 session is out of scope for real money.
+
+**One session, one obligation.** The settlement id is
+`sha256(domain | sessionId | contractHash | checkpointHash)`. A restart, a
+re-derivation, a repeated sync and the other phone's independent derivation
+all produce the same string, so a second payment request is not something the
+code has to remember to avoid — it is unrepresentable. Change the usage and
+the id changes: a tampered amount is a different obligation, not a louder
+version of this one.
+
+**Both phones derive it, neither trusts the other.** The buyer builds one from
+its copy of the session, the seller from its own. `agree()` compares them. A
+mismatch is `DISPUTED` and **the larger figure is never charged** — on the
+phone, and in the server's `report()`.
+
+**The accounting identity**, asserted on every obligation:
+
+```
+buyer obligation  =  seller receivable  +  Prok fee
+```
+
+**v0.15 covers commercial v2 sessions only.** Contract v2 signs the rate, the
+budget, the byte ceiling, the source-cost basis, the seller policy and the
+pricing mode. It does **not** sign a cost class or a payer. A sponsored
+session therefore cannot be proven to be one, and real money must not rest on
+an unsigned claim. Sponsored and Prok-funded sessions keep working; they
+simply create no payable obligation. This is the honest option and it avoids
+expanding the contract protocol again.
+
+**Small sessions net.** Authorising a Mobile Money transfer for 3 CFA is
+absurd, so obligations to the same seller accumulate and settle together.
+`SettlementPolicy` decides whether a paid session may start at all, **before**
+any Bluetooth channel, handshake or probe is paid for: free is never gated,
+sponsored runs under its own payer, a small debt does not interrupt one-tap
+Internet, and past the credit limit the buyer is asked to settle first. A
+confirmed payment history earns a little more room. A disputed session blocks
+until a human has looked at it.
+
+**Payment rails are adapters**, so the wallet core never knows which operator
+it is talking to. Stated plainly, because the difference matters:
+
+| Rail | Status |
+|---|---|
+| `MOCK` | Real, developer mode only, off unless a long press in the Lab screen enables it |
+| `MANUAL_PILOT` | Real. The buyer pays outside the app and gives the reference; the obligation reaches PAYMENT_SEEN and no further |
+| `MTN_MOMO`, `AIRTEL_MONEY` | Interface and documented integration points only. No merchant credentials exist here, so they report unavailable and refuse to initiate |
+
+**A typed reference is a claim, never a payment.** Only a rail, or a webhook
+whose signature the settlement service verified, may produce CONFIRMED. The
+server ships with no operator signing secret, so today nothing can be
+confirmed by webhook at all, and the code says so rather than defaulting to
+trusting it.
+
+**ProkNet never asks for a PIN**, secret code, password or operator OTP. The
+user authorises payment inside the operator's own flow. A design that needs
+the PIN is the wrong design.
+
+**Privacy.** A Mobile Money number is stored locally, never put in a BLE
+advert or in gossip, and shown masked. Discovery keeps using the Prok
+identity; payment identity is exchanged only for a real settlement.
+
+**The server** (`server/brain/settlement.py`) reconciles the two phones'
+reports, records every payment event under an idempotency key so a retried
+webhook is a no-op, refuses a payment whose amount does not match, never moves
+a confirmed obligation, expires unpaid ones, and writes an append-only audit
+trail.
+
 ## Stopping is two steps (v0.14.2)
 
 v0.14.1 connected, browsed and billed correctly on the phones. Stopping was

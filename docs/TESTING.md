@@ -2288,3 +2288,96 @@ and no tunnel behind it, and the next session must work.
 - Any session needing an app restart or a Bluetooth toggle to start again.
 - Any regression in section 59.
 
+## 61. v0.15.0 the seller stops (THE stability gate)
+
+This must pass before the wallet is worth testing at all. It is the seller-side
+twin of section 60.
+
+Same setup: OUKITEL seller on the Freebox, OnePlus buyer, budget 50 CFA.
+
+### 61a. A short session the seller ends
+
+Connect normally. Browse Wikipedia for **5 to 10 seconds only**. Then press
+stop-sharing on the **OUKITEL**, not on the OnePlus.
+
+Expected:
+
+- The OUKITEL shows "Vous avez gagné" with a figure **above zero**.
+- The OnePlus shows a spend **above zero** and below 50 CFA.
+- The two figures agree: the buyer's spend is the seller's earning plus the
+  Prok fee.
+- The OnePlus says **"Le fournisseur a arrêté le partage."** and not a
+  connection error. Its VPN must be off.
+
+COPY NETWORK on the OUKITEL must show `final checkpoint: PASS`.
+
+Before v0.15.0 this session earned the seller nothing.
+
+### 61b. Immediate reconnect
+
+Turn sharing back on and reconnect from the OnePlus at once, without
+restarting either app. Then do 61a again. Both must work.
+
+## 62. v0.15.0 the wallet
+
+Only after section 61 passes.
+
+### 62a. The obligation appears
+
+Run one short paid session and stop it. On both phones open **Activité**.
+
+Expected on the OnePlus: **À payer** shows what the session cost.
+Expected on the OUKITEL: **À recevoir** shows the seller's share.
+
+The note under the figures must say Prok does not hold your money. There must
+be no "Solde" anywhere.
+
+### 62b. Where the seller is paid
+
+On the OUKITEL, Activité → **Recevoir avec** → enter the Mobile Money number
+and choose MTN or Airtel. It must then show the operator and a **masked**
+number, never the whole one.
+
+### 62c. Mock payment (developer only)
+
+On the OnePlus, open Developer and **long-press COPY NETWORK**. It must say
+mock payments are on. This is the only way to enable them.
+
+Back in Activité, tap **PAYER**. Choose the simulated rail.
+
+Expected: the buyer shows Payé, the seller shows Reçu, and the amounts match.
+Restart **both** apps. The state must still be settled, with no duplicate.
+
+### 62d. Manual pilot payment
+
+With mock payments off, tap PAYER and choose **Paiement direct**. It must show
+the seller's masked number and ask for a reference.
+
+Enter anything reference-shaped. Expected: **"Paiement en attente de
+vérification."** It must NOT say paid. This is the point: a reference somebody
+typed is a claim, not proof.
+
+### 62e. Three small sessions, one payment
+
+Run three short sessions with the same seller without paying in between. À
+payer must be the **sum** of the three, and one PAYER should clear all of them.
+
+### 62f. The credit limit
+
+Keep running paid sessions without paying. Once the unpaid total reaches the
+limit, GET INTERNET must refuse **before** any Bluetooth setup, with
+"Réglez N CFA pour continuer". It must refuse quickly, with no Bluetooth
+activity at all.
+
+A free source must still work at that moment.
+
+### What would make this a FAIL
+
+- A seller-stopped short session earning zero.
+- The buyer's spend and the seller's earning not agreeing.
+- "Le fournisseur a arrêté le partage." replaced by a connection error.
+- The word "Solde" anywhere, or any claim that a payment is guaranteed.
+- A typed reference shown as paid.
+- A duplicate obligation or a doubled amount after restarting the apps.
+- The credit limit refusing only after Bluetooth setup rather than before.
+
