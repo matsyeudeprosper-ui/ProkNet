@@ -12,6 +12,7 @@ import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.Market
 import net.prok.proknet.core.NetRequest
 import net.prok.proknet.core.ControlRetry
 import net.prok.proknet.core.ProviderActivation
@@ -460,6 +461,19 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             .append(if (o.notifiedAt > 0) ", alerted" else ", NOT alerted").append(if (o.accepted) ", ACCEPTED" else "").append("\n")
         sb.append("  notification: last shown ").append(if (inbox.lastNotifiedAt == 0L) "never" else CoverageModel.ageWord(now - inbox.lastNotifiedAt))
             .append(", total ").append(inbox.notifications).append(", suppressed reason: ").append(inbox.lastSuppressed.ifEmpty { "none" }).append("\n")
+        sb.append("pricing:\n")
+        sb.append("  buyer budget: ").append(Market.cfa(node.buyBudgetCentimes)).append(" | seller policy: ").append(node.sellerPolicy)
+            .append(" | my source: ").append(node.mySource().kind).append(" | declared bundle cost: ")
+            .append(if (node.sourceCostCentimesPerMb < 0) "not declared" else Market.cfa(node.sourceCostCentimesPerMb.toLong()) + "/MB").append("\n")
+        sb.append("  my automatic rate: ").append(Market.cfa(node.autoRateCentimesPerMb().toLong())).append("/MB internal, advertised ")
+            .append(net.prok.proknet.core.Pricing.advertisedPriceCfa(node.autoRateCentimesPerMb())).append(" CFA/MB | my floor: ")
+            .append(Market.cfa(net.prok.proknet.core.Pricing.sellerFloorPerMb(node.mySource(), node.sellerPolicy).toLong())).append("/MB\n")
+        node.buyQuote?.let { sb.append("  last buy quote: ").append(net.prok.proknet.core.Pricing.describe(it).replace("\n", "\n  ")).append("\n") }
+        node.tunnel.contract?.let { c ->
+            sb.append("  live contract: v").append(c.version).append(if (c.budgetSession) " BUDGET" else " legacy")
+                .append(", budget ").append(Market.cfa(c.buyerBudgetCentimes)).append(", rate ").append(Market.cfa(c.rateCentimesPerMb.toLong()))
+                .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
+        }
         sb.append("control plane:\n  ").append(node.bleControlPlaneLine().replace("\n", "\n  ")).append("\n")
         sb.append("  forwarding: ").append(ControlRetry.describe(retry, now)).append("\n")
         for ((peer, h) in retry.peers) ControlRetry.peerNote(h, now).let { if (it.isNotEmpty()) sb.append("  prok-").append(peer).append(": ").append(it).append("\n") }

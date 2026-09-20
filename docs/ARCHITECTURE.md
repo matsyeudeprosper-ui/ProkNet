@@ -746,6 +746,75 @@ BSSID, level, security from the capabilities string, timestamp. A tap
 classifies the BSSID locally (SharedPreferences) with a `Coverage.Trust`
 class. No passwords, no automatic connection, nothing uploaded.
 
+## Money people understand (v0.14.0)
+
+The product rule: the buyer says *"I have 50 CFA, get me Internet"*, the
+seller says *"share my Internet and make me money"*, and ProkNet does the
+arithmetic. Megabytes stay in the accounting, out of the product.
+
+**The engine** (`core/Pricing.kt`, pure, integer centimes, no floating point
+anywhere near money). Source kinds carry a cost policy: FREE_PUBLIC,
+SPONSORED and PROK_FUNDED cost nothing; AUTHORIZED_HOME_WIFI /
+AUTHORIZED_SHOP_WIFI cost what their owner declares (a fixed line's marginal
+cost really is about zero); MOBILE_DATA costs what the bundle cost, derived
+from "1 000 CFA for 2 Go" and never from a CFA/MB the seller had to compute;
+UNKNOWN is not sellable at all. An undeclared mobile bundle is assumed to
+cost something, never nothing, so silence cannot make a seller sell at a
+loss.
+
+From that: `sellerFloorPerMb = sourceCost + safety + earning`, where the
+earning is the larger of a flat per-MB figure and a share of the source
+cost, both per policy (CHEAPER / BALANCED / EARN_MORE). Then
+`rateForFloor` grosses the floor up so the Prok fee comes out of the buyer's
+payment and never out of the seller's floor. The seller advertises
+`ceil(rate / 100)` whole CFA, so the on-air price can never sit below the
+floor and no wire format changed.
+
+**The identity** every quote satisfies exactly, and a test pins for every
+source and policy and budget:
+
+```
+buyer charge  =  Prok fee  +  seller's source cost  +  seller's profit
+```
+
+**The budget is a signed ceiling.** `Market.Contract` gains version 2:
+`rateCentimesPerMb`, `buyerBudgetCentimes`, `maxBillableBytes`,
+`sourceCostBasisCentimesPerMb`, `sellerPolicy`, `pricingMode`. Both phones
+sign it. `Contract.costFor(bytes)` bills a v2 contract at the exact centime
+rate, capped at the byte ceiling AND at the signed budget, so a 50 CFA
+session cannot become 75 CFA; a v1 contract bills exactly as it always did,
+and old stored contracts still decode (`LEN` or `LEN_V2`). Every cost call
+site — checkpoints, validation, both running totals — goes through
+`costFor`, so there is one billing rule, not five.
+
+**Both sides are protected.** The buyer's side (`quoteForOffer`) checks only
+what is its own business: does my budget buy something useful at the price I
+was offered? The seller's side re-checks in `acceptableProposal` that the
+proposed rate still leaves it its floor after the fee — it signs economics,
+not a price list. And the check happens *before* the expensive part:
+`ProkNetNode.buy()` refuses an impossible deal before any Bluetooth channel,
+handshake or probe is paid for.
+
+**Free stays free.** A budget of 50 CFA means "you may spend up to 50",
+never "take 50". A free source quotes a rate of 0, charges 0, and is not
+rationed by money.
+
+**Nobody is subsidised by accident.** COMMERCIAL must fit the budget and
+leave the seller in profit. SPONSORED lets the buyer pay nothing while the
+sponsor's budget is the ceiling and the seller still earns. GROWTH_SUBSIDY
+is allowed only inside an explicit subsidy budget. The payer — BUYER,
+SPONSOR or PROK — is part of every quote.
+
+**The screens.** Buyer: a budget card (25 / 50 / 100 CFA, remembered,
+confirmed once before the first ever paid session) and, during a session,
+"Vous avez dépensé 34 CFA sur votre budget de 50 CFA" with a warning only
+near the end. Offers read "Jusqu'à 50 CFA" or "Gratuit". Seller: no price
+box at all — "ProkNet fixe automatiquement un prix rentable pour vous",
+three choices, an optional "Mon forfait" (paid / for how many Mo), a bounded
+earning estimate shown only when it is genuinely calculable, and "Vous avez
+gagné 27 CFA". CFA/MB survives only in Developer diagnostics and in the
+display of old v1 sessions.
+
 ## The control plane has to be trustworthy (v0.13.3)
 
 Three failures on the phones, all of the same family: our code said ready,

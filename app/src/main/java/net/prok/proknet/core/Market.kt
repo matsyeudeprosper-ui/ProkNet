@@ -12,6 +12,8 @@ import java.nio.ByteBuffer
  */
 object Market {
     const val PRICING_VERSION = 1
+    /** v0.14: a contract whose ceiling is the buyer's CFA budget, not a megabyte count. */
+    const val PRICING_VERSION_BUDGET = 2
     const val MB = 1_000_000L
     const val MAX_PRICE_PER_MB = 100_000      // CFA; anything above is malformed
     const val MAX_MIN_PRICE = 1_000_000       // CFA
@@ -121,30 +123,81 @@ object Market {
         val sessionId: ByteArray, val buyerId: ByteArray, val sellerId: ByteArray,
         val pricePerMb: Int, val minPriceCfa: Int, val maxMb: Int, val feePct: Int, val startTs: Long,
         val version: Int = PRICING_VERSION,
+        // ---- v0.14 (version 2 only): the economics both sides actually sign ----
+        /** The exact internal rate, in centimes per MB. CFA-per-MB cannot express 2.11 CFA. */
+        val rateCentimesPerMb: Int = 0,
+        /** The buyer's ceiling. The session may never cost more than this. */
+        val buyerBudgetCentimes: Long = 0,
+        /** The byte ceiling derived from that budget at that rate. */
+        val maxBillableBytes: Long = 0,
+        /** What the source costs its owner, so the split can be audited later. */
+        val sourceCostBasisCentimesPerMb: Int = 0,
+        /** Pricing.SellerPolicy.ordinal. */
+        val sellerPolicy: Int = 0,
+        /** 0 = legacy CFA/MB, 1 = budget session. */
+        val pricingMode: Int = 0,
     ) {
         val sessionHex get() = sessionId.toHex()
         val buyerShort get() = buyerId.toHex().substring(0, 8)
         val sellerShort get() = sellerId.toHex().substring(0, 8)
-        val maxBytes: Long get() = if (maxMb == 0) Long.MAX_VALUE else maxMb.toLong() * MB
+        val budgetSession: Boolean get() = version == PRICING_VERSION_BUDGET && pricingMode == 1
+        val maxBytes: Long get() = when {
+            budgetSession -> if (maxBillableBytes <= 0) Long.MAX_VALUE else maxBillableBytes
+            maxMb == 0 -> Long.MAX_VALUE
+            else -> maxMb.toLong() * MB
+        }
 
-        fun encode(): ByteArray = ByteBuffer.allocate(1 + 8 + 16 + 16 + 4 + 4 + 4 + 1 + 8)
-            .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs).array()
+        /**
+         * v0.14: what [bytes] cost under THESE terms. A budget contract bills at the
+         * exact centime rate and can never exceed the signed budget; a v1 contract
+         * bills exactly as it always did.
+         */
+        fun costFor(bytes: Long): Long {
+            if (!budgetSession) return sessionCost(bytes, pricePerMb, minPriceCfa)
+            if (rateCentimesPerMb <= 0) return 0
+            val capped = if (maxBillableBytes > 0) minOf(bytes, maxBillableBytes) else bytes
+            val raw = (capped * rateCentimesPerMb + MB / 2) / MB
+            return if (buyerBudgetCentimes > 0) minOf(raw, buyerBudgetCentimes) else raw
+        }
+
+        fun encode(): ByteArray =
+            if (version == PRICING_VERSION_BUDGET) ByteBuffer.allocate(LEN_V2)
+                .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs)
+                .putInt(rateCentimesPerMb).putLong(buyerBudgetCentimes).putLong(maxBillableBytes).putInt(sourceCostBasisCentimesPerMb)
+                .put(sellerPolicy.toByte()).put(pricingMode.toByte()).array()
+            else ByteBuffer.allocate(LEN)
+                .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs).array()
 
         fun hash(): ByteArray = Crypto.sha256(encode())
-        fun valid(): Boolean = sessionId.size == 8 && buyerId.size == 16 && sellerId.size == 16 && validPrice(pricePerMb) && validMinPrice(minPriceCfa) &&
-            validMaxMb(maxMb) && validFee(feePct) && startTs > 0 && version == PRICING_VERSION && !buyerId.contentEquals(sellerId)
+        fun valid(): Boolean {
+            val base = sessionId.size == 8 && buyerId.size == 16 && sellerId.size == 16 && validPrice(pricePerMb) && validMinPrice(minPriceCfa) &&
+                validMaxMb(maxMb) && validFee(feePct) && startTs > 0 && !buyerId.contentEquals(sellerId)
+            if (!base) return false
+            return when (version) {
+                PRICING_VERSION -> true
+                PRICING_VERSION_BUDGET -> rateCentimesPerMb in 0..MAX_PRICE_PER_MB && buyerBudgetCentimes >= 0 &&
+                    maxBillableBytes in 0..MAX_BILLABLE_BYTES && sourceCostBasisCentimesPerMb in 0..MAX_PRICE_PER_MB &&
+                    sellerPolicy in 0..7 && pricingMode in 0..1
+                else -> false
+            }
+        }
 
         fun sameTermsAs(o: Contract) = encode().contentEquals(o.encode())
 
         companion object {
             const val LEN = 62
+            /** v1 plus rate, budget, byte ceiling, source-cost basis, seller policy, pricing mode. */
+            const val LEN_V2 = LEN + 4 + 8 + 8 + 4 + 1 + 1
             fun decode(b: ByteArray?): Contract? {
-                if (b == null || b.size != LEN) return null
+                if (b == null || (b.size != LEN && b.size != LEN_V2)) return null
                 return try {
                     val bb = ByteBuffer.wrap(b)
                     val ver = bb.get().toInt() and 0xFF
                     val sid = ByteArray(8).also { bb.get(it) }; val buyer = ByteArray(16).also { bb.get(it) }; val seller = ByteArray(16).also { bb.get(it) }
-                    val c = Contract(sid, buyer, seller, bb.int, bb.int, bb.int, bb.get().toInt() and 0xFF, bb.long, ver)
+                    val price = bb.int; val min = bb.int; val maxMb = bb.int; val fee = bb.get().toInt() and 0xFF; val ts = bb.long
+                    val c = if (b.size == LEN_V2)
+                        Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver, bb.int, bb.long, bb.long, bb.int, bb.get().toInt() and 0xFF, bb.get().toInt() and 0xFF)
+                    else Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver)
                     if (c.valid()) c else null
                 } catch (e: Exception) { null }
             }
@@ -155,11 +208,21 @@ object Market {
     fun contractSignData(c: Contract): ByteArray = "ProkNet-contract-1".toByteArray(Charsets.UTF_8) + c.encode()
 
     /** Seller-side check of a proposal: the terms must be exactly what the seller currently offers, and the parties must be the link parties. */
-    fun acceptableProposal(c: Contract, myId: ByteArray, linkPeerId: ByteArray, myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int, nowMs: Long, usedSessionIds: Set<String>): String? {
+    fun acceptableProposal(c: Contract, myId: ByteArray, linkPeerId: ByteArray, myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int, nowMs: Long, usedSessionIds: Set<String>,
+                           myFloorCentimesPerMb: Int = 0): String? {
         if (!c.valid()) return "malformed contract"
         if (!c.sellerId.contentEquals(myId)) return "seller id is not me"
         if (!c.buyerId.contentEquals(linkPeerId)) return "buyer id is not the authenticated link peer"
-        if (c.pricePerMb != myPrice || c.minPriceCfa != myMin || c.maxMb != myMaxMb || c.feePct != myFee) return "terms differ from my offer"
+        if (c.budgetSession) {
+            // v0.14: the seller checks that the rate really covers its floor, not that a price list matches
+            if (c.feePct != myFee) return "fee differs from my offer"
+            if (c.rateCentimesPerMb <= 0) return "no internal rate"
+            if (c.maxBillableBytes <= 0 || c.buyerBudgetCentimes <= 0) return "no budget ceiling"
+            if (c.costFor(c.maxBillableBytes) > c.buyerBudgetCentimes) return "the byte ceiling costs more than the signed budget"
+            // the seller never signs a rate that leaves it below its own floor
+            if (myFloorCentimesPerMb > 0 && split(c.rateCentimesPerMb.toLong(), c.feePct).sellerNet < myFloorCentimesPerMb)
+                return "the rate does not cover my cost and margin"
+        } else if (c.pricePerMb != myPrice || c.minPriceCfa != myMin || c.maxMb != myMaxMb || c.feePct != myFee) return "terms differ from my offer"
         if (Math.abs(nowMs - c.startTs) > 10 * 60_000L) return "start time too far from now"
         if (usedSessionIds.contains(c.sessionHex)) return "session id already used"
         return null
@@ -194,7 +257,7 @@ object Market {
 
     /** Seller builds the next checkpoint from its own counters under the contract terms. */
     fun nextCheckpoint(contract: Contract, prevSeq: Int, bytesUp: Long, bytesDown: Long, ts: Long, final: Boolean): Checkpoint =
-        Checkpoint(contract.sessionId, prevSeq + 1, bytesUp, bytesDown, sessionCost(bytesUp + bytesDown, contract.pricePerMb, contract.minPriceCfa), ts, final)
+        Checkpoint(contract.sessionId, prevSeq + 1, bytesUp, bytesDown, contract.costFor(bytesUp + bytesDown), ts, final)
 
     /**
      * Buyer-side validation of a seller checkpoint against the contract, the last
@@ -209,7 +272,7 @@ object Market {
         if (last != null && c.seq <= last.seq) return if (c.seq == last.seq) "duplicate seq " + c.seq else "out-of-order seq " + c.seq + " <= " + last.seq
         if (last != null && (c.bytesUp < last.bytesUp || c.bytesDown < last.bytesDown)) return "usage decreased"
         if (last != null && last.final) return "session already finalised"
-        if (c.costCentimes != sessionCost(c.billable, contract.pricePerMb, contract.minPriceCfa)) return "cost does not match the agreed terms"
+        if (c.costCentimes != contract.costFor(c.billable)) return "cost does not match the agreed terms"
         val claimed = c.billable; val mine = myUp + myDown
         val allowance = TOLERANCE_BYTES + mine * TOLERANCE_PERMILLE / 1000
         if (claimed > mine + allowance) return "seller claims " + claimed + " bytes, I counted " + mine + " (+" + allowance + " allowed)"
@@ -219,7 +282,7 @@ object Market {
 
     /** Final settlement from the last mutually signed checkpoint under the agreed terms. */
     fun finalCost(contract: Contract, lastSigned: Checkpoint?): Long =
-        if (lastSigned == null) sessionCost(0, contract.pricePerMb, contract.minPriceCfa) else sessionCost(lastSigned.billable, contract.pricePerMb, contract.minPriceCfa)
+        if (lastSigned == null) contract.costFor(0) else contract.costFor(lastSigned.billable)
 
     // ---- ledger ----------------------------------------------------------------------------------------
 

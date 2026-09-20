@@ -101,6 +101,31 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     // ---- session: contract first, then the tunnel ------------------------------------------------
 
     /** Start buying from the link peer at the price it advertised. */
+    /**
+     * v0.14: the buyer's budget is the contract's ceiling. The rate is the price
+     * the seller advertised, in centimes, so billing is exact and the session can
+     * never cost more than the person agreed to spend.
+     */
+    fun startBudget(q: net.prok.proknet.core.Pricing.Quote, sellerPolicy: Int): Boolean {
+        val peer = hooks.linkPeer(); val peerFull = hooks.linkPeerFullId()
+        if (peer == null || peerFull == null) { setState("DISCONNECTED", "no authenticated Wi-Fi link"); return false }
+        if (session != null || contract != null) return true
+        if (!q.admissible) { setState("DISCONNECTED", q.reason); lastError = q.reason; return false }
+        providerShort = peer
+        lastError = ""
+        advertisedPrice = net.prok.proknet.core.Pricing.advertisedPriceCfa(q.rateCentimesPerMb)
+        reproposed = false
+        budgetQuote = q
+        val maxMb = minOf(Market.MAX_MB_PER_SESSION.toLong(), (q.maxBillableBytes + Market.MB - 1) / Market.MB).toInt()
+        return propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), advertisedPrice, 0, maxMb,
+            hooks.feePct(), System.currentTimeMillis(), Market.PRICING_VERSION_BUDGET,
+            q.rateCentimesPerMb, q.budgetCentimes, q.maxBillableBytes, q.sourceCostPerMb, sellerPolicy, 1))
+    }
+
+    /** The quote this session was agreed on, for the budget wording. */
+    @Volatile var budgetQuote: net.prok.proknet.core.Pricing.Quote? = null
+        private set
+
     fun start(advertisedPricePerMb: Int, minPrice: Int = 0, maxMb: Int = 0): Boolean {
         val peer = hooks.linkPeer(); val peerFull = hooks.linkPeerFullId()
         if (peer == null || peerFull == null) { setState("DISCONNECTED", "no authenticated Wi-Fi link"); return false }
@@ -117,7 +142,10 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         if (!c.valid()) { setState("DISCONNECTED", "contract invalid"); return false }
         val sig = identity.sign(Market.contractSignData(c))
         pendingProposal = c to sig
-        setState("AGREEING", "proposing " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + ", max " + (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB") + ", fee " + c.feePct + "% -> prok-" + c.sellerShort)
+        setState("AGREEING", if (c.budgetSession)
+            "proposing a budget session: " + Market.cfa(c.buyerBudgetCentimes) + " max, " + Market.cfa(c.rateCentimesPerMb.toLong()) + "/MB internal, " +
+                Market.mb(c.maxBillableBytes) + " ceiling, fee " + c.feePct + "% -> prok-" + c.sellerShort
+            else "proposing " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + ", max " + (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB") + ", fee " + c.feePct + "% -> prok-" + c.sellerShort)
         if (!hooks.send(Tunnel.T_CONTRACT_PROPOSE, 0, Tunnel.signed(c.encode(), sig))) { setState("DISCONNECTED", "cannot write to link"); return false }
         main.postDelayed({ if (contract == null && state == "AGREEING") fail("no contract answer within 15s") }, 15_000)
         return true
@@ -295,7 +323,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     private fun markInternetOk(why: String) { if (state == "TUNNEL UP") setState("INTERNET OK", why) }
 
     /** Live figures for the UI. */
-    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return Market.sessionCost(s.bytesUp + s.bytesDown, c.pricePerMb, c.minPriceCfa) }
+    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp + s.bytesDown) }
     fun agreedCost(): Long { val c = contract ?: return 0; return Market.finalCost(c, lastAccepted) }
 
     // ---- packets from the VPN TUN (unchanged from v0.6) ------------------------------------------

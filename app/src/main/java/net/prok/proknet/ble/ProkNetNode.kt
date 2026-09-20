@@ -376,7 +376,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 if (buyViaBulk && buyerWanted == peerShort) {
                     if (net.prok.proknet.core.BulkPlan.afterProbe(verdict) == net.prok.proknet.core.BulkPlan.AfterProbe.START_CONTRACT) {
                         DiagLog.i(tag, "Bluetooth bulk link carried the payload both ways: proposing the contract")
-                        if (tunnel.session == null && tunnel.contract == null) tunnel.start(buyPrice)
+                        if (tunnel.session == null && tunnel.contract == null) startBudgetTunnel()
                     } else {
                         failBuy(net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON + " (" + report + ")",
                             net.prok.proknet.core.BulkPlan.PROBE_FAIL_REASON)
@@ -1164,6 +1164,26 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     /** SELL on/off with the given terms. */
+    /** v0.14: recompute what this phone charges, from its source and its earning policy. */
+    /** v0.14: start the session on the quote the purchase was admitted on. */
+    private fun startBudgetTunnel(): Boolean {
+        val q = buyQuote ?: net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, buyPrice * 100)
+        buyQuote = q
+        return tunnel.startBudget(q, sellerPolicy.ordinal)
+    }
+
+    fun refreshAutoPrice() {
+        val rate = autoRateCentimesPerMb()
+        gateway.sellerFloorCentimesPerMb = net.prok.proknet.core.Pricing.sellerFloorPerMb(mySource(), sellerPolicy)
+        val cfa = net.prok.proknet.core.Pricing.advertisedPriceCfa(rate)
+        if (cfa != sellPrice) {
+            sellPrice = cfa
+            DiagLog.i(tag, "automatic price: " + Market.cfa(rate.toLong()) + "/MB internal, advertised " + cfa + " CFA/MB (" +
+                mySource().kind + ", " + sellerPolicy + ", floor " + Market.cfa(gateway.sellerFloorCentimesPerMb.toLong()) + "/MB)")
+            refreshAdvert()
+        }
+    }
+
     fun setSelling(on: Boolean, price: Int = sellPrice, minPrice: Int = sellMinPrice, maxMb: Int = sellMaxMb): String? {
         if (on) {
             if (!Market.validPrice(price) || !Market.validMinPrice(minPrice) || !Market.validMaxMb(maxMb)) return "invalid terms"
@@ -1171,6 +1191,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             if (relay.relayMode) return "relay mode is on"
             sellPrice = price; sellMinPrice = minPrice; sellMaxMb = maxMb
             gateway.start()
+            main.postDelayed({ refreshAutoPrice() }, 1500)
             main.postDelayed({ if (gateway.providing) onSharingReady("sharing switched on") }, 1200)
         } else {
             gateway.stop()
@@ -1194,6 +1215,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (relay.relayMode) { DiagLog.w(tag, "cannot BUY in relay mode"); return false }
         val offer = peer.offer()
         if (!offer.selling) { DiagLog.w(tag, "prok-" + peer.shortId + " is not selling Internet right now"); return false }
+        // v0.14: economics before transport. A deal that cannot fit the budget is refused here,
+        // not after a Bluetooth channel, a handshake and a probe have been paid for.
+        val quote = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, offer.pricePerMb * 100)
+        if (!quote.admissible) {
+            DiagLog.w(tag, "BUY refused before any setup: " + quote.reason)
+            lastBuyError = quote.reason
+            return false
+        }
+        buyQuote = quote
+        DiagLog.i(tag, "BUY admitted: budget " + Market.cfa(buyBudgetCentimes) + ", rate " + Market.cfa(quote.rateCentimesPerMb.toLong()) +
+            "/MB, ceiling " + Market.mb(quote.maxBillableBytes))
         buyPrice = offer.pricePerMb
         buyerWanted = peer.shortId
         buyViaRelay = offer.viaRelay
@@ -1208,7 +1240,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 startBulkBuy(peer.shortId)
             }
             P2pAdmission.BuyPath.RELAY_INTRO -> awaitIntroduction(peer.shortId)
-            P2pAdmission.BuyPath.LINK_UP -> tunnel.start(buyPrice)
+            P2pAdmission.BuyPath.LINK_UP -> startBudgetTunnel()
             P2pAdmission.BuyPath.WIFI_DIRECT -> {
                 if (p2pTopology == P2pPlan.Topology.BUYER_GROUP_OWNER)
                     DiagLog.i(tag, "BUY decision: forcing Wi-Fi Direct because buyer owns the group (the offer " +
@@ -1266,6 +1298,29 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
     @Volatile var lastInternetTest: String = ""
     /** v0.9.3: why the last purchase attempt ended, kept after the attempt is cleared so the screen can explain it. */
+    /** v0.14: the buyer's ceiling in centimes for the next purchase. */
+    @Volatile var buyBudgetCentimes: Long = net.prok.proknet.core.Pricing.DEFAULT_BUDGET_CENTIMES
+    /** v0.14: what this phone wants to earn when it shares. */
+    @Volatile var sellerPolicy: net.prok.proknet.core.Pricing.SellerPolicy = net.prok.proknet.core.Pricing.SellerPolicy.BALANCED
+    /** v0.14: what one MB of this phone's own data costs it, in centimes; -1 = not declared. */
+    @Volatile var sourceCostCentimesPerMb: Int = -1
+    /** v0.14: the quote the current purchase was admitted on. */
+    @Volatile var buyQuote: net.prok.proknet.core.Pricing.Quote? = null
+
+    /** v0.14: the source this phone would share, as the pricing engine sees it. */
+    fun mySource(): net.prok.proknet.core.Pricing.Source {
+        val up = gateway.upstream ?: net.prok.proknet.node.Upstream.now(context)
+        val kind = when (Tunnel.upstreamType(up)) {
+            Tunnel.UP_CELLULAR -> net.prok.proknet.core.Pricing.SourceKind.MOBILE_DATA
+            Tunnel.UP_WIFI -> net.prok.proknet.core.Pricing.SourceKind.AUTHORIZED_HOME_WIFI
+            else -> net.prok.proknet.core.Pricing.SourceKind.UNKNOWN
+        }
+        return net.prok.proknet.core.Pricing.Source(kind, sourceCostCentimesPerMb)
+    }
+
+    /** v0.14: the automatic price, in centimes per MB, this phone would charge. */
+    fun autoRateCentimesPerMb(): Int = net.prok.proknet.core.Pricing.autoRate(mySource(), sellerPolicy)
+
     @Volatile var lastBuyError: String = ""
 
     private val tunnelSink = object : net.prok.proknet.transport.WifiTransport.TunnelSink {

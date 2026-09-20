@@ -40,6 +40,7 @@ import net.prok.proknet.core.Market
 import net.prok.proknet.core.ProductState
 import net.prok.proknet.core.ProductState.active
 import net.prok.proknet.core.ProductState.busy
+import net.prok.proknet.core.Pricing
 import net.prok.proknet.core.ProviderInbox
 import net.prok.proknet.core.StoredSession
 import net.prok.proknet.core.Tunnel
@@ -77,6 +78,21 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private var request: InternetRequest.Request? = null
     private var requestStartedAt = 0L
     private var locationAsked = false
+    private val money by lazy { getSharedPreferences("proknet_money", Context.MODE_PRIVATE) }
+
+    // ---- v0.14: the buyer's budget and the seller's earning policy live here ----------------------
+    private var budgetCentimes: Long
+        get() = money.getLong("budget", Pricing.DEFAULT_BUDGET_CENTIMES)
+        set(v) { money.edit().putLong("budget", v).apply(); node.buyBudgetCentimes = v }
+    private var budgetConfirmed: Boolean
+        get() = money.getBoolean("budget_ok", false)
+        set(v) { money.edit().putBoolean("budget_ok", v).apply() }
+    private var sellerPolicy: Pricing.SellerPolicy
+        get() = try { Pricing.SellerPolicy.valueOf(money.getString("policy", "BALANCED")!!) } catch (e: Exception) { Pricing.SellerPolicy.BALANCED }
+        set(v) { money.edit().putString("policy", v.name).apply(); node.sellerPolicy = v; node.refreshAutoPrice() }
+    private var bundleCostCentimesPerMb: Int
+        get() = money.getInt("bundle", -1)
+        set(v) { money.edit().putInt("bundle", v).apply(); node.sourceCostCentimesPerMb = v; node.refreshAutoPrice() }
 
     companion object {
         const val SEARCH_WINDOW_MS = 15_000L
@@ -117,6 +133,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<Button>(R.id.btnStartSharing).setOnClickListener { ensureRunning { startSharing() } }
         v<Button>(R.id.btnStopSharing).setOnClickListener { stopSharing() }
         v<Button>(R.id.btnInboxShare).setOnClickListener { shareForDemand() }
+        v<TextView>(R.id.budget25).setOnClickListener { budgetCentimes = 2_500; refresh() }
+        v<TextView>(R.id.budget50).setOnClickListener { budgetCentimes = 5_000; refresh() }
+        v<TextView>(R.id.budget100).setOnClickListener { budgetCentimes = 10_000; refresh() }
+        v<TextView>(R.id.policyCheaper).setOnClickListener { sellerPolicy = Pricing.SellerPolicy.CHEAPER; refresh() }
+        v<TextView>(R.id.policyBalanced).setOnClickListener { sellerPolicy = Pricing.SellerPolicy.BALANCED; refresh() }
+        v<TextView>(R.id.policyEarnMore).setOnClickListener { sellerPolicy = Pricing.SellerPolicy.EARN_MORE; refresh() }
+        v<Button>(R.id.btnBundleSave).setOnClickListener { saveBundle() }
+        // the node starts from what this person already chose
+        node.buyBudgetCentimes = budgetCentimes
+        node.sellerPolicy = sellerPolicy
+        node.sourceCostCentimesPerMb = bundleCostCentimesPerMb
         v<TextView>(R.id.btnShareOptions).setOnClickListener { val o = v<View>(R.id.shareOptions); o.visibility = if (o.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         v<Button>(R.id.btnMapLocation).setOnClickListener { askLocation() }
         v<CoverageMapView>(R.id.mapView).onCellTap = { zone, cell -> cellDialog(zone, cell) }
@@ -133,7 +160,6 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         text(R.id.profileVersion, "ProkNet " + versionName)
         text(R.id.shareFee, getString(R.string.share_fee, node.feePct))
         text(R.id.confirmFee, getString(R.string.confirm_fee, node.feePct))
-        v<EditText>(R.id.sharePrice).setText(node.sellPrice.toString()); v<EditText>(R.id.shareMin).setText(node.sellMinPrice.toString()); v<EditText>(R.id.shareMax).setText(node.sellMaxMb.toString())
         select(Tab.HOME)
     }
 
@@ -178,6 +204,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun getInternet() {
         if (node.sellOn) { toast(getString(R.string.toast_stop_sharing_first)); return }
         if (request?.active == true) return
+        // v0.14: one tap, but never a surprise bill. The first paid session is confirmed once.
+        if (!budgetConfirmed) { confirmBudgetThenGo(); return }
         ensureRunning {
             if (buyerOn()) { refresh(); return@ensureRunning }
             // v0.13.1: a new request starts from a clean screen. The error of a session the user
@@ -344,7 +372,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 text(R.id.homeTitle, ProductState.sellerHeadline(s)); text(R.id.homeSub, sellerWarning().ifEmpty { ProductState.sellerHint(s) })
                 show(R.id.homeProgress, false)
                 val g = node.gateway
-                text(R.id.homeMoney, ProductState.priceLine(node.sellPrice) + "\n" + getString(R.string.home_earned_now, ProductState.cfaShort(g.totalEarnedCentimes + Market.split(g.agreedCost(), node.feePct).sellerNet)))
+                text(R.id.homeMoney, Pricing.earnedWord(g.totalEarnedCentimes + Market.split(g.agreedCost(), node.feePct).sellerNet))
                 show(R.id.homeMoney, true)
                 stop.text = getString(R.string.stop_sharing)
             }
@@ -352,8 +380,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 text(R.id.homeTitle, if (b == ProductState.Buyer.ONLINE) getString(R.string.connected) else ProductState.buyerTitle(b))
                 text(R.id.homeSub, ProductState.buyerHint(b, node.buyPhase(), node.tunnel.state == "TUNNEL UP" && !ProkVpnService.running, buyError()))
                 show(R.id.homeProgress, b.busy)
+                // v0.14: the buyer reads money, never megabytes
                 val c = node.tunnel.contract
-                val money = if (c != null) getString(R.string.home_price, ProductState.priceLine(c.pricePerMb)) + "\n" + getString(R.string.home_used, ProductState.data(sessionBytes())) + "\n" + getString(R.string.home_cost, ProductState.cfaShort(node.tunnel.runningCost())) else ""
+                val spent = node.tunnel.runningCost()
+                val money = when {
+                    c == null -> ""
+                    c.budgetSession && c.rateCentimesPerMb == 0 -> getString(R.string.free_session)
+                    c.budgetSession -> Pricing.spentWord(spent, c.buyerBudgetCentimes) +
+                        (if (Pricing.nearlyExhausted(spent, c.buyerBudgetCentimes)) "\n" + Pricing.remainingWord(spent, c.buyerBudgetCentimes) else "")
+                    else -> getString(R.string.home_used, ProductState.data(sessionBytes())) + "\n" + getString(R.string.home_cost, ProductState.cfaShort(spent))
+                }
                 text(R.id.homeMoney, money); show(R.id.homeMoney, money.isNotEmpty())
                 stop.text = getString(if (b == ProductState.Buyer.LOST) R.string.close_big else R.string.stop_big)
             }
@@ -388,6 +424,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshInternet(b: ProductState.Buyer) {
+        refreshBudget()
+        show(R.id.budgetCard, !buyerOn() && pendingOffer == null)
         val buyerVisible = ProductState.homeOwner(false, buyerOn(), request?.let { it.state != InternetRequest.State.CANCELLED } == true,
             b == ProductState.Buyer.LOST && !lostDismissed) == ProductState.HomeOwner.PURCHASE
         val confirm = !buyerVisible && pendingOffer != null
@@ -399,13 +437,14 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 show(R.id.activeProgress, b.busy); show(R.id.activeStats, node.tunnel.session != null)
                 text(R.id.activeData, ProductState.data(sessionBytes())); text(R.id.activeCost, ProductState.cfaShort(node.tunnel.runningCost()))
                 val c = node.tunnel.contract; val sess = node.tunnel.session
-                text(R.id.activeDetail, (c?.let { ProductState.priceLine(it.pricePerMb) + " · " } ?: "") + (sess?.let { ProductState.duration(it.durationMs) + " · " } ?: "") + (node.tunnel.providerShort?.let { getString(R.string.via_peer, node.peerName(it)) } ?: ""))
+                text(R.id.activeDetail, (c?.let { (if (it.budgetSession) Pricing.budgetLine(it.buyerBudgetCentimes) else ProductState.priceLine(it.pricePerMb)) + " · " } ?: "") +
+                    (sess?.let { ProductState.duration(it.durationMs) + " · " } ?: "") + (node.tunnel.providerShort?.let { getString(R.string.via_peer, node.peerName(it)) } ?: ""))
                 v<Button>(R.id.btnStopInternet).text = getString(if (b == ProductState.Buyer.LOST) R.string.close else R.string.disconnect)
             }
             confirm -> {
                 val o = pendingOffer!!
                 text(R.id.confirmTitle, offerTitle(o) + " · " + node.peerName(o.sellerShort))
-                text(R.id.confirmPrice, if (o.pricePerMb == 0) getString(R.string.payment_free) else ProductState.priceLine(o.pricePerMb))
+                text(R.id.confirmPrice, ProductState.offerPriceWord(o.pricePerMb, budgetCentimes))
                 text(R.id.confirmMin, ProductState.minimumLine(0)); text(R.id.confirmLimit, getString(R.string.confirm_limit_provider))
                 text(R.id.confirmSignal, ProductState.signalWord(o.rssi) + " · " + ProductState.upstreamWord(o.upstreamType) + (if (o.validated) "" else getString(R.string.confirm_not_checked)))
             }
@@ -429,7 +468,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(22), dp(20), dp(22), dp(20)) }
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(12); card.layoutParams = lp
             card.addView(TextView(this).apply { text = offerTitle(o) + (if (o.viaRelay) getString(R.string.offer_via_relay) else ""); setTextAppearance(R.style.H2) })
-            if (o.pricePerMb > 0) card.addView(TextView(this).apply { text = ProductState.priceLine(o.pricePerMb); setTextAppearance(R.style.Big) })
+            card.addView(TextView(this).apply { text = ProductState.offerPriceWord(o.pricePerMb, budgetCentimes); setTextAppearance(R.style.Big) })
             card.addView(TextView(this).apply { text = ProductState.signalWord(o.rssi) + (if (o.validated) getString(R.string.offer_checked) else ""); setTextAppearance(R.style.Muted) })
             val btn = Button(this).apply { text = getString(R.string.connect_big); setBackgroundResource(R.drawable.bg_primary); setTextColor(getColor(R.color.on_brand)); isAllCaps = false; stateListAnimator = null; textSize = 16f; typeface = android.graphics.Typeface.DEFAULT_BOLD }
             val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)); blp.topMargin = dp(16); btn.layoutParams = blp
@@ -531,6 +570,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun refreshEarn(s: ProductState.Seller) {
         val now = System.currentTimeMillis()
+        // v0.14: the seller picks what to earn; ProkNet computes the price
+        val pol = sellerPolicy
+        paintChoice(R.id.policyCheaper, pol == Pricing.SellerPolicy.CHEAPER)
+        paintChoice(R.id.policyBalanced, pol == Pricing.SellerPolicy.BALANCED)
+        paintChoice(R.id.policyEarnMore, pol == Pricing.SellerPolicy.EARN_MORE)
+        text(R.id.shareEstimate, Pricing.earningEstimate(Pricing.quote(budgetCentimes, node.mySource(), pol)) ?: "")
         val demand = ProviderInbox.active(network.inbox, now)
         // the demand card is visible whatever the notification did, and only while sharing is off
         val waiting = demand.filter { !it.accepted }
@@ -548,8 +593,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             text(R.id.shareWarning, sellerWarning())
         } else {
             text(R.id.shareTitle, ProductState.sellerHeadline(s)); text(R.id.shareHint, sellerWarning().ifEmpty { ProductState.sellerHint(s) })
-            text(R.id.shareTerms, (if (node.gateway.upstreamReady) sellerSource() + "\n" else "") + ProductState.priceLine(node.sellPrice) +
-                (if (node.sellMinPrice > 0) " · " + ProductState.minimumLine(node.sellMinPrice) else "") + (if (node.sellMaxMb > 0) " · " + ProductState.limitLine(node.sellMaxMb) else ""))
+            text(R.id.shareTerms, (if (node.gateway.upstreamReady) sellerSource() + "\n" else "") + getString(R.string.share_auto_price))
             val g = node.gateway; val cur = g.session
             val today = startOfToday()
             val todaySessions = node.store.sessions(300).filter { it.role == "seller" && it.startTs >= today }
@@ -558,7 +602,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             text(R.id.shareClients, if (cur == null) "0" else "1")
             text(R.id.shareData, ProductState.data(todaySessions.sumOf { signedBytes(it) } + liveBytes))
             text(R.id.shareEarned, ProductState.cfaShort(todaySessions.sumOf { Market.split(it.finalCentimes, node.feePct).sellerNet } + liveEarned))
-            text(R.id.shareCustomer, if (cur == null) getString(R.string.share_no_customer) else getString(R.string.share_one_customer, node.peerName(cur.peerShort)) + "\n" +
+            text(R.id.shareCustomer, if (cur == null) getString(R.string.share_no_customer) else getString(R.string.share_one_customer, node.peerName(cur.peerShort)) + "\n" + Pricing.earnedWord(liveEarned) + "\n" +
                 getString(R.string.data_shared) + " : " + ProductState.data(liveBytes) + " · " + ProductState.duration(cur.durationMs) + " · " + getString(R.string.earned) + " : " + ProductState.cfaShort(liveEarned))
         }
         val ledger = node.store.ledger(1000)
@@ -575,18 +619,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun startSharing() {
-        val price = v<EditText>(R.id.sharePrice).text.toString().trim().toIntOrNull()
-        val min = v<EditText>(R.id.shareMin).text.toString().trim().toIntOrNull() ?: 0
-        val max = v<EditText>(R.id.shareMax).text.toString().trim().toIntOrNull() ?: 0
-        if (price == null || !Market.validPrice(price)) { toast(getString(R.string.toast_price_needed)); return }
-        if (!Market.validMinPrice(min) || !Market.validMaxMb(max)) { toast(getString(R.string.toast_check_terms)); return }
-        val err = node.setSelling(true, price, min, max)
+        // v0.14: no price to type. ProkNet computes a profitable one from the source and the policy.
+        node.sellerPolicy = sellerPolicy
+        node.sourceCostCentimesPerMb = bundleCostCentimesPerMb
+        val price = Pricing.advertisedPriceCfa(node.autoRateCentimesPerMb())
+        val err = node.setSelling(true, price, 0, 0)
         if (err != null) {
             DiagLog.w(tag, "start sharing refused: " + err)
             toast(when (err) { "stop buying first" -> getString(R.string.toast_stop_buying); "relay mode is on" -> getString(R.string.toast_relay_on); else -> getString(R.string.toast_check_terms) })
             return
         }
-        DiagLog.i(tag, "Start sharing pressed: " + price + " CFA/MB min " + min + " max " + max + " MB")
+        DiagLog.i(tag, "Start sharing pressed: automatic price " + price + " CFA/MB (" + node.mySource().kind + ", " + sellerPolicy + ")")
         if (!node.gateway.upstreamReady) toast(getString(R.string.toast_sharing_no_internet))
         refresh()
     }
@@ -638,7 +681,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         lines += getString(R.string.session_date, dateFmt.format(Date(ss.startTs)))
         lines += getString(R.string.session_data, ProductState.data(signedBytes(ss)))
         lines += getString(R.string.session_duration, ProductState.duration(dur))
-        if (c != null) lines += getString(R.string.session_price, ProductState.priceLine(c.pricePerMb) + (if (c.minPriceCfa > 0) " · " + ProductState.minimumLine(c.minPriceCfa) else ""))
+        if (c != null) lines += if (c.budgetSession) Pricing.budgetLine(c.buyerBudgetCentimes)
+            else getString(R.string.session_price, ProductState.priceLine(c.pricePerMb) + (if (c.minPriceCfa > 0) " · " + ProductState.minimumLine(c.minPriceCfa) else ""))
         lines += getString(R.string.session_final, ProductState.cfaExact(ss.finalCentimes))
         if (ss.role == "seller" && c != null) lines += getString(R.string.session_fee, ProductState.cfaExact(Market.split(ss.finalCentimes, c.feePct).fee))
         lines += getString(R.string.session_payment, paymentWord(ss, e))
@@ -696,6 +740,41 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
     private fun missingPermissions() = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
     private fun notificationPermissionMissing(): Boolean = Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+
+    /**
+     * v0.14: before the first ever paid connection, say what the ceiling is. Free
+     * Internet never needs this; the question is only about money.
+     */
+    private fun confirmBudgetThenGo() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.budget_confirm_title)
+            .setMessage(getString(R.string.budget_confirm, Pricing.cfa(budgetCentimes)))
+            .setPositiveButton(R.string.continue_btn) { _, _ -> budgetConfirmed = true; getInternet() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun saveBundle() {
+        val paid = v<EditText>(R.id.bundlePaid).text.toString().trim().toLongOrNull()
+        val mb = v<EditText>(R.id.bundleMb).text.toString().trim().toLongOrNull()
+        if (paid == null || mb == null || paid <= 0 || mb <= 0) { toast(getString(R.string.toast_check_terms)); return }
+        bundleCostCentimesPerMb = Pricing.mobileCostPerMb(paid * 100, mb)
+        DiagLog.i(tag, "bundle declared: " + paid + " CFA for " + mb + " MB = " + bundleCostCentimesPerMb + " centimes/MB")
+        toast(getString(R.string.share_bundle_saved))
+        refresh()
+    }
+
+    private fun paintChoice(id: Int, on: Boolean) {
+        v<TextView>(id).setBackgroundResource(if (on) R.drawable.bg_primary else R.drawable.bg_secondary)
+        v<TextView>(id).setTextColor(getColor(if (on) R.color.on_brand else R.color.text))
+    }
+
+    private fun refreshBudget() {
+        text(R.id.budgetValue, Pricing.cfa(budgetCentimes))
+        paintChoice(R.id.budget25, budgetCentimes == 2_500L)
+        paintChoice(R.id.budget50, budgetCentimes == 5_000L)
+        paintChoice(R.id.budget100, budgetCentimes == 10_000L)
+    }
 
     /** Runs [then] once the service is running, asking for what is missing on the way. */
     private fun ensureRunning(then: () -> Unit) {

@@ -229,7 +229,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         if (!Crypto.verify(buyerPub, Market.contractSignData(c), sb.sig)) { DiagLog.w(tag, "CONTRACT from prok-" + peerShort + ": buyer signature INVALID"); hooks.send(Tunnel.T_CONTRACT_REJECT, 0, "bad signature".toByteArray()); return }
         val t = hooks.terms()
         val why = Market.acceptableProposal(c, identity.idBytes, linkPeer.let { hex -> ByteArray(16) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() } },
-            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds())
+            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds(), sellerFloorCentimesPerMb)
         if (why != null) {
             // tell the buyer the real terms so it can re-propose once with them
             val msg = if (why == "terms differ from my offer") "terms:" + t[0] + "," + t[1] + "," + t[2] + "," + t[3] else why
@@ -317,7 +317,10 @@ class Gateway(private val context: Context, private val identity: Identity, priv
     }
 
     /** Live figures for the UI. */
-    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return Market.sessionCost(s.bytesUp + s.bytesDown, c.pricePerMb, c.minPriceCfa) }
+    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp + s.bytesDown) }
+
+    /** v0.14: what this phone must keep per MB. The node sets it from the source and the seller's policy. */
+    @Volatile var sellerFloorCentimesPerMb: Int = 0
     fun agreedCost(): Long { val c = contract ?: return 0; return Market.finalCost(c, lastSigned) }
 
     // ---- streams (unchanged from v0.6) ----------------------------------------------------------

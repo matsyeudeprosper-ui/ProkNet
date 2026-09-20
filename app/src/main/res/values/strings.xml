@@ -19,7 +19,7 @@
     <string name="home_offers">Offres Internet</string>
     <string name="home_people_one">1 personne</string>
     <string name="home_people_many">%1$d personnes</string>
-    <string name="home_from_price">%1$s · à partir de %2$d CFA / Mo</string>
+    <string name="home_from_price">%1$s · %2$s</string>
     <string name="home_earned_now">Gagné cette fois : %1$s</string>
     <string name="home_used_cost">%1$s utilisés · %2$s pour l\'instant</string>
     <string name="home_relay_subtitle">Internet par un téléphone à proximité</string>
@@ -290,6 +290,28 @@ INTERNET</string>
     <string name="inbox_badge_one">1 demande</string>
     <string name="inbox_badge_many">%1$d demandes</string>
     <string name="toast_sharing_started">Vous partagez votre Internet</string>
+
+    <string name="free_session">Internet gratuit · vous ne payez rien</string>
+
+    <!-- v0.14 money in CFA -->
+    <string name="budget_question">Combien voulez-vous dépenser au maximum ?</string>
+    <string name="budget_25">25 CFA</string>
+    <string name="budget_50">50 CFA</string>
+    <string name="budget_100">100 CFA</string>
+    <string name="budget_note">ProkNet cherche l\'option la moins chère et ne dépensera jamais plus que ce montant. Si Internet est gratuit, vous ne payez rien.</string>
+    <string name="budget_confirm_title">Budget maximum</string>
+    <string name="budget_confirm">ProkNet peut payer un téléphone à proximité pour votre Internet.\n\nBudget maximum : %1$s\nProkNet ne dépensera jamais plus.</string>
+    <string name="share_auto_price">ProkNet fixe automatiquement un prix rentable pour vous.</string>
+    <string name="share_price_label_v14">Ce que vous voulez gagner</string>
+    <string name="policy_cheaper">Moins cher</string>
+    <string name="policy_balanced">Équilibré</string>
+    <string name="policy_earn_more">Gagner plus</string>
+    <string name="share_bundle_open">Mon forfait (facultatif)</string>
+    <string name="share_bundle_hint">Si vous partagez des données mobiles, dites à ProkNet ce qu\'elles vous ont coûté. ProkNet ne vendra jamais en dessous de ce prix.</string>
+    <string name="share_bundle_paid">J\'ai payé (CFA)</string>
+    <string name="share_bundle_mb">Pour (Mo)</string>
+    <string name="share_bundle_saved">Forfait enregistré</string>
+    <string name="start_sharing_v14">COMMENCER</string>
 
     <!-- notification -->
     <string name="notif_channel">Nœud Prok</string>

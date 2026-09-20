@@ -2075,3 +2075,54 @@ there. Then turn ProkNet's notifications off in Android settings and repeat:
 no push, but the Gagner card must still appear, and COPY NETWORK must say
 `suppressed reason: notification not shown (permission denied…)` with the
 opportunity still active.
+
+## 58. v0.14.0 a budget session
+
+Same two phones, same setup as section 51 (OUKITEL on the Freebox, sharing
+OFF, "Me prévenir…" ON; OnePlus with mobile data OFF and no Wi-Fi).
+
+On the OUKITEL, open Gagner. There must be **no price to type**: it says
+"ProkNet fixe automatiquement un prix rentable pour vous" with three
+choices, Équilibré selected. Leave it.
+
+On the OnePlus, open Internet. The budget card shows "50 CFA" selected.
+Leave it. Go back and tap the sphere. The first time, ProkNet asks once:
+"Budget maximum : 50 CFA — ProkNet ne dépensera jamais plus." Tap
+CONTINUER.
+
+Then the v0.13.3 flow runs unchanged: RECHERCHE → DEMANDE → the OUKITEL's
+notification or Gagner card → PARTAGER → CONNEXION → CONNECTÉ. Open
+Wikipedia and load a few pages — a few CFA is plenty, there is no need to
+spend the budget.
+
+Expected on the OnePlus while connected:
+
+```
+Vous avez dépensé 3 CFA sur votre budget de 50 CFA
+```
+
+and **never** a CFA/MB figure. Stop. The charge must be what was used, not
+50 CFA.
+
+Expected on the OUKITEL: "Vous avez gagné …" with a figure greater than
+zero.
+
+For us, COPY NETWORK on either phone must show the `pricing:` block:
+
+```
+pricing:
+  buyer budget: 50.00 CFA | seller policy: BALANCED | my source: AUTHORIZED_HOME_WIFI
+  my automatic rate: 2.11 CFA/MB internal, advertised 3 CFA/MB | my floor: 2.00 CFA/MB
+  live contract: v2 BUDGET, budget 50.00 CFA, rate 3.00 CFA/MB, ceiling 16.66 MB, spent 3.00 CFA
+```
+
+`live contract: v2 BUDGET` with a ceiling that costs at most the budget is
+the thing to check. A v1 legacy contract here would mean the budget path did
+not run.
+
+### Optional: the mobile-data seller
+
+If the OUKITEL is switched to mobile data with sharing off, Gagner → "Mon
+forfait" → for example 1 000 CFA for 2 000 Mo → COMMENCER. The advertised
+price must be **higher** than on Wi-Fi, because the data now costs the
+seller real money. That is the protection working.

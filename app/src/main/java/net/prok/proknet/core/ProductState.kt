@@ -242,6 +242,16 @@ object ProductState {
     }
 
     fun priceLine(pricePerMb: Int): String = pricePerMb.toString() + " CFA / Mo"
+
+    /**
+     * v0.14: what a normal person needs to know about an offer — what it could
+     * cost them at most, never a rate per megabyte.
+     */
+    fun offerPriceWord(pricePerMb: Int, budgetCentimes: Long): String = when {
+        pricePerMb <= 0 -> "Gratuit"
+        budgetCentimes <= 0 -> "Payant"
+        else -> "Jusqu'à " + ((budgetCentimes + 50) / 100) + " CFA"
+    }
     fun minimumLine(minCfa: Int): String = "Minimum : " + minCfa + " CFA"
     fun limitLine(maxMb: Int): String = if (maxMb == 0) "Limite : illimitée" else "Limite : " + maxMb + " Mo"
 
