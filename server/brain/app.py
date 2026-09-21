@@ -6,7 +6,7 @@ Routes:
     GET  /health              -> plain text: ok, version, counts (deployment diagnostics)
     POST /v1/sync             -> body: a signed prok-sync/1 upload; response: a download
     POST /v1/settlements      -> a phone reports what a finished session owed
-    GET  /v1/settlements/{id} -> one obligation and its audit trail
+    GET  /v1/settlements/{id} -> one obligation and its audit trail (signed; parties only)
     POST /v1/payments/initiate-> record that a payment was started (starting is not paying)
     POST /v1/payments/webhook -> a rail reports an outcome; only a VERIFIED one may confirm
     GET  /v1/wallet?node=     -> what one node owes and is owed
@@ -21,6 +21,7 @@ with an injected clock.
 """
 import argparse
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,10 +42,20 @@ SETTLEMENT_TTL_MS = 30 * 24 * 3600 * 1000
 #: payments instantly. Must match DestinationClaim.CHANGE_COOLING_MS on the phones.
 DESTINATION_COOLING_MS = 10 * 60 * 1000
 
-#: The public key phones pin for receipt-parser rules. DELIBERATELY NOT the server's own
-#: transport identity: a compromised Brain may then withhold a config but never forge one.
-#: Empty means this deployment publishes no rules, and the built-in ones keep working.
-CONFIG_PUBLIC_KEY = ""
+#: The public key phones pin for receipt-parser rules, key id 9410c707.
+#:
+#: DELIBERATELY NOT the server's own transport identity, and deliberately not any user
+#: identity. A compromised Brain may withhold or delay a configuration - phones survive
+#: that, because the built-in rules keep working - but it can never forge one.
+#:
+#: The matching PRIVATE key is not in this repository and must never be. It lives only on
+#: the admin machine and is used only by `brain.publish_rules`; see docs/OPERATIONS.md.
+#: This server holds the public half and nothing else.
+#:
+#: Must equal `ReceiptRules.PINNED_CONFIG_KEY` in the app, byte for byte.
+CONFIG_PUBLIC_KEY = os.environ.get("PROK_CONFIG_PUBLIC_KEY", "").strip() or (
+    "9d536299f0c879aa6025e37b37efff18d7262bf53b434f23dfce26181367cd64"
+    "5450473b16377d9c53d7049c5dd6de7e2de78b88f745cff23a0e9bdb9533aa0c")
 RATE_WINDOW_MS = 60_000
 RATE_MAX_PER_NODE = 30
 
@@ -94,6 +105,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _owes(self, who: str, seller: str) -> bool:
+        """May `who` see where `seller` is paid?
+
+        Only somebody who actually owes them, or the seller itself. A seller's Mobile
+        Money number is a real-world identifier; a node id is not a secret, so it must
+        not be enough to look one up.
+        """
+        if not seller:
+            return False
+        if who == seller:
+            return True
+        return STATE.settlements.db.execute(
+            "SELECT 1 FROM settlements WHERE buyer_id=? AND seller_id=? LIMIT 1",
+            (who, seller)).fetchone() is not None
+
     def _query(self, key: str) -> str:
         if "?" not in self.path:
             return ""
@@ -125,14 +151,15 @@ class Handler(BaseHTTPRequestHandler):
     def _who(self):
         """The verified identity behind a GET, or None.
 
-        v0.16.2: everything that returns somebody's money, debts, payments or device risk
-        must prove who is asking. A GET has no body, so the signature covers the empty
-        body plus the method and path.
+        Everything that returns somebody's money, debts, payments or device risk must
+        prove who is asking. A GET has no body, so the signature covers the empty body
+        plus the method and the canonical request target - the QUERY included, because
+        `?payment=A` and `?payment=B` ask about two different people's money.
         """
         try:
             with STATE.lock:
                 return signed_request.verify(self.headers, b"", STATE.nonces,
-                                             method="GET", path=self.path.split("?")[0])
+                                             method="GET", path=self.path, require_bound=True)
         except signed_request.AuthError:
             return None
 
@@ -146,13 +173,25 @@ class Handler(BaseHTTPRequestHandler):
             now = int(time.time() * 1000)
             try:
                 with STATE.lock:
-                    if self.path.startswith("/v1/pay/destination"):
+                    if self.path.startswith("/v1/pay/destinations"):
+                        # v0.16.3: every rail this seller actually publishes on. The buyer
+                        # does not name one: it cannot know whether a seller uses MTN or
+                        # Airtel, and guessing MTN made Airtel sellers unpayable.
                         seller = self._query("seller")
-                        rail = self._query("rail") or "MTN_MOMO"
-                        # only somebody who actually owes this seller may ask where it is paid
-                        if not STATE.settlements.db.execute(
-                                "SELECT 1 FROM settlements WHERE buyer_id=? AND seller_id=? LIMIT 1",
-                                (who, seller)).fetchone() and who != seller:
+                        if not self._owes(who, seller):
+                            self._json(403, {"error": "you have no obligation to this seller"})
+                            return
+                        self._json(200, {"destinations": STATE.pay.destinations_for_buyer(
+                            seller, now, DESTINATION_COOLING_MS)})
+                        return
+                    if self.path.startswith("/v1/pay/destination"):
+                        # kept for a named rail; the rail must be asked for, never assumed
+                        seller = self._query("seller")
+                        rail = self._query("rail")
+                        if not rail:
+                            self._json(400, {"error": "name a rail, or ask /v1/pay/destinations"})
+                            return
+                        if not self._owes(who, seller):
                             self._json(403, {"error": "you have no obligation to this seller"})
                             return
                         d = STATE.pay.destination_for_buyer(seller, rail, now, DESTINATION_COOLING_MS)
@@ -179,14 +218,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/v1/settlements/"):
+            # v0.16.3: this used to be open. A settlement id is not a secret - it is
+            # derived from signed session bytes and both phones hold it - so knowing one
+            # must not reveal the amount, the two parties, the payment state or the audit
+            # trail to whoever asks.
+            who = self._who()
+            if who is None:
+                self._json(401, {"error": "this endpoint requires a signed request"})
+                return
             sid = self.path[len("/v1/settlements/"):].split("?")[0]
             with STATE.lock:
                 row = STATE.settlements.get(sid)
+                if row is None:
+                    # said the same way to everybody, so this cannot be used to discover
+                    # which settlement ids exist
+                    self._json(404, {"error": "unknown settlement"})
+                    return
+                if who != row["buyer_id"] and who != row["seller_id"]:
+                    self._json(403, {"error": "you are not a party to this settlement"})
+                    return
                 trail = STATE.settlements.audit(sid)
-            if row is None:
-                self._json(404, {"error": "unknown settlement"})
-            else:
-                self._json(200, {"settlement": dict(row), "audit": trail})
+            self._json(200, {"settlement": dict(row), "audit": trail})
             return
         if self.path.startswith("/v1/wallet"):
             # v0.16.2: a wallet is somebody's money. It used to be readable by anybody who
@@ -250,8 +302,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/payments/webhook":
             try:
                 with STATE.lock:
+                    # v0.16.3: require_bound. A body-only signature is valid at every
+                    # endpoint that accepts that body, and every route reaching here
+                    # moves money or changes what somebody owes.
                     submitter = signed_request.verify(self.headers, raw, STATE.nonces, now,
-                                                      method="POST", path=self.path.split("?")[0])
+                                                      method="POST", path=self.path,
+                                                      require_bound=True)
             except signed_request.AuthError as e:
                 self._json(401, {"error": str(e)})
                 return

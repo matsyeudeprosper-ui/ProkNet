@@ -74,18 +74,24 @@ class ApiTest(unittest.TestCase):
         body.update(over)
         return json.dumps(body).encode("utf-8")
 
-    def send(self, path, raw, signer, nonce=None, ts=None, body_to_sign=None):
-        """Sign exactly the bytes we send, the way the phone does."""
+    def send(self, path, raw, signer, nonce=None, ts=None, body_to_sign=None, legacy=False):
+        """Sign exactly the bytes we send, the way the phone does.
+
+        v0.16.3 also signs the METHOD and the canonical request target. `legacy=True`
+        signs the old body-only line, which every money route must now refuse.
+        """
         import time
         ts = ts if ts is not None else int(time.time() * 1000)
         nonce = nonce or ("n" + str(id(raw)) + str(ts))
         digest = signed_request.body_hash(body_to_sign if body_to_sign is not None else raw)
+        line = (signed_request.signing_line(ts, nonce, digest) if legacy
+                else signed_request.signing_line(ts, nonce, digest, "POST", path))
         headers = {
             "Content-Type": "application/json",
             "X-Prok-Identity": pub_hex(signer),
             "X-Prok-Timestamp": str(ts),
             "X-Prok-Nonce": nonce,
-            "X-Prok-Signature": sign(signer, signed_request.signing_line(ts, nonce, digest)),
+            "X-Prok-Signature": sign(signer, line),
         }
         req = Request(self.url(path), data=raw, headers=headers, method="POST")
         try:
@@ -137,7 +143,7 @@ class ApiTest(unittest.TestCase):
         # sign the honest body, send the tampered one
         code, out = self.send("/v1/settlements", raw, self.buyer, body_to_sign=honest)
         self.assertEqual(401, code)
-        self.assertIn("does not verify", out["error"])
+        self.assertIn("signature", out["error"])
 
     def test_a_stranger_cannot_submit_somebody_elses_session(self):
         stranger = keypair()
@@ -313,7 +319,7 @@ class PayApiTest(unittest.TestCase):
         line = signed_request.signing_line(
             ts, nonce, digest,
             method=sign_method if sign_method is not None else method,
-            path=sign_path if sign_path is not None else path.split("?")[0])
+            path=sign_path if sign_path is not None else path)
         h = {
             "Content-Type": "application/json",
             "X-Prok-Identity": pub_hex(signer),
@@ -347,11 +353,11 @@ class PayApiTest(unittest.TestCase):
 
     def test_only_somebody_who_owes_a_seller_may_read_where_it_is_paid(self):
         self.assertEqual(200, self.publish_destination()[0])
-        path = "/v1/pay/destination?seller=%s&rail=MTN_MOMO" % node_id(self.seller)
+        path = "/v1/pay/destinations?seller=%s" % node_id(self.seller)
         code, out = self.call("GET", path, self.buyer)
         self.assertEqual(200, code)
-        self.assertIsNotNone(out["destination"])
-        self.assertEqual(pub_hex(self.seller), out["destination"]["seller_pub"],
+        self.assertEqual(1, len(out["destinations"]))
+        self.assertEqual(pub_hex(self.seller), out["destinations"][0]["seller_pub"],
                          "the key must travel or the buyer cannot verify the claim")
         # somebody with no obligation has no business knowing the seller's number
         self.assertEqual(403, self.call("GET", path, self.stranger)[0])
@@ -447,6 +453,116 @@ class PayApiTest(unittest.TestCase):
         raw = json.dumps({"pseudonym": "c" * 64}).encode("utf-8")
         out = self.call("POST", "/v1/device/risk", clean, raw)[1]
         self.assertEqual(0, out["unresolvedCentimes"])
+
+
+    # ---- v0.16.3: private settlement data --------------------------------------------
+
+    def test_a_settlement_is_readable_only_by_its_two_parties(self):
+        path = "/v1/settlements/" + self.settlement_id
+        for who in (self.buyer, self.seller):
+            code, out = self.call("GET", path, who)
+            self.assertEqual(200, code)
+            self.assertEqual(self.amount, out["settlement"]["gross"])
+            self.assertTrue(out["audit"])
+        # a settlement id is not a secret: both phones hold it and it comes from signed
+        # session bytes, so knowing one must reveal nothing
+        code, out = self.call("GET", path, self.stranger)
+        self.assertEqual(403, code)
+        self.assertNotIn("settlement", out)
+        for leak in (str(self.amount), node_id(self.buyer), node_id(self.seller)):
+            self.assertNotIn(leak, json.dumps(out))
+
+    def test_an_unsigned_settlement_read_is_refused(self):
+        req = Request(self.url("/v1/settlements/" + self.settlement_id), headers={}, method="GET")
+        try:
+            with urlopen(req, timeout=10) as r:
+                self.fail("an unsigned settlement read returned %d" % r.status)
+        except HTTPError as e:
+            self.assertEqual(401, e.code)
+
+    def test_an_unknown_settlement_is_404_for_everybody(self):
+        # said the same way to a party and to a stranger, so this cannot be used to find
+        # out which settlement ids exist
+        for who in (self.buyer, self.stranger):
+            code, _ = self.call("GET", "/v1/settlements/" + "0" * 32, who)
+            self.assertEqual(404, code)
+
+    # ---- v0.16.3: no legacy signatures on money ----------------------------------------
+
+    def test_a_legacy_body_only_signature_is_refused_on_every_money_route(self):
+        raw = json.dumps({"pseudonym": "d" * 64}).encode("utf-8")
+        for path in ("/v1/device/risk", "/v1/pay/destination", "/v1/payments/initiate"):
+            ts = int(time.time() * 1000)
+            nonce = "legacy%d%d" % (id(path), ts)
+            headers = {
+                "Content-Type": "application/json",
+                "X-Prok-Identity": pub_hex(self.buyer),
+                "X-Prok-Timestamp": str(ts),
+                "X-Prok-Nonce": nonce,
+                "X-Prok-Signature": sign(self.buyer, signed_request.signing_line(
+                    ts, nonce, signed_request.body_hash(raw))),
+            }
+            code, out = self.call("POST", path, self.buyer, raw, headers=headers)
+            self.assertEqual(401, code, "%s accepted a body-only signature" % path)
+            self.assertIn("must cover", out["error"])
+
+    def test_the_bound_version_of_the_same_request_is_accepted(self):
+        # the positive control for the test above
+        raw = json.dumps({"pseudonym": "e" * 64}).encode("utf-8")
+        self.assertEqual(200, self.call("POST", "/v1/device/risk", self.buyer, raw)[0])
+
+    def test_a_get_signature_is_tied_to_its_query(self):
+        # ?payment=A and ?payment=B ask about two different people's money
+        a = "/v1/pay/reply?payment=aaaa"
+        b = "/v1/pay/reply?payment=bbbb"
+        self.assertEqual(404, self.call("GET", a, self.buyer)[0], "signed for itself: reaches the route")
+        self.assertEqual(401, self.call("GET", b, self.buyer, sign_path=a)[0],
+                         "a signature for one payment must not read another")
+
+    def test_the_query_may_arrive_in_any_order(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        seller = node_id(self.seller)
+        one = "/v1/pay/destination?seller=%s&rail=MTN_MOMO" % seller
+        other = "/v1/pay/destination?rail=MTN_MOMO&seller=%s" % seller
+        self.assertEqual(200, self.call("GET", one, self.buyer)[0])
+        self.assertEqual(200, self.call("GET", other, self.buyer)[0])
+        # and the canonical form of the two is the same string
+        self.assertEqual(signed_request.canonical_target(one),
+                         signed_request.canonical_target(other))
+
+    # ---- v0.16.3: both rails through the Brain -------------------------------------------
+
+    def test_a_remote_buyer_reaches_an_airtel_seller(self):
+        raw = json.dumps({"line": dest_line(self.seller, msisdn="055987654", rail="AIRTEL_MONEY"),
+                          "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        self.assertEqual(200, self.call("POST", "/v1/pay/destination", self.seller, raw)[0])
+        out = self.call("GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.buyer)[1]
+        rails = sorted(d["rail"] for d in out["destinations"])
+        self.assertIn("AIRTEL_MONEY", rails)
+
+    def test_a_seller_that_moves_to_another_operator_is_still_reachable(self):
+        # a seller has ONE place it is paid; the operator is part of what can change
+        for version, rail, number in ((1, "MTN_MOMO", "066123456"),
+                                      (2, "AIRTEL_MONEY", "055987654")):
+            raw = json.dumps({"line": dest_line(self.seller, msisdn=number, rail=rail,
+                                                version=version),
+                              "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+            self.assertEqual(200, self.call("POST", "/v1/pay/destination", self.seller, raw)[0])
+        out = self.call("GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.buyer)[1]
+        self.assertEqual(1, len(out["destinations"]), "one seller, one place it is paid")
+        # inside the cooling window the OLD one is still the one to use, and it is a real
+        # signed claim either way
+        self.assertIn(out["destinations"][0]["rail"], ("MTN_MOMO", "AIRTEL_MONEY"))
+
+    def test_the_named_rail_route_refuses_to_guess(self):
+        code, out = self.call("GET", "/v1/pay/destination?seller=" + node_id(self.seller), self.buyer)
+        self.assertEqual(400, code, "no rail named must be an error, never a default")
+        self.assertIn("rail", out["error"])
+
+    def test_a_stranger_cannot_list_a_sellers_destinations(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        self.assertEqual(403, self.call(
+            "GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.stranger)[0])
 
     # ---- the webhook cannot be used as a weapon --------------------------------------------
 
