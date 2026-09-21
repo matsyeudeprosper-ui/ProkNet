@@ -2725,3 +2725,82 @@ Gagner. Everything from v0.15.x must behave as before.
 - The seller's full phone number visible anywhere.
 - Any regression in sections 59 to 65.
 
+## 67. v0.16.1 the whole payment loop, on two phones
+
+This is the milestone. It is not complete because the seller recognised an SMS;
+it is complete when the **buyer's debt clears by itself**.
+
+Setup. OUKITEL is the seller: Internet upstream working, Mobile Money number
+set under Gagner -> Réglages du partage, notification access granted, the line
+reading **Activée ✓**. OnePlus is the buyer.
+
+### 67a. A debt, and the buyer learns where to pay
+
+Run a short paid session from the OnePlus and stop it.
+
+Open the OnePlus Wallet and tap **PAYER**. It must show the seller's operator
+and a **masked** number. If it says the provider has not indicated where to be
+paid, the destination did not cross: that is a failure, not a fallback, and
+there must be no option to type a reference instead.
+
+### 67b. The seller is told, and says so
+
+Tap **J'AI COMPRIS**.
+
+Expected: within a second or two the screen says **La vérification automatique
+est prête.** That sentence means the seller accepted the expectation. If it
+says **Préparation du paiement…**, keep the phones near each other a moment;
+it must resolve.
+
+COPY NETWORK on the OUKITEL should show an accepted window with the amount.
+
+### 67c. Pay normally, touch nothing
+
+Send exactly that amount to the seller's number the ordinary way: a kiosk, or
+your own Mobile Money app.
+
+**Press nothing on either phone.** There is no "I have paid" button, and there
+is nothing to press on the seller.
+
+Expected on the OUKITEL, seconds after the operator's message arrives: the
+payment is recognised and the obligation reads **Reçu ✓**.
+
+Expected on the OnePlus: **Payé ✓**, and À payer back to zero, with nobody
+having touched it.
+
+That last step is the milestone. A seller-side detection alone is not a pass.
+
+### 67d. Paid Internet works again immediately
+
+On the OnePlus, tap GET INTERNET. A paid session must start normally, because
+the debt that was blocking it is gone.
+
+### 67e. The buyer walks away first
+
+Repeat 67a and 67b, then **carry the OnePlus out of Bluetooth range** before
+paying. Pay from wherever you are.
+
+Expected: the OUKITEL detects and signs the receipt while alone. Bring the
+phones back together. The OnePlus must clear the debt when they meet, without
+anybody re-running anything.
+
+### 67f. Two buyers, one amount
+
+If a third phone is available, have both buyers owe the same amount and both
+tap PAYER. The second must read **Un paiement du même montant est déjà en
+cours.** Different amounts must both be accepted.
+
+### 67g. Privacy
+
+With **no** payment outstanding, send an ordinary SMS to the seller's phone.
+COPY NETWORK must show no candidate at all: the message was never read.
+
+### What would make this a FAIL
+
+- The buyer's debt not clearing by itself.
+- Being offered a box to type a transaction reference.
+- "La vérification automatique est prête" appearing when the seller never
+  accepted.
+- A notification being examined with no payment outstanding.
+- Any regression in sections 59 to 66.
+

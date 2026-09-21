@@ -895,6 +895,69 @@ session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
 complete. The buyer treats SESSION_END as an ending rather than a fault: it
 closes the VPN and says "Le fournisseur a arrêté le partage."
 
+## The payment loop, wired (v0.16.1)
+
+v0.16.0 built the models and left each one on whichever phone created it. The
+seller's destination never reached the buyer, the buyer's expectation never
+reached the seller, and the seller's receipt never came back, so the flow could
+not complete. `core/PayWire.kt` is the wire.
+
+Four messages over the existing authenticated control channel, plus a terminal
+one:
+
+```
+seller  --DESTINATION_CLAIM-->  buyer     where to send the cash
+buyer   --EXPECTATION-------->  seller    what to watch for, and for how long
+seller  --EXPECTATION_REPLY-->  buyer     accepted, or busy with that amount
+seller  --RECEIPT----------->   buyer     the money arrived; debt cleared
+buyer   --EXPECTATION_END--->   seller    that window is over; free the amount
+```
+
+Each is versioned, carries its own id, and is **signed by the party whose claim
+it is**. The receiver verifies before it persists or acts, never after, because
+the carrier proving who sent a message is not the same as the content being
+signed by the right party. Domain separators differ per message type, and a
+test proves a signature from one cannot be reused on another.
+
+**The seller derives what is owed from its own records.** When an expectation
+arrives, the seller does not take the buyer's word about the amount: every named
+session must be one it knows, still outstanding, and the sum must equal the
+amount exactly. A padded list is refused, because padding is precisely how a
+receipt would later reach a debt the payment never covered.
+
+**The same-amount lock moved to the seller**, which is the only phone that can
+see every buyer's window at once. A second buyer owing the same amount is told
+to wait a few minutes rather than being charged a different amount.
+
+**The buyer's screen tells the truth.** It says "Préparation du paiement" until
+the seller has actually accepted. Telling somebody to walk to a kiosk while the
+seller knows nothing about the payment would waste their trip.
+
+**Receipts are persisted before delivery is attempted**, and retried whenever a
+peer reappears, so a buyer who has already walked away still gets cleared when
+the phones next meet.
+
+**No silent manual fallback.** If a seller has no verified destination,
+automatic payment is unavailable and the app says so. We decided not to trust
+self-reported payment, so falling back to a buyer-typed reference would have
+quietly undone that decision.
+
+## The capture privacy gate (v0.16.1)
+
+v0.16.0 promised that message content was inspected only while a payment was
+expected. In practice a running node was enough: every default-SMS notification
+was read and then discarded. The promise is now structural. Both sources ask
+`ReceiptCapture.expecting()` and return **before** touching a title or a body,
+and that callback exposes a single boolean, so the listener never learns what is
+owed, to whom, or how much.
+
+## Buyer credit counts buyer payments (v0.16.1)
+
+v0.16.0 counted receipts where the identity was the buyer **or** the seller, so
+selling Internet twenty times silently raised your own borrowing allowance.
+Earning money is not evidence that you pay your debts. The counters are now
+separate and only the buyer one may raise a credit limit.
+
 ## Cash at a kiosk, verified automatically (v0.16.0)
 
 The habit in Congo-Brazzaville already works, and the design constraint is
