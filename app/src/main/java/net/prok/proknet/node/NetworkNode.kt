@@ -348,6 +348,8 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      */
     private fun syncSettlements() {
         try { node.settlementSync.runDue() } catch (e: Exception) { DiagLog.w(tag, "settlement sync: " + e.message) }
+        // v0.16.2: and the payment objects for phones that are not near each other
+        try { node.paymentSync.run() } catch (e: Exception) { DiagLog.w(tag, "payment sync: " + e.message) }
     }
 
     private fun doSync(why: String) {
@@ -492,6 +494,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
         }
         sb.append(node.payments.describe()).append("\n")
+        sb.append(node.paymentSync.describe()).append("\n")
         sb.append(node.settlementSync.describe()).append("\n")
         sb.append("session shutdown:\n")
             .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")

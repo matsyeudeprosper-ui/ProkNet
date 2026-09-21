@@ -174,7 +174,11 @@ object ReceiptParser {
      *        expected amount is the strongest single signal there is, which is exactly why
      *        it may raise confidence but must never invent an amount that is not present.
      */
-    fun parse(raw: String, expectedCentimes: Long = 0, rules: Rules = DEFAULT): Parsed {
+    /**
+     * v0.16.2: the rules in force, which are the built-in ones unless a **signed**
+     * configuration has been accepted. Callers that do not care simply omit them.
+     */
+    fun parse(raw: String, expectedCentimes: Long = 0, rules: Rules = ReceiptRules.current()): Parsed {
         if (raw.isBlank()) return Parsed(Verdict.NOT_A_CREDIT, 0, 0, "empty")
         val t = normalize(raw)
 

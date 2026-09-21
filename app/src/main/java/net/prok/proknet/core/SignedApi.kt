@@ -30,9 +30,17 @@ object SignedApi {
 
     fun bodyHash(body: ByteArray): String = Crypto.sha256(body).toHex()
 
-    /** Byte-for-byte what `signed_request.signing_line` builds on the server. */
-    fun signingLine(ts: Long, nonce: String, bodyHash: String): ByteArray =
-        (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash).toByteArray(Charsets.UTF_8)
+    /**
+     * Byte-for-byte what `signed_request.signing_line` builds on the server.
+     *
+     * v0.16.2 binds the METHOD and PATH too. Without them a signature made for one
+     * endpoint could be replayed against another that accepts the same body, which matters
+     * now that several payment endpoints take similar JSON.
+     */
+    fun signingLine(ts: Long, nonce: String, bodyHash: String, method: String = "", path: String = ""): ByteArray =
+        if (method.isNotEmpty() || path.isNotEmpty())
+            (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash + "|" + method.uppercase() + "|" + path).toByteArray(Charsets.UTF_8)
+        else (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash).toByteArray(Charsets.UTF_8)
 
     /**
      * A nonce the server will accept: 8 to 64 characters. Random, so a retry of the same
@@ -54,9 +62,10 @@ object SignedApi {
      * @param body the exact bytes that will be written to the connection. Not a string
      *        that will be encoded again later.
      */
-    fun sign(body: ByteArray, signer: Signer, now: Long, nonce: String = newNonce()): Headers {
+    fun sign(body: ByteArray, signer: Signer, now: Long, nonce: String = newNonce(),
+             method: String = "", path: String = ""): Headers {
         val hash = bodyHash(body)
-        val sig = signer.sign(signingLine(now, nonce, hash))
+        val sig = signer.sign(signingLine(now, nonce, hash, method, path))
         return Headers(signer.pubBytes.toHex(), now.toString(), nonce, sig.toHex())
     }
 
@@ -65,7 +74,8 @@ object SignedApi {
      * tested against each other on this side of the wire, rather than discovering a
      * mismatch on the phones.
      */
-    fun verify(headers: Map<String, String>, body: ByteArray, now: Long): Boolean {
+    fun verify(headers: Map<String, String>, body: ByteArray, now: Long,
+               method: String = "", path: String = ""): Boolean {
         val pub = headers[HEADER_IDENTITY] ?: return false
         val ts = headers[HEADER_TIMESTAMP]?.toLongOrNull() ?: return false
         val nonce = headers[HEADER_NONCE] ?: return false
@@ -73,7 +83,7 @@ object SignedApi {
         if (nonce.length !in 8..64) return false
         if (Math.abs(now - ts) > MAX_SKEW_MS) return false
         return try {
-            Crypto.verify(pub.hexToBytes(), signingLine(ts, nonce, bodyHash(body)), sig.hexToBytes())
+            Crypto.verify(pub.hexToBytes(), signingLine(ts, nonce, bodyHash(body), method, path), sig.hexToBytes())
         } catch (e: Exception) { false }
     }
 }

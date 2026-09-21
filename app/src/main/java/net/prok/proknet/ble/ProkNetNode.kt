@@ -1246,11 +1246,17 @@ class ProkNetNode(private val context: Context) : TransportListener {
         // screen rather than after a connection has been built.
         if (!quote.free) {
             val owed = net.prok.proknet.core.Wallet.totalOwed(obligations(), identity.idHex)
-            val t = net.prok.proknet.core.Trust.admitPaidSession(owed, buyerVerifiedPayments(), deviceHasUnresolvedDebt)
+            // v0.16.2: the debt that follows the PHONE comes from the server, not from a
+            // local flag a reinstall would have cleared
+            val deviceDebt = payments.deviceRiskUnresolved
+            val t = net.prok.proknet.core.Trust.admitPaidSession(owed, buyerVerifiedPayments(), deviceDebt > 0)
             if (!t.allowed) {
-                DiagLog.w(tag, "BUY refused before any setup: " + t.reason + " (owes " + Market.cfa(owed) +
+                // and the amount on screen is what this PHONE owes, which after a reinstall
+                // is not what this identity owes. "Réglez 0 F" would be a nonsense.
+                val toSettle = maxOf(owed, deviceDebt)
+                DiagLog.w(tag, "BUY refused before any setup: " + t.reason + " (owes " + Market.cfa(toSettle) +
                     ", limit " + Market.cfa(t.limitCentimes) + ")")
-                lastBuyError = net.prok.proknet.core.Trust.settleSentence(owed)
+                lastBuyError = net.prok.proknet.core.Trust.settleSentence(toSettle)
                 return false
             }
         }
@@ -1503,13 +1509,6 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Wired by NetworkNode, which owns the brain URL. */
     @Volatile var brainUrlProvider: (() -> String)? = null
 
-    /**
-     * v0.16.0: set by the brain when this device is known to owe money under an older
-     * identity. Until a server says otherwise we assume nothing, because accusing an
-     * honest new user would be worse than the abuse it prevents.
-     */
-    @Volatile var deviceHasUnresolvedDebt = false
-
     /** v0.15.3: the settlement queue talks to the network, so never on the main thread. */
     private val settlementIo = java.util.concurrent.Executors.newSingleThreadExecutor()
 
@@ -1526,6 +1525,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * limit. Selling Internet is not evidence that you pay your debts.
      */
     fun buyerVerifiedPayments(): Int = payments.buyerVerifiedPayments()
+
+    /** v0.16.2: the same signed payment objects, carried by the Brain when phones are apart. */
+    val paymentSync: net.prok.proknet.node.PaymentSync by lazy {
+        net.prok.proknet.node.PaymentSync(identity, store, payments,
+            { brainUrlProvider?.invoke() ?: "" }, { devicePseudonym() })
+    }
 
     /**
      * v0.16.1: may this phone offer PAID Internet right now?
@@ -1779,6 +1784,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     fun startReceiptCapture() {
         payments.restore()
         payments.restoreUndelivered()
+        net.prok.proknet.core.ReceiptRules.restore(store)
         payments.send = { peerId, line -> sendPayment(peerId, line) }
         // v0.16.1: the listener asks this BEFORE it reads any notification content
         net.prok.proknet.service.ReceiptCapture.paymentExpected = { payments.paymentExpected() }

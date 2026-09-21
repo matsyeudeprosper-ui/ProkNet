@@ -143,6 +143,16 @@ class PaymentEngine(
     fun windowReady(paymentId: String): Boolean =
         net.prok.proknet.core.PayWire.ready(replies[paymentId] ?: net.prok.proknet.core.PayWire.Reply.NOT_READY)
 
+    /** v0.16.2: windows a distant seller has not answered, for the Brain to carry. */
+    fun pendingForBrain(now: Long = System.currentTimeMillis()): List<PaymentExpectation.Expectation> =
+        expectations.values.filter { it.active(now) && !windowReady(it.paymentId) }
+
+    /**
+     * v0.16.2: what the SERVER says this phone still owes under any identity it has used.
+     * Never set from local state: a freshly reinstalled phone would simply say nothing.
+     */
+    @Volatile var deviceRiskUnresolved = 0L
+
     /** Ask the seller again. Called when a peer reappears. */
     fun resendPendingExpectations(now: Long = System.currentTimeMillis()): Int {
         var n = 0
@@ -258,6 +268,18 @@ class PaymentEngine(
         onChanged()
         return true
     }
+
+    /**
+     * v0.16.2: providers we owe and have no payment destination for.
+     *
+     * On the local path the seller hands its destination over in person. A buyer who left
+     * before that happened owes money with nowhere to send it, so the Brain fetches the
+     * seller's own signed claim instead.
+     */
+    fun creditorsWithoutDestination(): List<String> = store.settlements(200)
+        .filter { it.buyerId == identity.idHex && Settlement.isOutstanding(it.status) }
+        .map { it.sellerId }.distinct()
+        .filter { store.destinationClaim(it) == null }
 
     /** Every buyer with an outstanding debt to us, so they can be told where to pay. */
     fun myDebtors(): List<String> = store.settlements(200)

@@ -103,7 +103,7 @@ class StoredSession(
     val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
 )
 
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 8) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 9) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -312,6 +312,15 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "delivered INTEGER NOT NULL DEFAULT 0," +
                 "sig BLOB NOT NULL)"
         )
+        db.execSQL("CREATE TABLE IF NOT EXISTS pay_sync(k TEXT PRIMARY KEY, at INTEGER NOT NULL)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS receipt_rules(" +
+                "version INTEGER PRIMARY KEY," +
+                "valid_from INTEGER NOT NULL," +
+                "terms TEXT NOT NULL," +
+                "signature TEXT NOT NULL," +
+                "stored_at INTEGER NOT NULL)"
+        )
         db.execSQL(
             "CREATE TABLE IF NOT EXISTS destination_claims(" +
                 "seller_id TEXT NOT NULL," +
@@ -371,6 +380,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         if (oldVersion < 6) createSettlements(db)
         if (oldVersion < 7) createSettlements(db)
         if (oldVersion < 8) createSettlements(db)
+        if (oldVersion < 9) createSettlements(db)
     }
 
     // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
@@ -753,6 +763,51 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 it.getInt(it.getColumnIndexOrThrow("version")),
                 it.getLong(it.getColumnIndexOrThrow("created_at")))
         }
+    }
+
+    // ---- v0.16.2: what has already reached the Brain, and the trusted rules --------------------
+
+    /**
+     * A tiny idempotency ledger for the payment sync. An object delivered locally and then
+     * again through the Brain must stay one logical object, so each push is keyed and
+     * never repeated.
+     */
+    fun paySyncDone(key: String): Boolean = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM pay_sync WHERE k=?", arrayOf(key)) > 0
+
+    fun markPaySynced(key: String) {
+        val cv = ContentValues().apply { put("k", key); put("at", System.currentTimeMillis()) }
+        writableDatabase.insertWithOnConflict("pay_sync", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    fun saveReceiptRules(c: ReceiptRules.Config, signature: String, now: Long) {
+        val terms = c.terms.entries.joinToString(";") { (k, v) -> k + "=" + v.joinToString(",") }
+        val cv = ContentValues().apply {
+            put("version", c.version); put("valid_from", c.validFrom)
+            put("terms", terms); put("signature", signature); put("stored_at", now)
+        }
+        writableDatabase.insertWithOnConflict("receipt_rules", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun receiptRules(): ReceiptRules.Config? {
+        val c = readableDatabase.query("receipt_rules", null, null, null, null, null, "version DESC", "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            val terms = HashMap<String, List<String>>()
+            for (part in it.getString(it.getColumnIndexOrThrow("terms")).split(";")) {
+                val k = part.substringBefore("=")
+                if (k.isEmpty()) continue
+                terms[k] = part.substringAfter("=").split(",").filter { s -> s.isNotEmpty() }
+            }
+            return ReceiptRules.Config(
+                it.getInt(it.getColumnIndexOrThrow("version")),
+                it.getLong(it.getColumnIndexOrThrow("valid_from")), terms)
+        }
+    }
+
+    fun receiptRulesSignature(): String {
+        val c = readableDatabase.query("receipt_rules", arrayOf("signature"), null, null, null, null, "version DESC", "1")
+        c.use { return if (it.moveToNext()) it.getString(0) else "" }
     }
 
     fun insertLedger(e: Market.Entry): Boolean {
