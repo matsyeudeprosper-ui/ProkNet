@@ -97,6 +97,9 @@
     <string name="wallet_to_pay">À payer</string>
     <string name="wallet_to_receive">À recevoir</string>
     <string name="wallet_fees">Frais Prok</string>
+    <string name="earn_subtitle">Votre connexion, votre argent</string>
+    <string name="activity_subtitle">Votre historique</string>
+    <string name="account_title">Compte</string>
     <string name="wallet_tab_activity">Activité</string>
     <string name="wallet_tab_wallet">Wallet</string>
     <string name="wallet_title">Prok Wallet</string>

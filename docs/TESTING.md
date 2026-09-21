@@ -2469,3 +2469,83 @@ link, and must NOT repeat the transaction history.
 - Home or Gagner turning into a second accounting screen.
 - Any regression in sections 59 to 62.
 
+## 64. v0.15.2 the two redesigned screens
+
+No new capability here, so this is a reading test. Judge it as a person who has
+never used the app, not as an engineer. Anything you have to puzzle over is a
+failure, and so is anything that stopped working.
+
+### 64a. Gagner, before sharing
+
+Open **Gagner** with Bluetooth on and the phone on Wi-Fi.
+
+Expected: **three** cards, in this order.
+
+1. A card saying **Partagez votre Internet**, one sentence about earning money,
+   one button **Commencer**, and one quiet line underneath naming your Wi-Fi and
+   roughly what you would earn.
+2. **Gagné aujourd'hui** with one large figure.
+3. One row: **Réglages du partage**, with a summary such as "Équilibré" and a
+   chevron.
+
+There must be **no** price chips, no number fields and no switches visible
+before you open Réglages. Count the buttons on the screen: there should be one.
+
+### 64b. Réglages still holds everything
+
+Tap **Réglages du partage**. It must expand to show the three price choices
+with a sentence explaining the selected one, "Mon forfait" with its two fields
+and save button, the notification switch, the coverage switch and the relay
+switch.
+
+Change the price choice. The summary line on the Réglages row must follow.
+Enter a bundle and save it. Toggle each switch. **Every one of these must still
+work exactly as before** — nothing was removed, only moved.
+
+Tap the row again to fold it away.
+
+### 64c. Gagner, while sharing
+
+Tap **Commencer**.
+
+Expected: the same card now reads **Vous partagez**, the dot turns amber, three
+figures appear inside the card (people connected, shared, earned), and the
+button becomes **Arrêter le partage** in a calm grey, not red.
+
+Connect the OnePlus. The title must become **Quelqu'un utilise votre Internet**,
+the dot green, and the people count 1.
+
+Tap **Arrêter le partage**. It must stop, exactly as the old button did.
+
+### 64d. Activité is only a history
+
+Open **Activité**.
+
+Expected: a title, then your sessions grouped under **Aujourd'hui** / **Hier**,
+each row showing what it was, who with, the amount and its state. Then a clearly
+separate **Compte** section.
+
+There must be **no** money boxes, no "à payer" figures, no payment button and no
+receiving-method card on this screen. All of that is under **Wallet**. If you
+see the same information on both, that is the bug this release fixed coming
+back.
+
+Tap a row: the session detail must still open, as before.
+
+### 64e. The Wallet is untouched
+
+Tap **Wallet**. Everything from section 63 must still be there and still work.
+
+### 64f. Nothing lost
+
+Walk the whole app once: get Internet, share Internet, the map, a payment, the
+account settings, Developer. Everything that worked in v0.15.1 must still work.
+
+### What would make this a FAIL
+
+- More than one button visible on Gagner before opening Réglages.
+- Any control that used to exist and now cannot be reached.
+- Activité and Wallet showing the same money figures.
+- A red "stop" block, or a subtitle running to two sentences.
+- The word "clients" anywhere a person can see.
+

@@ -895,6 +895,63 @@ session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
 complete. The buyer treats SESSION_END as an ending rather than a fault: it
 closes the VPN and says "Le fournisseur a arrêté le partage."
 
+## Gagner asks one question (v0.15.2)
+
+The Gagner screen had grown seven cards of equal weight: a source line, a price
+policy with three chips, a bundle form with two number fields, a fee note, an
+earnings total, two switches and a relay panel — all stacked above and below the
+button that actually does something. Someone who has never used an app before
+reads that as a form to fill in, not an offer to accept.
+
+The screen asks one question: **do you want to share your Internet right now?**
+
+So it is now three cards:
+
+1. **The hero.** One state, one title, one sentence, one button. The button's
+   meaning comes from the state rather than from two panes hiding two buttons:
+   `Commencer` when idle, `Arrêter le partage` when sharing. While sharing, the
+   three live figures sit *inside* the hero instead of competing with it as
+   three separate cards.
+2. **Money.** Gagné aujourd'hui as the one big number, what is owed underneath,
+   and a quiet text link to the Wallet. No second copy of the history.
+3. **Réglages du partage.** One row with a summary line and a chevron. Behind
+   it: the price policy with a plain-language hint for each choice, the mobile
+   bundle form, notifications, coverage sharing, relay, and the diagnostic
+   source detail. A first-time user never opens it; the summary line still
+   shows the state without opening it.
+
+`core/EarnUi.kt` decides all of that, so the four states are tested rather than
+judged from a screenshot. Two wording rules the tests enforce: no subtitle is
+ever two sentences, and nothing says "clients" — a person counts people.
+
+Stopping is styled as a calm secondary button, not a red block. It is
+completely reversible, and the filled button is reserved for the action we
+actually want.
+
+## Activité is a history, not a second wallet (v0.15.2)
+
+After the Wallet arrived in v0.15.1, Activité was still carrying three money
+boxes, a custody note, a payment card and a receiving-method card — every one
+of them now one tap away in the Wallet — and the account settings were buried
+underneath all of it. Two screens were doing the same job and neither did it
+well.
+
+The split is now clean, and the duplicated widgets were deleted rather than
+hidden:
+
+- **Activité** answers *what happened*: one row per session, grouped by day,
+  with the counterparty and the amount as a quiet detail.
+- **Wallet** answers *what money needs attention*.
+
+`core/ActivityUi.kt` holds the row model, and it deliberately reuses
+`WalletUi.dayLabel`, `WalletUi.shortName` and the Wallet's status words, so the
+two histories can never disagree about the same fact or drift apart visually. A
+free session reads "Gratuit" rather than "0 CFA", because a zero reads like
+something went wrong.
+
+The account moved out from under the history into its own **Compte** section
+with its own heading.
+
 ## The server derives the money itself (v0.15.1)
 
 v0.15.0 shipped with a gap I flagged as the largest one: `/v1/settlements`

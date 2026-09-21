@@ -30,9 +30,11 @@ import net.prok.proknet.ProkNetApp
 import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
+import net.prok.proknet.core.ActivityUi
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.EarnUi
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
@@ -136,8 +138,17 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<Button>(R.id.btnConnect).setOnClickListener { connect() }
         v<Button>(R.id.btnConfirmBack).setOnClickListener { pendingOffer = null; refresh() }
         v<Button>(R.id.btnStopInternet).setOnClickListener { stopAll() }
-        v<Button>(R.id.btnStartSharing).setOnClickListener { ensureRunning { startSharing() } }
-        v<Button>(R.id.btnStopSharing).setOnClickListener { stopSharing() }
+        // v0.15.2: one button whose meaning comes from the state, not two buttons hidden
+        // behind two panes. The user sees exactly one thing to press.
+        v<Button>(R.id.btnEarnAction).setOnClickListener {
+            if (node.sellOn) stopSharing() else ensureRunning { startSharing() }
+        }
+        v<View>(R.id.earnSettingsRow).setOnClickListener {
+            val pane = v<View>(R.id.earnSettings)
+            val opening = pane.visibility != View.VISIBLE
+            pane.visibility = if (opening) View.VISIBLE else View.GONE
+            v<TextView>(R.id.earnSettingsChevron).rotation = if (opening) 90f else 0f
+        }
         v<Button>(R.id.btnInboxShare).setOnClickListener { shareForDemand() }
         v<TextView>(R.id.budget25).setOnClickListener { budgetCentimes = 2_500; refresh() }
         v<TextView>(R.id.budget50).setOnClickListener { budgetCentimes = 5_000; refresh() }
@@ -579,53 +590,94 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun refreshEarn(s: ProductState.Seller) {
         val now = System.currentTimeMillis()
-        // v0.14: the seller picks what to earn; ProkNet computes the price
+        val g = node.gateway
+        val cur = g.session
+
+        // ---- the one question this screen asks ----
+        val stage = EarnUi.stage(sellerOn = s != ProductState.Seller.OFF,
+            hasSource = node.gateway.upstreamReady || node.sellerAccessPath() != null,
+            hasCustomer = cur != null)
         val pol = sellerPolicy
-        paintChoice(R.id.policyCheaper, pol == Pricing.SellerPolicy.CHEAPER)
-        paintChoice(R.id.policyBalanced, pol == Pricing.SellerPolicy.BALANCED)
-        paintChoice(R.id.policyEarnMore, pol == Pricing.SellerPolicy.EARN_MORE)
-        text(R.id.shareEstimate, Pricing.earningEstimate(Pricing.quote(budgetCentimes, node.mySource(), pol)) ?: "")
+        val estimate = Pricing.earningEstimate(Pricing.quote(budgetCentimes, node.mySource(), pol)) ?: ""
+        val customer = cur?.let { getString(R.string.share_one_customer, node.peerName(it.peerShort)) } ?: ""
+        val hero = EarnUi.hero(stage,
+            sourceWord = if (node.gateway.upstreamReady) sellerSource() else "",
+            estimate = estimate, customer = customer, blocker = sellerWarning())
+
+        text(R.id.earnHeroTitle, hero.title)
+        text(R.id.earnHeroSub, hero.subtitle)
+        text(R.id.earnFootnote, hero.footnote); show(R.id.earnFootnote, hero.footnote.isNotEmpty())
+        show(R.id.btnEarnAction, hero.button.isNotEmpty())
+        v<Button>(R.id.btnEarnAction).text = hero.button
+        // stopping is completely reversible, so it gets a calm secondary treatment rather
+        // than an alarming red block. The filled button is reserved for the thing we want
+        // the user to do.
+        v<Button>(R.id.btnEarnAction).setBackgroundResource(if (hero.destructive) R.drawable.bg_secondary else R.drawable.bg_primary)
+        v<Button>(R.id.btnEarnAction).setTextColor(getColor(if (hero.destructive) R.color.text else R.color.on_brand))
+        v<View>(R.id.earnDot).setBackgroundResource(when (stage) {
+            EarnUi.Stage.SERVING -> R.drawable.dot_ok
+            EarnUi.Stage.WAITING -> R.drawable.dot_warn
+            else -> R.drawable.dot_muted
+        })
+
+        // ---- the live figures, inside the hero ----
+        show(R.id.earnStats, EarnUi.showsLiveStats(stage))
+        if (EarnUi.showsLiveStats(stage)) {
+            val today = startOfToday()
+            val todaySessions = node.store.sessions(300).filter { it.role == "seller" && it.startTs >= today }
+            val liveBytes = cur?.let { it.bytesUp + it.bytesDown } ?: 0L
+            val liveEarned = Market.split(g.agreedCost(), node.feePct).sellerNet
+            val stats = EarnUi.liveStats(
+                people = if (cur == null) 0 else 1,
+                sharedWord = ProductState.data(todaySessions.sumOf { signedBytes(it) } + liveBytes),
+                earnedWord = ProductState.cfaShort(todaySessions.sumOf { Market.split(it.finalCentimes, node.feePct).sellerNet } + liveEarned))
+            text(R.id.earnStat1Value, stats[0].value); text(R.id.earnStat1Label, stats[0].label)
+            text(R.id.earnStat2Value, stats[1].value); text(R.id.earnStat2Label, stats[1].label)
+            text(R.id.earnStat3Value, stats[2].value); text(R.id.earnStat3Label, stats[2].label)
+        }
+
+        // ---- somebody is waiting ----
         val demand = ProviderInbox.active(network.inbox, now)
-        // the demand card is visible whatever the notification did, and only while sharing is off
         val waiting = demand.filter { !it.accepted }
-        show(R.id.earnInbox, waiting.isNotEmpty() && s == ProductState.Seller.OFF)
+        show(R.id.earnInbox, EarnUi.showDemand(waiting.size, s != ProductState.Seller.OFF))
         if (waiting.isNotEmpty()) {
             text(R.id.earnInboxTitle, ProviderInbox.cardTitle(network.inbox, now))
             text(R.id.earnInboxSub, ProviderInbox.cardSub(network.inbox, now))
         }
         val other = ProviderInbox.otherDemandLine(network.inbox, now)
         text(R.id.shareOtherDemand, other); show(R.id.shareOtherDemand, other.isNotEmpty() && s != ProductState.Seller.OFF)
-        val on = s != ProductState.Seller.OFF
-        show(R.id.netShareSetup, !on); show(R.id.netShareActive, on)
-        if (!on) {
-            text(R.id.shareUpstream, if (node.gateway.upstreamReady) sellerSource() else getString(R.string.share_no_internet_yet_big))
-            text(R.id.shareWarning, sellerWarning())
-        } else {
-            text(R.id.shareTitle, ProductState.sellerHeadline(s)); text(R.id.shareHint, sellerWarning().ifEmpty { ProductState.sellerHint(s) })
-            text(R.id.shareTerms, (if (node.gateway.upstreamReady) sellerSource() + "\n" else "") + getString(R.string.share_auto_price))
-            val g = node.gateway; val cur = g.session
-            val today = startOfToday()
-            val todaySessions = node.store.sessions(300).filter { it.role == "seller" && it.startTs >= today }
-            val liveBytes = cur?.let { it.bytesUp + it.bytesDown } ?: 0L
-            val liveEarned = Market.split(g.agreedCost(), node.feePct).sellerNet
-            text(R.id.shareClients, if (cur == null) "0" else "1")
-            text(R.id.shareData, ProductState.data(todaySessions.sumOf { signedBytes(it) } + liveBytes))
-            text(R.id.shareEarned, ProductState.cfaShort(todaySessions.sumOf { Market.split(it.finalCentimes, node.feePct).sellerNet } + liveEarned))
-            text(R.id.shareCustomer, if (cur == null) getString(R.string.share_no_customer) else getString(R.string.share_one_customer, node.peerName(cur.peerShort)) + "\n" + Pricing.earnedWord(liveEarned) + "\n" +
-                getString(R.string.data_shared) + " : " + ProductState.data(liveBytes) + " · " + ProductState.duration(cur.durationMs) + " · " + getString(R.string.earned) + " : " + ProductState.cfaShort(liveEarned))
-        }
+
+        // ---- money: one number and one link ----
         val ledger = node.store.ledger(1000)
-        val gross = ledger.filter { it.recipient == node.me && it.status != Market.ST_CANCELLED }.sumOf { it.amountCentimes }
         val fees = ledger.filter { it.payer == node.me && it.recipient == Market.PROK_ID && it.status != Market.ST_CANCELLED }.sumOf { it.amountCentimes }
         val sold = node.store.sessions(1000).count { it.role == "seller" }
-        text(R.id.earnTotal, ProductState.cfaShort(gross - fees))
-        text(R.id.earnSub, (if (sold == 1) getString(R.string.earn_sessions_one) else getString(R.string.earn_sessions_many, sold)) + (if (fees > 0) getString(R.string.earn_fees, ProductState.cfaShort(fees)) else ""))
-        // v0.15.1: Gagner stays about sharing Internet. The money lives in the Wallet, so
-        // this is one figure and one link, not a second copy of the history.
-        val earnWallet = Wallet.view(node.obligations(), node.identity.idHex, System.currentTimeMillis())
-        show(R.id.earnReceivable, earnWallet.toReceiveCentimes > 0)
-        text(R.id.earnReceivable, getString(R.string.wallet_to_receive) + " · " + Market.cfa(earnWallet.toReceiveCentimes))
-        v<Button>(R.id.btnEarnWallet).setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
+        val todayStart = startOfToday()
+        val earnedToday = node.store.sessions(300)
+            .filter { it.role == "seller" && it.startTs >= todayStart }
+            .sumOf { Market.split(it.finalCentimes, node.feePct).sellerNet }
+        val earnWallet = Wallet.view(node.obligations(), node.identity.idHex, now)
+        val money = EarnUi.earnings(earnedToday, earnWallet.toReceiveCentimes, sold)
+        text(R.id.earnTodayLabel, money.todayLabel)
+        text(R.id.earnTotal, money.today)
+        text(R.id.earnReceivable, money.receivable); show(R.id.earnReceivable, money.receivable.isNotEmpty())
+        text(R.id.earnSub, money.history); show(R.id.earnSub, money.history.isNotEmpty())
+        v<TextView>(R.id.btnEarnWallet).text = money.link
+        v<TextView>(R.id.btnEarnWallet).setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
+
+        // ---- everything else, folded away ----
+        text(R.id.earnSettingsTitle, EarnUi.SETTINGS_TITLE)
+        text(R.id.earnSettingsSummary, EarnUi.settingsSummary(pol, network.notifyOptIn, network.shareCoverage, node.relayOn))
+        paintChoice(R.id.policyCheaper, pol == Pricing.SellerPolicy.CHEAPER)
+        paintChoice(R.id.policyBalanced, pol == Pricing.SellerPolicy.BALANCED)
+        paintChoice(R.id.policyEarnMore, pol == Pricing.SellerPolicy.EARN_MORE)
+        text(R.id.policyHint, EarnUi.policyHint(pol))
+        text(R.id.shareEstimate, estimate)
+        text(R.id.shareUpstream, if (node.gateway.upstreamReady) sellerSource() else getString(R.string.share_no_internet_yet_big))
+        text(R.id.shareWarning, sellerWarning())
+        text(R.id.shareTerms, getString(R.string.share_auto_price))
+        text(R.id.shareHint, ProductState.sellerHint(s))
+        text(R.id.shareCustomer, if (cur == null) getString(R.string.share_no_customer)
+            else getString(R.string.data_shared) + " : " + ProductState.data(cur.bytesUp + cur.bytesDown) + " · " + ProductState.duration(cur.durationMs))
         val (n, bytes) = node.store.relayStats()
         text(R.id.earnRelayStats, if (n == 0L) getString(R.string.help_none) else if (n == 1L) getString(R.string.help_carried_one, ProductState.data(bytes)) else getString(R.string.help_carried_many, n.toInt(), ProductState.data(bytes)))
         v<Switch>(R.id.switchRelay).isChecked = node.relayOn
@@ -657,43 +709,93 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (ss.finalCentimes == 0L) getString(R.string.payment_free) else if (e == null) getString(R.string.payment_not_booked) else ProductState.paymentWord(e.status, e.payer == node.me)
 
     private fun refreshActivity(running: Boolean) {
-        val ledger = node.store.ledger(1000)
-        // v0.15: the three figures now come from real signed obligations, not from the
-        // internal ledger view. They are amounts owed between people; Prok holds nothing.
+        val now = System.currentTimeMillis()
         val obligations = node.obligations()
-        val w = Wallet.view(obligations, node.identity.idHex, System.currentTimeMillis())
-        text(R.id.walletPay, ProductState.cfaShort(w.toPayCentimes))
-        text(R.id.walletReceive, ProductState.cfaShort(w.toReceiveCentimes))
-        text(R.id.walletFees, ProductState.cfaShort(obligations.filter { Settlement.isOutstanding(it.status) && it.sellerId == node.identity.idHex }.sumOf { it.prokFeeCentimes }))
-        renderPayCard(obligations)
-        renderReceiveWith()
         renderWallet(obligations)
-        val list = v<LinearLayout>(R.id.activityList); list.removeAllViews()
-        val sessions = node.store.sessions(100)
-        show(R.id.activityEmpty, sessions.isEmpty())
-        val today = startOfToday()
-        for (ss in sessions) {
-            val entry = ledger.firstOrNull { it.sessionHex == ss.sessionHex && it.recipient != Market.PROK_ID }
-            val buyer = ss.role == "buyer"
-            val card = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16)) }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(10); card.layoutParams = lp
-            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-            left.addView(TextView(this).apply { text = getString(if (buyer) R.string.activity_used else R.string.activity_shared); setTextAppearance(R.style.H2) })
-            left.addView(TextView(this).apply { text = ProductState.data(signedBytes(ss)) + " · " + paymentWord(ss, entry); setTextAppearance(R.style.Muted) })
-            val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.END }
-            val amount = if (buyer) ProductState.cfaShort(ss.finalCentimes) else "+" + ProductState.cfaShort(Market.split(ss.finalCentimes, node.feePct).sellerNet)
-            right.addView(TextView(this).apply { text = amount; setTextAppearance(R.style.H2) })
-            right.addView(TextView(this).apply { text = (if (ss.startTs >= today) timeFmt else dateFmt).format(Date(ss.startTs)); setTextAppearance(R.style.Muted) })
-            card.addView(left); card.addView(right)
-            card.setOnClickListener { sessionDialog(ss, entry) }
-            list.addView(card)
-        }
+        if (!walletTab) renderHistory(now)
+
+        // ---- the account, a separate concern with its own rhythm ----
         text(R.id.profileName, node.identity.displayName)
         text(R.id.profileId, getString(R.string.profile_id, "prok-" + node.identity.shortIdHex))
         text(R.id.profileService, getString(if (running) R.string.network_running else R.string.network_stopped))
         v<Switch>(R.id.switchNode).isChecked = ProkNetService.running
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         v<Button>(R.id.btnBattery).text = getString(if (pm.isIgnoringBatteryOptimizations(packageName)) R.string.background_allowed else R.string.allow_background)
+    }
+
+    /**
+     * v0.15.2: Activité is a history and nothing else. The money figures, the payment
+     * card and the receiving method used to be duplicated here; they live in the Wallet,
+     * one tap away, and having them in two places made both screens worse.
+     */
+    private fun renderHistory(now: Long) {
+        val ledger = node.store.ledger(1000)
+        val sessions = node.store.sessions(100)
+        val today = startOfToday()
+        val rows = ArrayList<Pair<Long, ActivityUi.Row>>()
+        for (ss in sessions) {
+            val entry = ledger.firstOrNull { it.sessionHex == ss.sessionHex && it.recipient != Market.PROK_ID }
+            val seller = ss.role == "seller"
+            val amount = if (seller) Market.split(ss.finalCentimes, node.feePct).sellerNet else ss.finalCentimes
+            val free = ss.finalCentimes <= 0L
+            val settled = entry != null && entry.status == Market.ST_SETTLED
+            val timeWord = (if (ss.startTs >= today) timeFmt else dateFmt).format(Date(ss.startTs))
+            rows.add(ss.startTs to ActivityUi.Row(
+                sessionHex = ss.sessionHex,
+                kind = if (seller) ActivityUi.Kind.SHARED else ActivityUi.Kind.BOUGHT,
+                title = ActivityUi.title(if (seller) ActivityUi.Kind.SHARED else ActivityUi.Kind.BOUGHT),
+                subtitle = ActivityUi.subtitle(WalletUi.shortName(ss.peerShort), timeWord),
+                amount = ActivityUi.amountWord(amount, seller),
+                positive = seller,
+                chip = ActivityUi.chip(settled, free, seller),
+                tone = ActivityUi.tone(settled, free)))
+        }
+        val groups = ActivityUi.group(rows, now)
+        val list = v<LinearLayout>(R.id.activityList); list.removeAllViews()
+        show(R.id.activityEmpty, groups.isEmpty())
+        text(R.id.activityEmptyTitle, ActivityUi.EMPTY_TITLE)
+        text(R.id.activityEmptyBody, ActivityUi.EMPTY_BODY)
+        for (g in groups) {
+            list.addView(TextView(this).apply {
+                text = g.label; setTextAppearance(R.style.Caption)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = dp(16); bottomMargin = dp(8) }
+            })
+            for (row in g.rows) list.addView(historyRow(row, sessions, ledger))
+        }
+    }
+
+    /** The same row shape as the Wallet, so the two screens feel like one product. */
+    private fun historyRow(row: ActivityUi.Row, sessions: List<StoredSession>, ledger: List<Market.Entry>): android.view.View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL
+            background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16))
+        }
+        card.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { bottomMargin = dp(8) }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        left.addView(TextView(this).apply { text = row.title; setTextAppearance(R.style.H2) })
+        left.addView(TextView(this).apply { text = row.subtitle; setTextAppearance(R.style.Muted) })
+        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.END }
+        right.addView(TextView(this).apply { text = row.amount; setTextAppearance(R.style.H2) })
+        right.addView(TextView(this).apply {
+            text = row.chip; setTextAppearance(R.style.Muted)
+            setTextColor(getColor(when (row.tone) {
+                WalletUi.Tone.GOOD -> R.color.ok
+                WalletUi.Tone.ATTENTION -> R.color.warn
+                else -> R.color.text_muted
+            }))
+        })
+        card.addView(left); card.addView(right)
+        card.setOnClickListener {
+            sessions.firstOrNull { it.sessionHex == row.sessionHex }?.let { ss ->
+                sessionDialog(ss, ledger.firstOrNull { it.sessionHex == ss.sessionHex && it.recipient != Market.PROK_ID })
+            }
+        }
+        return card
     }
 
     // ---- v0.15.1: the Wallet screen ---------------------------------------------------------------
@@ -829,15 +931,6 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             .maxByOrNull { it.second }
     }
 
-    private fun renderPayCard(obligations: List<Settlement.Obligation>) {
-        val due = biggestCreditor(obligations)
-        show(R.id.walletPayCard, due != null)
-        if (due == null) return
-        val (seller, amount) = due
-        text(R.id.walletPayWho, node.peerName(seller.substring(0, 8)) + " · " + Market.cfa(amount))
-        v<Button>(R.id.btnWalletPay).text = getString(R.string.wallet_pay_button, Market.cfa(amount))
-        v<Button>(R.id.btnWalletPay).setOnClickListener { payDialog(seller, amount) }
-    }
 
     private fun payDialog(sellerId: String, amount: Long) {
         val rails = node.paymentRails.filter { it.available() }
@@ -888,11 +981,6 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }.setNegativeButton(R.string.close, null).show()
     }
 
-    private fun renderReceiveWith() {
-        val d = node.store.paymentDestination(node.identity.idHex)
-        text(R.id.walletReceiveWith, if (d == null) "—" else railName(d.rail) + " · " + d.masked())
-        v<Button>(R.id.btnWalletReceive).setOnClickListener { receiveWithDialog() }
-    }
 
     private fun railName(r: Settlement.Rail): String = when (r) {
         Settlement.Rail.MTN_MOMO -> "MTN Mobile Money"
