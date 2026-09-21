@@ -103,7 +103,7 @@ class StoredSession(
     val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
 )
 
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 9) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, Migrations.DB_VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -292,26 +292,10 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "settlement_ids TEXT NOT NULL," +
                 "state TEXT NOT NULL)"
         )
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS payment_receipts(" +
-                "payment_id TEXT PRIMARY KEY," +
-                "seller_id TEXT NOT NULL," +
-                "buyer_id TEXT NOT NULL," +
-                "rail TEXT NOT NULL," +
-                "destination_hash TEXT NOT NULL," +
-                "expected INTEGER NOT NULL," +
-                "observed INTEGER NOT NULL," +
-                "observed_at INTEGER NOT NULL," +
-                "source TEXT NOT NULL," +
-                "source_package TEXT NOT NULL," +
-                "evidence_hash TEXT NOT NULL," +
-                "parser_version INTEGER NOT NULL," +
-                "confidence TEXT NOT NULL," +
-                "settlement_ids TEXT NOT NULL," +
-                "reference TEXT NOT NULL DEFAULT ''," +
-                "delivered INTEGER NOT NULL DEFAULT 0," +
-                "sig BLOB NOT NULL)"
-        )
+        // the same text the migration rebuilds with, so a fresh install and an upgraded
+        // phone cannot drift apart
+        db.execSQL(Migrations.CREATE_RECEIPTS_TEMPLATE
+            .format("IF NOT EXISTS payment_receipts"))
         db.execSQL("CREATE TABLE IF NOT EXISTS pay_sync(k TEXT PRIMARY KEY, at INTEGER NOT NULL)")
         db.execSQL(
             "CREATE TABLE IF NOT EXISTS receipt_rules(" +
@@ -321,16 +305,8 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "signature TEXT NOT NULL," +
                 "stored_at INTEGER NOT NULL)"
         )
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS destination_claims(" +
-                "seller_id TEXT NOT NULL," +
-                "rail TEXT NOT NULL," +
-                "msisdn TEXT NOT NULL," +
-                "version INTEGER NOT NULL," +
-                "created_at INTEGER NOT NULL," +
-                "sig BLOB NOT NULL," +
-                "PRIMARY KEY(seller_id, rail, version))"
-        )
+        db.execSQL(Migrations.CREATE_CLAIMS_TEMPLATE
+            .format("IF NOT EXISTS destination_claims"))
         // v0.15.0: where a seller wants to be paid. Local only: never advertised, never
         // gossiped, and only revealed to a buyer that owes a real settled obligation.
         db.execSQL(
@@ -381,6 +357,56 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         if (oldVersion < 7) createSettlements(db)
         if (oldVersion < 8) createSettlements(db)
         if (oldVersion < 9) createSettlements(db)
+        // v0.16.4: and the first upgrade step that actually changes a table that already
+        // exists. Everything above this line could only ever add one.
+        if (oldVersion < 10) {
+            createSettlements(db)
+            migrateV10(db)
+        }
+    }
+
+    /**
+     * v0.16.4: bring `payment_receipts` and `destination_claims` to the shapes v0.16.1
+     * introduced without bumping the database version.
+     *
+     * A phone that has been running since build 62 still has the build-62 shapes, because
+     * every upgrade step since has been `CREATE TABLE IF NOT EXISTS`, which does nothing
+     * to a table that is already there. Fresh installs were always correct, which is why
+     * no test caught it.
+     *
+     * The decisions are in [Migrations] so they can be tested against real databases built
+     * with the historical schemas. What runs here is what those tests run.
+     */
+    private fun migrateV10(db: SQLiteDatabase) {
+        val schema = HashMap<String, List<Migrations.Column>>()
+        for (table in listOf("payment_receipts", "destination_claims"))
+            columnsOf(db, table)?.let { schema[table] = it }
+        val plan = Migrations.toV10(schema)
+        if (plan.isEmpty()) return
+        DiagLog.i("STORE", "upgrading the payment tables (" + plan.size + " step(s))")
+        // one transaction: a half-migrated payment table is worse than an old one
+        db.beginTransaction()
+        try {
+            for (sql in plan) db.execSQL(sql)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** What SQLite says a table looks like, or null when it does not exist. */
+    private fun columnsOf(db: SQLiteDatabase, table: String): List<Migrations.Column>? {
+        val out = ArrayList<Migrations.Column>()
+        try {
+            db.rawQuery("PRAGMA table_info(" + table + ")", null).use { c ->
+                while (c.moveToNext())
+                    out.add(Migrations.Column(c.getString(c.getColumnIndexOrThrow("name")),
+                        c.getInt(c.getColumnIndexOrThrow("pk"))))
+            }
+        } catch (e: Exception) {
+            return null
+        }
+        return if (out.isEmpty()) null else out
     }
 
     // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
@@ -726,6 +752,34 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         val c = readableDatabase.query("destination_claims", arrayOf("sig"), "seller_id=?", arrayOf(sellerId),
             null, null, "version DESC", "1")
         c.use { return if (it.moveToNext()) it.getBlob(0) else null }
+    }
+
+    /**
+     * v0.16.4: the signature for ONE version.
+     *
+     * During a cooling period the claim a buyer must be given is not the newest one, and
+     * a claim sent with another version's signature verifies against nobody.
+     */
+    fun destinationSig(sellerId: String, version: Int): ByteArray? {
+        val c = readableDatabase.query("destination_claims", arrayOf("sig"),
+            "seller_id=? AND version=?", arrayOf(sellerId, version.toString()), null, null, null, "1")
+        c.use { return if (it.moveToNext()) it.getBlob(0) else null }
+    }
+
+    /** v0.16.4: every claim a seller has made, oldest first. */
+    fun destinationClaims(sellerId: String): List<DestinationClaim.Claim> {
+        val out = ArrayList<DestinationClaim.Claim>()
+        readableDatabase.query("destination_claims", null, "seller_id=?", arrayOf(sellerId),
+            null, null, "version ASC").use {
+            while (it.moveToNext()) out.add(DestinationClaim.Claim(
+                it.getString(it.getColumnIndexOrThrow("seller_id")),
+                runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }
+                    .getOrDefault(Settlement.Rail.NONE),
+                it.getString(it.getColumnIndexOrThrow("msisdn")),
+                it.getInt(it.getColumnIndexOrThrow("version")),
+                it.getLong(it.getColumnIndexOrThrow("created_at"))))
+        }
+        return out
     }
 
     /** The claim before [version], which stays active during a cooling period. */
