@@ -33,8 +33,26 @@ MAX_TERM_LENGTH = 48
 MAX_CONFIG_BYTES = 16 * 1024
 
 
+#: Characters a term may not contain. Terms are WORDS, from an operator's message. A
+#: quote or a backslash would have to be JSON-escaped, and the escaping is exactly where
+#: two independent canonicalisations drift apart - which would mean a configuration the
+#: server happily signs and every phone silently refuses.
+FORBIDDEN_IN_TERM = ('"', "\\")
+
+
 class ConfigError(Exception):
     """The config is not acceptable. Never partially applied."""
+
+
+def key_id(config_pub: str) -> str:
+    """A short, stable name for a configuration key, for logs and for documentation.
+
+    Not a security control: the pinned key itself is. This exists so a human can say
+    which key a phone is running without pasting 128 hex characters.
+    """
+    if not config_pub:
+        return "none"
+    return hashlib.sha256(bytes.fromhex(config_pub)).hexdigest()[:8]
 
 
 def canonical(version: int, valid_from: int, terms: dict) -> bytes:
@@ -43,6 +61,16 @@ def canonical(version: int, valid_from: int, terms: dict) -> bytes:
     Sorted keys and no incidental whitespace, so the phone and the server compute the same
     bytes from the same content without either of them having to re-serialise what the
     other sent.
+
+    The result is, with the categories in ALPHABETICAL order and every category present
+    even when empty:
+
+        ProkNet-receipt-rules-1|{"terms":{"balance":[],"credit":["a"],...},"validFrom":N,"version":N}
+
+    `ReceiptRules.canonical` in the app builds the same string by hand. The two are pinned
+    against each other by a fixture test, because a mismatch here is not a failing unit
+    test - it is a configuration that signs cleanly and that every phone in the field
+    silently refuses.
     """
     body = {"version": int(version), "validFrom": int(valid_from),
             "terms": {k: list(terms.get(k, [])) for k in CATEGORIES}}
@@ -74,6 +102,8 @@ def validate(version: int, valid_from: int, terms: dict) -> dict:
                 raise ConfigError("%s contains a term of unacceptable length" % k)
             if any(ord(c) < 0x20 or ord(c) == 0x7F for c in t):
                 raise ConfigError("%s contains a control character" % k)
+            if any(c in t for c in FORBIDDEN_IN_TERM):
+                raise ConfigError("%s contains a quote or a backslash" % k)
             out.append(t)
         cleaned[k] = out
     if len(canonical(version, valid_from, cleaned)) > MAX_CONFIG_BYTES:

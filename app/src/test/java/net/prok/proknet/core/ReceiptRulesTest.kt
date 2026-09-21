@@ -106,12 +106,21 @@ class ReceiptRulesTest {
             ReceiptRules.accept(published(3, t), "", 0))
     }
 
-    @Test fun the_shipped_build_pins_no_key_so_it_runs_on_built_in_rules_alone() {
+    @Test fun the_shipped_build_pins_the_real_key_and_trusts_nothing_else() {
+        // v0.16.3: a dedicated configuration key is pinned. Nothing else may publish.
         val t = terms("credit" to listOf("vous avez recu"))
-        assertEquals("", ReceiptRules.PINNED_CONFIG_KEY)
-        assertNull("no key ceremony has happened, so nothing remote may be trusted yet",
+        assertEquals(128, ReceiptRules.PINNED_CONFIG_KEY.length)
+        assertNull("this test's key is not the pinned one",
             ReceiptRules.accept(published(3, t)))
+        // and until something signed by the pinned key arrives, the built-in rules run
         assertEquals(ReceiptParser.DEFAULT.credit, ReceiptRules.current().credit)
+    }
+
+    @Test fun a_term_that_would_need_json_escaping_is_refused() {
+        // the canonical bytes are built by hand on both sides; a quote or a backslash is
+        // exactly where two implementations would start disagreeing
+        assertTrue(!ReceiptRules.acceptable(1, now, terms("credit" to listOf("re\"cu"))))
+        assertTrue(!ReceiptRules.acceptable(1, now, terms("credit" to listOf("re\\cu"))))
     }
 
     // ---- bounds: a compromised publisher still cannot send anything it likes --------------

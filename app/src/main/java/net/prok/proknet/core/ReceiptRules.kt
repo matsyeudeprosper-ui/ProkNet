@@ -25,14 +25,20 @@ object ReceiptRules {
     const val DOMAIN = "ProkNet-receipt-rules-1"
 
     /**
-     * The configuration signing key, pinned in the app.
+     * The configuration signing key, pinned in the app. Key id `9410c707`.
      *
-     * Empty in this build, which means **no remote configuration is accepted at all** and
-     * the built-in rules are the only rules. That is the honest default: publishing a key
-     * here without a corresponding key ceremony would look like a security control while
-     * being none.
+     * This is a **dedicated** key. It is not the Brain's transport identity and not any
+     * user identity, so a compromised Brain can withhold or delay a configuration - which
+     * phones survive, because the built-in rules keep working - but can never forge one.
+     *
+     * The private half exists only on the admin machine and is used only by
+     * `brain.publish_rules`. It is not in the repository and must never be.
+     *
+     * Must equal `CONFIG_PUBLIC_KEY` in `brain/app.py`, byte for byte.
      */
-    const val PINNED_CONFIG_KEY = ""
+    const val PINNED_CONFIG_KEY =
+        "9d536299f0c879aa6025e37b37efff18d7262bf53b434f23dfce26181367cd64" +
+        "5450473b16377d9c53d7049c5dd6de7e2de78b88f745cff23a0e9bdb9533aa0c"
 
     const val MAX_TERMS_PER_CATEGORY = 64
     const val MAX_TERM_LENGTH = 48
@@ -40,6 +46,25 @@ object ReceiptRules {
 
     /** The only categories a configuration may carry. Anything else is refused, not ignored. */
     val CATEGORIES = listOf("credit", "debit", "currency", "balance", "reject", "senders")
+
+    /**
+     * The order the canonical bytes use. **Alphabetical**, because the publisher builds
+     * them with `json.dumps(..., sort_keys=True)`.
+     *
+     * v0.16.3 fixed this. It used to emit [CATEGORIES] in declaration order, which meant
+     * the two sides hashed different bytes and every signed configuration the server
+     * published would have been refused by every phone - a feature that looked finished
+     * and could never have worked once. A fixture test now pins the two spellings
+     * together.
+     */
+    private val CANONICAL_ORDER = CATEGORIES.sorted()
+
+    /**
+     * Characters a term may not contain. Terms are WORDS, out of an operator's message. A
+     * quote or a backslash would have to be JSON-escaped, and the escaping is exactly
+     * where two independent canonicalisations drift apart.
+     */
+    val FORBIDDEN_IN_TERM = listOf('"', '\\')
 
     class Config(val version: Int, val validFrom: Long, val terms: Map<String, List<String>>) {
         /** The rules the parser should use. Categories absent from the config keep their defaults. */
@@ -59,7 +84,7 @@ object ReceiptRules {
      */
     fun canonical(version: Int, validFrom: Long, terms: Map<String, List<String>>): ByteArray {
         val sb = StringBuilder(DOMAIN).append("|{\"terms\":{")
-        for ((i, k) in CATEGORIES.withIndex()) {
+        for ((i, k) in CANONICAL_ORDER.withIndex()) {
             if (i > 0) sb.append(',')
             sb.append('"').append(k).append("\":[")
             sb.append((terms[k] ?: emptyList()).joinToString(",") { "\"" + it + "\"" })
@@ -79,6 +104,9 @@ object ReceiptRules {
                 if (t.isEmpty() || t.length > MAX_TERM_LENGTH) return false
                 // no control characters, and nothing that could be read as an expression
                 if (t.any { it.code < 0x20 || it.code == 0x7F }) return false
+                // and nothing that would need JSON escaping, so the canonical bytes are
+                // the same string on both sides without either having to escape anything
+                if (t.any { it in FORBIDDEN_IN_TERM }) return false
             }
         }
         return canonical(version, validFrom, terms).size <= MAX_CONFIG_BYTES
@@ -107,10 +135,29 @@ object ReceiptRules {
 
     fun activeVersion(): Int = active?.version ?: 0
 
-    /** Restore the last configuration we trusted, so a restart does not fall back silently. */
+    /**
+     * Restore the last configuration we trusted, so a restart does not fall back silently.
+     *
+     * The signature is checked AGAIN on the way out of storage. Trusting it because we
+     * trusted it once would make the phone's own database a place to write parser rules,
+     * and the database is the easiest part of a phone to reach.
+     */
     fun restore(store: MessageStore) {
-        val c = store.receiptRules() ?: return
-        if (verify(c.version, c.validFrom, c.terms, store.receiptRulesSignature())) active = c
+        restore(store.receiptRules(), store.receiptRulesSignature())
+    }
+
+    /**
+     * The decision [restore] makes, with the storage taken out of it.
+     *
+     * `MessageStore` needs a `Context`, so the version above cannot run off a phone - and
+     * this is the part worth testing: what happens when a stored configuration no longer
+     * verifies. Returns whether anything was activated.
+     */
+    fun restore(stored: Config?, signature: String, key: String = PINNED_CONFIG_KEY): Boolean {
+        val c = stored ?: return false
+        if (!verify(c.version, c.validFrom, c.terms, signature, key)) return false
+        active = c
+        return true
     }
 
     /**
