@@ -34,15 +34,18 @@ import net.prok.proknet.core.ActivityUi
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.DestinationClaim
 import net.prok.proknet.core.EarnUi
 import net.prok.proknet.core.Evidence
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
 import net.prok.proknet.core.Market
+import net.prok.proknet.core.PaymentExpectation
 import net.prok.proknet.core.PaymentRails
 import net.prok.proknet.core.ProductState
 import net.prok.proknet.core.Settlement
+import net.prok.proknet.core.Trust
 import net.prok.proknet.core.Wallet
 import net.prok.proknet.core.WalletUi
 import net.prok.proknet.core.ProductState.active
@@ -57,6 +60,7 @@ import net.prok.proknet.core.toHex
 import net.prok.proknet.node.CoverageEngine
 import net.prok.proknet.node.NetworkNode
 import net.prok.proknet.service.ProkNetService
+import net.prok.proknet.service.ReceiptCapture
 import net.prok.proknet.vpn.ProkVpnService
 
 /**
@@ -665,6 +669,20 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<TextView>(R.id.btnEarnWallet).text = money.link
         v<TextView>(R.id.btnEarnWallet).setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
 
+        // ---- v0.16.0: how this phone gets paid, and how it notices ----
+        val claim = node.payments.myDestination()
+        text(R.id.payDest, if (claim == null) "—" else WalletUi.railName(claim.rail) + " · " + claim.masked())
+        v<Button>(R.id.btnPayDest).text = getString(if (claim == null) R.string.wallet_receive_save else R.string.wallet_receive_save)
+        v<Button>(R.id.btnPayDest).setOnClickListener { receiveWithDialog() }
+        val readiness = node.payments.sellerReadiness()
+        text(R.id.payAuto, Trust.sellerReadinessLine(readiness))
+        show(R.id.btnPayAuto, readiness != Trust.SellerReadiness.READY && readiness != Trust.SellerReadiness.NO_DESTINATION)
+        v<Button>(R.id.btnPayAuto).setOnClickListener {
+            // Android's own screen; ProkNet never asks for more than notification access
+            try { startActivity(ReceiptCapture.notificationAccessIntent()) }
+            catch (e: Exception) { toast("Réglages indisponibles") }
+        }
+
         // ---- everything else, folded away ----
         text(R.id.earnSettingsTitle, EarnUi.SETTINGS_TITLE)
         text(R.id.earnSettingsSummary, EarnUi.settingsSummary(pol, network.notifyOptIn, network.shareCoverage, node.relayOn))
@@ -936,7 +954,34 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
 
+    /**
+     * v0.16.0: the whole point of the release. The buyer is told a number and an amount,
+     * walks to any ordinary kiosk, and ProkNet watches the seller's phone for the
+     * operator's own message.
+     *
+     * There is deliberately no "I have paid" button anywhere in this flow. J'AI COMPRIS
+     * opens the detection window; it does not assert that money moved, because a buyer
+     * saying they paid is worth nothing to the seller who is owed.
+     */
     private fun payDialog(sellerId: String, amount: Long) {
+        val dest = node.store.destinationClaim(sellerId)
+        if (dest == null) { legacyPayDialog(sellerId, amount); return }
+        AlertDialog.Builder(this)
+            .setTitle("Payer " + Market.cfa(amount))
+            .setMessage(PaymentExpectation.instruction(amount, WalletUi.railName(dest.rail), dest.masked()))
+            .setPositiveButton(R.string.pay_understood) { _, _ ->
+                val c = node.payments.beginPayment(sellerId)
+                if (!c.ok) { toast(c.message); return@setPositiveButton }
+                AlertDialog.Builder(this)
+                    .setMessage(PaymentExpectation.waitingLine(amount))
+                    .setPositiveButton(R.string.close, null).show()
+                refresh()
+            }
+            .setNegativeButton(R.string.close, null).show()
+    }
+
+    /** The old manual rail, kept for a seller who has not set a number yet. */
+    private fun legacyPayDialog(sellerId: String, amount: Long) {
         val rails = node.paymentRails.filter { it.available() }
         if (rails.isEmpty()) { toast(getString(R.string.wallet_pay_none)); return }
         val due = Wallet.payableTo(node.obligations(), node.identity.idHex, sellerId)
@@ -1009,7 +1054,13 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val d = PaymentRails.Destination(rail, msisdn.filter { it.isDigit() || it == '+' }, node.identity.displayName)
         if (!d.valid) { toast(getString(R.string.wallet_reference_hint)); return }
         node.store.savePaymentDestination(node.identity.idHex, d, System.currentTimeMillis())
-        toast(getString(R.string.wallet_receive_saved)); refresh()
+        // v0.16.0: and a claim SIGNED by this identity, so a buyer can be given the number
+        // safely and nobody else can ever change it
+        val had = node.payments.myDestination()
+        val claim = node.payments.claimDestination(rail, d.msisdn, System.currentTimeMillis())
+        if (claim == null) { toast(getString(R.string.wallet_reference_hint)); return }
+        toast(if (had == null) getString(R.string.wallet_receive_saved) else DestinationClaim.coolingLine())
+        refresh()
     }
 
     private fun sessionDialog(ss: StoredSession, e: Market.Entry?) {

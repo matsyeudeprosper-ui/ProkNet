@@ -40,6 +40,14 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!--
+        v0.16.0: the stronger of the two payment-receipt sources. Optional by design.
+        ProkNet never becomes the default SMS app and never reads the inbox; this is
+        used only to see an incoming operator message while a payment is expected.
+        Where distribution rules forbid it, the notification source is used instead.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <!-- v0.9.7: Wi-Fi Direct is the experimental method B; a phone without it still runs everything else. -->
     <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
@@ -101,5 +109,37 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
             android:stopWithTask="false" />
+
+        <!--
+            v0.16.0: automatic Mobile Money receipt detection on the SELLER's phone.
+
+            The seller grants notification access explicitly, in Android's own settings
+            screen, and may revoke it there at any time. Only notifications posted by the
+            phone's DEFAULT SMS application are ever looked at, and only while a payment
+            is actually expected. Nothing reads the inbox and nothing scans history.
+        -->
+        <service
+            android:name=".service.ReceiptListener"
+            android:exported="false"
+            android:label="@string/receipt_listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!--
+            The stronger source, when the phone grants it. RECEIVE_SMS is restricted on
+            Play, so ProkNet must work without it: this receiver simply never fires when
+            the permission is absent, and the notification source carries the pilot.
+        -->
+        <receiver
+            android:name=".service.SmsReceiptReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="500">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

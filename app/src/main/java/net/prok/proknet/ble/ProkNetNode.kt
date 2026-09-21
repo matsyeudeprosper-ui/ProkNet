@@ -1240,6 +1240,19 @@ class ProkNetNode(private val context: Context) : TransportListener {
             lastBuyError = quote.reason
             return false
         }
+        // v0.16.0: one unpaid session is all a stranger gets. Checked BEFORE any Bluetooth
+        // channel, handshake or probe is paid for, so a blocked buyer is told on the home
+        // screen rather than after a connection has been built.
+        if (!quote.free) {
+            val owed = net.prok.proknet.core.Wallet.totalOwed(obligations(), identity.idHex)
+            val t = net.prok.proknet.core.Trust.admitPaidSession(owed, verifiedPayments(), deviceHasUnresolvedDebt)
+            if (!t.allowed) {
+                DiagLog.w(tag, "BUY refused before any setup: " + t.reason + " (owes " + Market.cfa(owed) +
+                    ", limit " + Market.cfa(t.limitCentimes) + ")")
+                lastBuyError = net.prok.proknet.core.Trust.settleSentence(owed)
+                return false
+            }
+        }
         // v0.15.0: and what this phone already owes, asked BEFORE any Bluetooth channel,
         // handshake or probe is paid for
         val admission = settlementAdmission(quote.free)
@@ -1489,8 +1502,31 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Wired by NetworkNode, which owns the brain URL. */
     @Volatile var brainUrlProvider: (() -> String)? = null
 
+    /**
+     * v0.16.0: set by the brain when this device is known to owe money under an older
+     * identity. Until a server says otherwise we assume nothing, because accusing an
+     * honest new user would be worse than the abuse it prevents.
+     */
+    @Volatile var deviceHasUnresolvedDebt = false
+
     /** v0.15.3: the settlement queue talks to the network, so never on the main thread. */
     private val settlementIo = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /**
+     * v0.16.0: automatic cash-to-Mobile-Money verification. The buyer pays at any ordinary
+     * kiosk; this watches the seller's phone for the operator's own message.
+     */
+    val payments: net.prok.proknet.node.PaymentEngine by lazy {
+        net.prok.proknet.node.PaymentEngine(identity, store) { pushStatus() }
+    }
+
+    /** v0.16.0: how many payments this phone has had cleared by observed evidence. */
+    fun verifiedPayments(): Int = payments.verifiedPayments()
+
+    /** v0.16.0: a stable, hashed, ProkNet-only pseudonym for this phone. */
+    fun devicePseudonym(): String = net.prok.proknet.core.Trust.devicePseudonym(
+        try { android.provider.Settings.Secure.getString(context.contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID) ?: "" } catch (e: Exception) { "" })
 
     /** v0.15.3: a session settled; queue its evidence and try if anything is reachable. */
     fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) {
@@ -1664,8 +1700,24 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     fun isBluetoothOn(): Boolean = ble.isBluetoothOn
 
+    /** v0.16.0: start listening for operator messages, and stop when nothing is expected. */
+    fun startReceiptCapture() {
+        payments.restore()
+        payments.detectionAvailable =
+            net.prok.proknet.service.ReceiptCapture.notificationAccessGranted(context) ||
+            net.prok.proknet.service.SmsReceiptReceiver.available(context)
+        net.prok.proknet.service.ReceiptCapture.sink = { c ->
+            settlementIo.execute {
+                try {
+                    payments.onCandidate(c, net.prok.proknet.service.ReceiptCapture.defaultSmsPackage(context))
+                } catch (e: Exception) { DiagLog.w(tag, "receipt: " + e) }
+            }
+        }
+    }
+
     fun start(): Boolean {
         if (isRunning) { DiagLog.w(tag, "start ignored: already running"); return true }
+        startReceiptCapture()
         if (!ble.isBluetoothOn) { DiagLog.e(tag, "Bluetooth is OFF - turn it on and press Start again"); pushStatus(); return false }
         DiagLog.i(tag, "starting node id=" + identity.idHex + " name=" + identity.displayName + " fingerprint=" + identity.fingerprint +
             (identity.legacyIdHex?.let { " (migrated from " + it.substring(0, 8) + ")" } ?: "") + ", known keys=" + store.peerKeyCount())

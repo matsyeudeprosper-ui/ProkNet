@@ -103,7 +103,7 @@ class StoredSession(
     val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
 )
 
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 7) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 8) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -273,6 +273,54 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "reported_at INTEGER NOT NULL DEFAULT 0)"
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_state ON settlement_sync(state)")
+        // v0.16.0: automatic cash-to-Mobile-Money verification.
+        //
+        // What is deliberately NOT here: no message bodies, no sender names, no inbox.
+        // A receipt keeps the sha256 of the one message that matched and nothing else,
+        // so the seller's private messages never become ProkNet's data.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS payment_expectations(" +
+                "payment_id TEXT PRIMARY KEY," +
+                "buyer_id TEXT NOT NULL," +
+                "seller_id TEXT NOT NULL," +
+                "rail TEXT NOT NULL," +
+                "destination_hash TEXT NOT NULL," +
+                "amount INTEGER NOT NULL," +
+                "created_at INTEGER NOT NULL," +
+                "valid_from INTEGER NOT NULL," +
+                "expires_at INTEGER NOT NULL," +
+                "settlement_ids TEXT NOT NULL," +
+                "state TEXT NOT NULL)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS payment_receipts(" +
+                "payment_id TEXT PRIMARY KEY," +
+                "seller_id TEXT NOT NULL," +
+                "buyer_id TEXT NOT NULL," +
+                "rail TEXT NOT NULL," +
+                "destination_hash TEXT NOT NULL," +
+                "expected INTEGER NOT NULL," +
+                "observed INTEGER NOT NULL," +
+                "observed_at INTEGER NOT NULL," +
+                "source TEXT NOT NULL," +
+                "source_package TEXT NOT NULL," +
+                "evidence_hash TEXT NOT NULL," +
+                "parser_version INTEGER NOT NULL," +
+                "confidence TEXT NOT NULL," +
+                "settlement_ids TEXT NOT NULL," +
+                "reference TEXT NOT NULL DEFAULT ''," +
+                "sig BLOB NOT NULL)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS destination_claims(" +
+                "seller_id TEXT NOT NULL," +
+                "rail TEXT NOT NULL," +
+                "msisdn TEXT NOT NULL," +
+                "version INTEGER NOT NULL," +
+                "created_at INTEGER NOT NULL," +
+                "sig BLOB NOT NULL," +
+                "PRIMARY KEY(seller_id, rail))"
+        )
         // v0.15.0: where a seller wants to be paid. Local only: never advertised, never
         // gossiped, and only revealed to a buyer that owes a real settled obligation.
         db.execSQL(
@@ -321,6 +369,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         if (oldVersion < 5) createV5(db)
         if (oldVersion < 6) createSettlements(db)
         if (oldVersion < 7) createSettlements(db)
+        if (oldVersion < 8) createSettlements(db)
     }
 
     // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
@@ -566,6 +615,80 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         fun n(state: Evidence.Sync) = DatabaseUtils.longForQuery(readableDatabase,
             "SELECT COUNT(*) FROM settlement_sync WHERE state=?", arrayOf(state.name)).toInt()
         return Triple(n(Evidence.Sync.PENDING), n(Evidence.Sync.REPORTED), n(Evidence.Sync.DISPUTED))
+    }
+
+    // ---- v0.16.0: payment expectations, receipts and destinations --------------------------------
+
+    fun saveExpectation(e: PaymentExpectation.Expectation) {
+        val cv = ContentValues().apply {
+            put("payment_id", e.paymentId); put("buyer_id", e.buyerId); put("seller_id", e.sellerId)
+            put("rail", e.rail.name); put("destination_hash", e.destinationHash); put("amount", e.amountCentimes)
+            put("created_at", e.createdAt); put("valid_from", e.validFrom); put("expires_at", e.expiresAt)
+            put("settlement_ids", e.includedSettlementIds.joinToString(",")); put("state", e.state.name)
+        }
+        writableDatabase.insertWithOnConflict("payment_expectations", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun expectations(limit: Int = 50): List<PaymentExpectation.Expectation> {
+        val out = ArrayList<PaymentExpectation.Expectation>()
+        val c = readableDatabase.query("payment_expectations", null, null, null, null, null, "created_at DESC", limit.toString())
+        c.use {
+            while (it.moveToNext()) out.add(PaymentExpectation.Expectation(
+                it.getString(it.getColumnIndexOrThrow("payment_id")),
+                it.getString(it.getColumnIndexOrThrow("buyer_id")),
+                it.getString(it.getColumnIndexOrThrow("seller_id")),
+                runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE),
+                it.getString(it.getColumnIndexOrThrow("destination_hash")),
+                it.getLong(it.getColumnIndexOrThrow("amount")),
+                it.getLong(it.getColumnIndexOrThrow("created_at")),
+                it.getLong(it.getColumnIndexOrThrow("valid_from")),
+                it.getLong(it.getColumnIndexOrThrow("expires_at")),
+                it.getString(it.getColumnIndexOrThrow("settlement_ids")).split(",").filter { s -> s.isNotEmpty() },
+                runCatching { PaymentExpectation.State.valueOf(it.getString(it.getColumnIndexOrThrow("state"))) }.getOrDefault(PaymentExpectation.State.WAITING)))
+        }
+        return out
+    }
+
+    fun saveReceipt(r: DeviceReceipt.Receipt, sig: ByteArray) {
+        val cv = ContentValues().apply {
+            put("payment_id", r.paymentId); put("seller_id", r.sellerId); put("buyer_id", r.buyerId)
+            put("rail", r.rail.name); put("destination_hash", r.destinationHash)
+            put("expected", r.expectedCentimes); put("observed", r.observedCentimes); put("observed_at", r.observedAt)
+            put("source", r.source.name); put("source_package", r.sourcePackage)
+            put("evidence_hash", r.messageEvidenceHash); put("parser_version", r.parserVersion)
+            put("confidence", r.confidence.name); put("settlement_ids", r.matchedSettlementIds.joinToString(","))
+            put("reference", r.reference); put("sig", sig)
+        }
+        writableDatabase.insertWithOnConflict("payment_receipts", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    fun hasReceipt(paymentId: String): Boolean = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM payment_receipts WHERE payment_id=?", arrayOf(paymentId)) > 0
+
+    /** Payments cleared by observed evidence, for the trust tier. */
+    fun receiptCount(myId: String): Int = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM payment_receipts WHERE buyer_id=? OR seller_id=?", arrayOf(myId, myId)).toInt()
+
+    fun saveDestinationClaim(c: DestinationClaim.Claim, sig: ByteArray) {
+        val cv = ContentValues().apply {
+            put("seller_id", c.sellerId); put("rail", c.rail.name); put("msisdn", c.normalized)
+            put("version", c.version); put("created_at", c.createdAt); put("sig", sig)
+        }
+        writableDatabase.insertWithOnConflict("destination_claims", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun destinationClaim(sellerId: String): DestinationClaim.Claim? {
+        val c = readableDatabase.query("destination_claims", null, "seller_id=?", arrayOf(sellerId),
+            null, null, "version DESC", "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            return DestinationClaim.Claim(
+                it.getString(it.getColumnIndexOrThrow("seller_id")),
+                runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE),
+                it.getString(it.getColumnIndexOrThrow("msisdn")),
+                it.getInt(it.getColumnIndexOrThrow("version")),
+                it.getLong(it.getColumnIndexOrThrow("created_at")))
+        }
     }
 
     fun insertLedger(e: Market.Entry): Boolean {

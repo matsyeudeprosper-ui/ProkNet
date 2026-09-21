@@ -247,6 +247,16 @@
                     </LinearLayout>
 
                     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp" android:layout_marginBottom="12dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/pay_receive_title" style="@style/H2" />
+                        <TextView android:id="@+id/payDest" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" />
+                        <Button android:id="@+id/btnPayDest" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_receive_save" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+                        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginTop="20dp" android:layout_marginBottom="20dp" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/pay_auto_title" style="@style/H2" />
+                        <TextView android:id="@+id/payAuto" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" />
+                        <Button android:id="@+id/btnPayAuto" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/pay_auto_enable" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+                    </LinearLayout>
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp" android:layout_marginBottom="12dp">
                         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/earn_notify_title" style="@style/H2" />
                         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="@string/earn_notify_sub" style="@style/Muted" />
                         <Switch android:id="@+id/switchNotify" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="@string/earn_notify_switch" style="@style/Body" />

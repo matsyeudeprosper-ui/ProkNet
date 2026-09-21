@@ -97,6 +97,12 @@
     <string name="wallet_to_pay">À payer</string>
     <string name="wallet_to_receive">À recevoir</string>
     <string name="wallet_fees">Frais Prok</string>
+    <string name="receipt_listener_label">Détection des paiements ProkNet</string>
+    <string name="pay_auto_title">Vérification automatique</string>
+    <string name="pay_auto_on">Activée ✓</string>
+    <string name="pay_auto_enable">ACTIVER</string>
+    <string name="pay_receive_title">Recevoir les paiements</string>
+    <string name="pay_understood">J\'AI COMPRIS</string>
     <string name="earn_subtitle">Votre connexion, votre argent</string>
     <string name="activity_subtitle">Votre historique</string>
     <string name="account_title">Compte</string>
