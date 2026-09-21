@@ -91,20 +91,27 @@ class PaymentSync(
     // ---- seller: publish where I am paid --------------------------------------------------------
 
     private fun pushDestination() {
-        val c = payments.myDestination() ?: return
-        val sig = store.destinationSig(identity.idHex) ?: return
-        if (store.paySyncDone("dest:" + c.version)) return
-        val body = json(
-            "line" to PayWire.destinationClaim(c, sig),
-            "seller_pub" to identity.pubBytes.toHex())
-        if (post("/v1/pay/destination", body).first in 200..299) {
-            store.markPaySynced("dest:" + c.version)
-            DiagLog.i(tag, "payment destination v" + c.version + " published")
+        // v0.16.4: EVERY claim this phone holds that the Brain has not seen, not only the
+        // newest. The Brain decides which one is active from the history, so a phone that
+        // was offline when it made v1 and comes back after making v2 would otherwise leave
+        // the Brain believing v2 is the only claim there has ever been - and it would hand
+        // buyers the new number immediately, with no cooling period at all.
+        for (c in store.destinationClaims(identity.idHex)) {
+            val key = "dest:" + c.version
+            if (store.paySyncDone(key)) continue
+            val sig = store.destinationSig(identity.idHex, c.version) ?: continue
+            val body = json(
+                "line" to PayWire.destinationClaim(c, sig),
+                "seller_pub" to identity.pubBytes.toHex())
+            if (post("/v1/pay/destination", body).first in 200..299) {
+                store.markPaySynced(key)
+                DiagLog.i(tag, "payment destination v" + c.version + " published")
+            }
         }
     }
 
     /**
-     * Buyer: collect the destinations for a provider we owe but never received one from.
+     * Buyer: collect the destination for every provider we still owe.
      *
      * Without this the Brain path cannot start at all. `beginPayment` refuses when there
      * is no destination, so a buyer who walked away before the seller published one would
@@ -113,20 +120,27 @@ class PaymentSync(
      * v0.16.3: **the rail is not named here.** It used to ask for MTN_MOMO, which meant an
      * Airtel seller was simply unreachable through the Brain, and the buyer was told the
      * provider had not said where to be paid. A buyer cannot know which operator a seller
-     * uses; the seller says, by signing a claim on each rail it is on, and every one of
-     * them is taken.
+     * uses; the seller says, by signing a claim on each rail it is on.
+     *
+     * v0.16.4: asked for EVERY outstanding creditor, not only those we have no claim for.
+     * A buyer that had learnt v1 never asked again, so a seller could change their number
+     * and the buyer would keep paying the old one until the debt was settled. Repeating
+     * the question is safe: a claim that is not newer changes nothing, because the same
+     * version is idempotent and a lower one is refused.
      */
     private fun pullDestinations() {
-        for (seller in payments.creditorsWithoutDestination()) {
+        for (seller in payments.creditorsNeedingDestinationRefresh()) {
             val (code, text) = get("/v1/pay/destinations?seller=" + seller)
             if (code !in 200..299) continue
             for (o in objectsFrom(text, "destinations")) {
                 val line = o["line"] ?: continue
                 val claim = PayWire.parseDestinationClaim(line) ?: continue
                 val pub = pubFor(claim.claim.sellerId, o["seller_pub"]) ?: continue
+                // true only when this is genuinely newer; an unchanged destination is a
+                // silent no-op rather than a log line every sync
                 if (payments.onDestinationClaim(line, pub))
-                    DiagLog.i(tag, "learned where to pay prok-" + seller.take(8) +
-                        " on " + claim.claim.rail + " without meeting them")
+                    DiagLog.i(tag, "where to pay prok-" + seller.take(8) + " is now " +
+                        claim.claim.rail + " v" + claim.claim.version)
             }
         }
     }
