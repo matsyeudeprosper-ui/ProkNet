@@ -47,6 +47,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         fun terms(): IntArray
         /** v0.15.3: a session settled. Queue its signed evidence for the server. */
         fun onSettled(o: Settlement.Obligation) {}
+        /** v0.16.1: this buyer now owes us; hand it our signed payment destination. */
+        fun onDebtorLearned(buyerId: String) {}
         fun onChanged()
     }
 
@@ -289,6 +291,9 @@ class Gateway(private val context: Context, private val identity: Identity, priv
                 ": prok-" + o.buyerId.substring(0, 8) + " owes me " + Market.cfa(o.sellerReceivable))
             // both phones report independently; the server reconciles the two
             if (fresh) hooks.onSettled(o)
+            // v0.16.1: the buyer now owes us, so it needs to know where to send the cash.
+            // Sent while the link is still up, because the buyer will walk away shortly.
+            if (fresh) hooks.onDebtorLearned(o.buyerId)
         }
         DiagLog.i(tag, "SETTLEMENT (seller view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastSigned?.billable ?: 0) + " -> " + Market.cfa(fin) +
             " (" + (lastSigned?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), fee " + Market.cfa(split.fee) + ", seller net " + Market.cfa(split.sellerNet) + ", ledger entries booked " + booked)

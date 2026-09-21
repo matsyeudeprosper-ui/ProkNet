@@ -309,6 +309,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "confidence TEXT NOT NULL," +
                 "settlement_ids TEXT NOT NULL," +
                 "reference TEXT NOT NULL DEFAULT ''," +
+                "delivered INTEGER NOT NULL DEFAULT 0," +
                 "sig BLOB NOT NULL)"
         )
         db.execSQL(
@@ -319,7 +320,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "version INTEGER NOT NULL," +
                 "created_at INTEGER NOT NULL," +
                 "sig BLOB NOT NULL," +
-                "PRIMARY KEY(seller_id, rail))"
+                "PRIMARY KEY(seller_id, rail, version))"
         )
         // v0.15.0: where a seller wants to be paid. Local only: never advertised, never
         // gossiped, and only revealed to a buyer that owes a real settled obligation.
@@ -665,9 +666,72 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
     fun hasReceipt(paymentId: String): Boolean = DatabaseUtils.longForQuery(readableDatabase,
         "SELECT COUNT(*) FROM payment_receipts WHERE payment_id=?", arrayOf(paymentId)) > 0
 
-    /** Payments cleared by observed evidence, for the trust tier. */
-    fun receiptCount(myId: String): Int = DatabaseUtils.longForQuery(readableDatabase,
-        "SELECT COUNT(*) FROM payment_receipts WHERE buyer_id=? OR seller_id=?", arrayOf(myId, myId)).toInt()
+    /**
+     * v0.16.1: payments this identity made AS A BUYER. This is the only counter that may
+     * raise a credit limit: selling Internet is not evidence that you pay your debts.
+     */
+    fun buyerReceiptCount(myId: String): Int = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM payment_receipts WHERE buyer_id=?", arrayOf(myId)).toInt()
+
+    /** Kept separate, for seller reputation later. Never feeds buyer credit. */
+    fun sellerReceiptCount(myId: String): Int = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM payment_receipts WHERE seller_id=?", arrayOf(myId)).toInt()
+
+    /** Receipts this phone signed as the seller, with their signatures, for redelivery. */
+    fun receiptsFrom(sellerId: String, limit: Int = 50): List<Pair<DeviceReceipt.Receipt, ByteArray>> {
+        val out = ArrayList<Pair<DeviceReceipt.Receipt, ByteArray>>()
+        val c = readableDatabase.query("payment_receipts", null, "seller_id=?", arrayOf(sellerId),
+            null, null, "observed_at DESC", limit.toString())
+        c.use {
+            while (it.moveToNext()) out.add(DeviceReceipt.Receipt(
+                it.getString(it.getColumnIndexOrThrow("payment_id")),
+                it.getString(it.getColumnIndexOrThrow("seller_id")),
+                it.getString(it.getColumnIndexOrThrow("buyer_id")),
+                runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE),
+                it.getString(it.getColumnIndexOrThrow("destination_hash")),
+                it.getLong(it.getColumnIndexOrThrow("expected")),
+                it.getLong(it.getColumnIndexOrThrow("observed")),
+                it.getLong(it.getColumnIndexOrThrow("observed_at")),
+                runCatching { DeviceReceipt.Source.valueOf(it.getString(it.getColumnIndexOrThrow("source"))) }.getOrDefault(DeviceReceipt.Source.DEFAULT_SMS_NOTIFICATION),
+                it.getString(it.getColumnIndexOrThrow("source_package")),
+                it.getString(it.getColumnIndexOrThrow("evidence_hash")),
+                it.getInt(it.getColumnIndexOrThrow("parser_version")),
+                runCatching { DeviceReceipt.Confidence.valueOf(it.getString(it.getColumnIndexOrThrow("confidence"))) }.getOrDefault(DeviceReceipt.Confidence.DEVICE_NOTIFICATION_VERIFIED),
+                it.getString(it.getColumnIndexOrThrow("settlement_ids")).split(",").filter { s -> s.isNotEmpty() },
+                it.getString(it.getColumnIndexOrThrow("reference"))) to it.getBlob(it.getColumnIndexOrThrow("sig")))
+        }
+        return out
+    }
+
+    fun receiptDelivered(paymentId: String): Boolean = DatabaseUtils.longForQuery(readableDatabase,
+        "SELECT COUNT(*) FROM payment_receipts WHERE payment_id=? AND delivered=1", arrayOf(paymentId)) > 0
+
+    fun markReceiptDelivered(paymentId: String) {
+        val cv = ContentValues().apply { put("delivered", 1) }
+        writableDatabase.update("payment_receipts", cv, "payment_id=?", arrayOf(paymentId))
+    }
+
+    /** The signature over our own destination claim, so it can be handed to a buyer. */
+    fun destinationSig(sellerId: String): ByteArray? {
+        val c = readableDatabase.query("destination_claims", arrayOf("sig"), "seller_id=?", arrayOf(sellerId),
+            null, null, "version DESC", "1")
+        c.use { return if (it.moveToNext()) it.getBlob(0) else null }
+    }
+
+    /** The claim before [version], which stays active during a cooling period. */
+    fun previousDestinationClaim(sellerId: String, version: Int): DestinationClaim.Claim? {
+        val c = readableDatabase.query("destination_claims", null, "seller_id=? AND version<?",
+            arrayOf(sellerId, version.toString()), null, null, "version DESC", "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            return DestinationClaim.Claim(
+                it.getString(it.getColumnIndexOrThrow("seller_id")),
+                runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE),
+                it.getString(it.getColumnIndexOrThrow("msisdn")),
+                it.getInt(it.getColumnIndexOrThrow("version")),
+                it.getLong(it.getColumnIndexOrThrow("created_at")))
+        }
+    }
 
     fun saveDestinationClaim(c: DestinationClaim.Claim, sig: ByteArray) {
         val cv = ContentValues().apply {

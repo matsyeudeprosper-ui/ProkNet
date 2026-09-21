@@ -195,6 +195,16 @@ object PaymentExpectation {
         "En attente du paiement\n" + Market.cfa(amountCentimes) +
             "\n\nNous détecterons automatiquement la réception."
 
+    /**
+     * v0.16.1: what to say while the seller has not yet confirmed it is watching.
+     *
+     * Sending somebody to a kiosk before the seller knows a payment is coming would waste
+     * their trip, so the screen is honest about the difference.
+     */
+    fun preparingLine(amountCentimes: Long): String =
+        "Préparation du paiement…\n" + Market.cfa(amountCentimes) +
+            "\n\nNous prévenons le fournisseur. Gardez les téléphones proches un instant."
+
     /** Spaced for reading aloud at a kiosk, and still masked. */
     fun maskedNumber(msisdn: String): String {
         val d = normalizeMsisdn(msisdn)

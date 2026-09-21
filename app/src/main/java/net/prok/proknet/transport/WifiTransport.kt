@@ -225,6 +225,8 @@ class WifiTransport(
         main.post {
             when (c) {
                 is Wire.Control.NetRequestCtl -> DiagLog.w(tag, "a network request reached the Wi-Fi control path; the node routes those, ignored here")
+                // v0.16.1: payment messages are routed by the node, not by a transport
+                is Wire.Control.Payment -> DiagLog.w(tag, "a payment message reached the Wi-Fi control path; the node routes those, ignored here")
                 is Wire.Control.WifiRequest -> {
                     DiagLog.i(tag, "NEGOTIATE: WIFI_REQUEST from prok-" + peerShort)
                     if (!mayHost) { DiagLog.i(tag, "request ignored: this instance never hosts"); return@post }

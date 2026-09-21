@@ -41,6 +41,7 @@ import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
 import net.prok.proknet.core.Market
+import net.prok.proknet.core.PayWire
 import net.prok.proknet.core.PaymentExpectation
 import net.prok.proknet.core.PaymentRails
 import net.prok.proknet.core.ProductState
@@ -965,17 +966,37 @@ class MainActivity : Activity(), ProkNetNode.Listener {
      */
     private fun payDialog(sellerId: String, amount: Long) {
         val dest = node.store.destinationClaim(sellerId)
-        if (dest == null) { legacyPayDialog(sellerId, amount); return }
+        if (dest == null) {
+            // v0.16.1: no silent fallback to a buyer-typed reference. We decided not to
+            // trust self-reported payment, so if there is nowhere verified to pay, the
+            // honest answer is that automatic payment is not available yet.
+            AlertDialog.Builder(this)
+                .setMessage(PayWire.replyLine(PayWire.Reply.UNKNOWN_DESTINATION))
+                .setPositiveButton(R.string.close, null).show()
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle("Payer " + Market.cfa(amount))
             .setMessage(PaymentExpectation.instruction(amount, WalletUi.railName(dest.rail), dest.masked()))
             .setPositiveButton(R.string.pay_understood) { _, _ ->
                 val c = node.payments.beginPayment(sellerId)
                 if (!c.ok) { toast(c.message); return@setPositiveButton }
-                AlertDialog.Builder(this)
-                    .setMessage(PaymentExpectation.waitingLine(amount))
-                    .setPositiveButton(R.string.close, null).show()
-                refresh()
+                val id = c.expectation!!.paymentId
+                // v0.16.1: give the seller a moment to accept, then say which it is. We do
+                // not tell somebody to leave for a kiosk while the seller knows nothing.
+                main.postDelayed({
+                    val reply = node.payments.windowState(id)
+                    val ready = node.payments.windowReady(id)
+                    AlertDialog.Builder(this)
+                        .setMessage(when {
+                            ready -> PayWire.replyLine(PayWire.Reply.ACCEPTED) + "\n\n" +
+                                PaymentExpectation.waitingLine(amount)
+                            reply != null -> PayWire.replyLine(reply)
+                            else -> PaymentExpectation.preparingLine(amount)
+                        })
+                        .setPositiveButton(R.string.close, null).show()
+                    refresh()
+                }, 1200)
             }
             .setNegativeButton(R.string.close, null).show()
     }

@@ -130,6 +130,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
         override fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) = this@ProkNetNode.onSettled(o)
+        override fun onDebtorLearned(buyerId: String) { payments.sendDestinationTo(buyerId) }
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); recheckSharingIfNetworkChanged() } }
     })
     val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
@@ -1245,7 +1246,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         // screen rather than after a connection has been built.
         if (!quote.free) {
             val owed = net.prok.proknet.core.Wallet.totalOwed(obligations(), identity.idHex)
-            val t = net.prok.proknet.core.Trust.admitPaidSession(owed, verifiedPayments(), deviceHasUnresolvedDebt)
+            val t = net.prok.proknet.core.Trust.admitPaidSession(owed, buyerVerifiedPayments(), deviceHasUnresolvedDebt)
             if (!t.allowed) {
                 DiagLog.w(tag, "BUY refused before any setup: " + t.reason + " (owes " + Market.cfa(owed) +
                     ", limit " + Market.cfa(t.limitCentimes) + ")")
@@ -1520,8 +1521,21 @@ class ProkNetNode(private val context: Context) : TransportListener {
         net.prok.proknet.node.PaymentEngine(identity, store) { pushStatus() }
     }
 
-    /** v0.16.0: how many payments this phone has had cleared by observed evidence. */
-    fun verifiedPayments(): Int = payments.verifiedPayments()
+    /**
+     * v0.16.1: payments made AS A BUYER, which is the only history that may raise a credit
+     * limit. Selling Internet is not evidence that you pay your debts.
+     */
+    fun buyerVerifiedPayments(): Int = payments.buyerVerifiedPayments()
+
+    /**
+     * v0.16.1: may this phone offer PAID Internet right now?
+     *
+     * Advertising a commercial offer we cannot be paid for would waste a buyer's session
+     * and leave the seller unpaid, so the check happens before the advert rather than
+     * after somebody has already used it. Free and sponsored sharing are unaffected.
+     */
+    fun mayOfferPaidSharing(): Boolean =
+        net.prok.proknet.core.Trust.mayShareForMoney(payments.sellerReadiness())
 
     /** v0.16.0: a stable, hashed, ProkNet-only pseudonym for this phone. */
     fun devicePseudonym(): String = net.prok.proknet.core.Trust.devicePseudonym(
@@ -1621,6 +1635,21 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     fun onVpnChanged() { main.post { pushStatus() } }
 
+    /**
+     * v0.16.1: notification access can be granted or revoked while we are running, so the
+     * seller's readiness must follow it without an app restart.
+     */
+    fun refreshDetection() {
+        val was = payments.detectionAvailable
+        payments.detectionAvailable =
+            net.prok.proknet.service.ReceiptCapture.notificationAccessGranted(context) ||
+            net.prok.proknet.service.SmsReceiptReceiver.available(context)
+        if (was != payments.detectionAvailable) {
+            DiagLog.i(tag, "automatic payment detection is now " + (if (payments.detectionAvailable) "available" else "unavailable"))
+            pushStatus()
+        }
+    }
+
     fun internetTest(host: String, cb: (TunnelClient.TestResult) -> Unit) = tunnel.internetTest(host) { r -> lastInternetTest = r.text; main.post { pushStatus(); cb(r) } }
 
     @Volatile var isRunning = false
@@ -1700,9 +1729,59 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     fun isBluetoothOn(): Boolean = ble.isBluetoothOn
 
+    /**
+     * v0.16.1: a payment message from an authenticated peer.
+     *
+     * The control channel has already proved who sent it. Each message is then verified
+     * again against the identity whose claim it is, because the carrier proving the sender
+     * is not the same as the content being signed by the right party.
+     */
+    private fun onPaymentMessage(peerShort: String, line: String) {
+        val pub = store.peerKey(peerShort)?.pub
+        when (net.prok.proknet.core.PayWire.typeOf(line)) {
+            net.prok.proknet.core.PayWire.T_DESTINATION_CLAIM -> payments.onDestinationClaim(line, pub)
+            net.prok.proknet.core.PayWire.T_EXPECTATION -> payments.onExpectation(line, pub)
+            net.prok.proknet.core.PayWire.T_EXPECTATION_REPLY -> payments.onExpectationReply(line)
+            net.prok.proknet.core.PayWire.T_EXPECTATION_END -> payments.onExpectationEnd(line, pub)
+            net.prok.proknet.core.PayWire.T_RECEIPT -> payments.onReceiptLine(line, pub)
+            else -> DiagLog.w(tag, "unknown payment message from prok-" + peerShort)
+        }
+    }
+
+    /**
+     * v0.16.1: send a payment message to a full Prok identity. Returns false when that
+     * phone is not reachable right now, which is the ordinary case once the buyer has
+     * walked to a kiosk.
+     */
+    /**
+     * v0.16.1: a phone came back into range. Everything the payment loop could not deliver
+     * earlier gets another chance, in both directions.
+     */
+    fun onPaymentPeerAvailable() {
+        settlementIo.execute {
+            try {
+                payments.publishDestination()
+                payments.resendPendingExpectations()
+                payments.retryDelivery()
+            } catch (e: Exception) { DiagLog.w(tag, "payment retry: " + e) }
+        }
+    }
+
+    private fun sendPayment(peerId: String, line: String): Boolean {
+        val short = peerId.take(8)
+        if (store.peerKey(short) == null) return false
+        if (transportFor(short) == null) return false
+        sendControl(short, Wire.payment(line), quiet = true) {}
+        return true
+    }
+
     /** v0.16.0: start listening for operator messages, and stop when nothing is expected. */
     fun startReceiptCapture() {
         payments.restore()
+        payments.restoreUndelivered()
+        payments.send = { peerId, line -> sendPayment(peerId, line) }
+        // v0.16.1: the listener asks this BEFORE it reads any notification content
+        net.prok.proknet.service.ReceiptCapture.paymentExpected = { payments.paymentExpected() }
         payments.detectionAvailable =
             net.prok.proknet.service.ReceiptCapture.notificationAccessGranted(context) ||
             net.prok.proknet.service.SmsReceiptReceiver.available(context)
@@ -1839,6 +1918,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (had == null || !had.pub.contentEquals(pubBytes))
             DiagLog.i(tag, "KEY LEARNED for prok-" + short + " via " + transport + ": fingerprint " + Crypto.fingerprint(pubBytes) + (if (name.isNotEmpty()) " name \"" + name + "\"" else "") +
                 (if (had != null) " (KEY CHANGED - reinstall or new device?)" else ""))
+        // v0.16.1: a known phone is in range again, so anything the payment loop could not
+        // deliver earlier gets another chance
+        onPaymentPeerAvailable()
         main.post { listener.onPeers(peers()); queue.onPeersChanged(); engine.onPeerSeen(short); pushStatus() }
     }
 
@@ -2035,6 +2117,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             c is Wire.Control.BulkReady -> DiagLog.i(tag, "BULK READY from prok-" + peerShort)
             c is Wire.Control.BulkCancel -> onBulkCancel(peerShort, c)
             c is Wire.Control.NetRequestCtl -> onNetRequest?.invoke(peerShort, c.payload)
+            c is Wire.Control.Payment -> onPaymentMessage(peerShort, c.line)
             c is Wire.Control.P2pTopology -> onP2pTopology(peerShort, c)
             c is Wire.Control.P2pVisibility -> onP2pVisibility(peerShort, c)
             c is Wire.Control.P2pJoinPlan -> onP2pJoinPlan(peerShort, c)

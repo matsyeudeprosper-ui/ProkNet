@@ -107,7 +107,20 @@ object Wire {
     /** v0.13: a signed [NetRequest] (open generation or tombstone), store-carry-forwarded between phones. */
     const val OP_NET_REQUEST = 15
 
+    /**
+     * v0.16.1: the payment messages. One op carries all of them because they share a
+     * carrier and a lifetime: the body is a `PayWire` line, and PayWire owns its own
+     * versioning and signatures. Adding a fifth payment message later needs no new op.
+     */
+    const val OP_PAYMENT = 16
+
+    /** Big enough for a signed receipt, small enough that nothing can flood the link. */
+    const val PAYMENT_MAX = 4096
+
     fun netRequest(payload: ByteArray): ByteArray = byteArrayOf(OP_NET_REQUEST.toByte()) + payload
+
+    fun payment(line: String): ByteArray =
+        byteArrayOf(OP_PAYMENT.toByte()) + line.take(PAYMENT_MAX).toByteArray(Charsets.UTF_8)
 
     fun bulkRequest(session: Int): ByteArray =
         ByteBuffer.allocate(5).put(OP_BULK_REQUEST.toByte()).putInt(session).array()
@@ -172,6 +185,8 @@ object Wire {
         class WifiRequest(val port: Int) : Control()
         /** v0.13: the encoded request; decoded and verified by the network layer. */
         class NetRequestCtl(val payload: ByteArray) : Control()
+        /** v0.16.1: a signed payment message; the body is a PayWire line. */
+        class Payment(val line: String) : Control()
         class WifiOffer(val ssid: String, val pass: String, val port: Int, val ips: List<String>, val security: Int = SEC_UNKNOWN, val hidden: Boolean = false) : Control()
         /** v0.9.9: buyer -> seller, "is your group ready?"; [deviceName] is this phone's P2P name. */
         class P2pRequest(val deviceName: String) : Control()
@@ -292,6 +307,10 @@ object Wire {
                 OP_P2P_JOIN_PLAN -> Control.P2pJoinPlan(if (b.remaining() >= 1) b.get().toInt() and 0xFF else JOIN_PLAN_WAIT)
                 OP_P2P_TOPOLOGY -> Control.P2pTopology(if (b.remaining() >= 1) b.get().toInt() and 0xFF else TOPOLOGY_SELLER_GROUP_OWNER)
                 OP_NET_REQUEST -> Control.NetRequestCtl(ByteArray(b.remaining()).also { b.get(it) })
+                OP_PAYMENT ->
+                    if (b.remaining() in 1..PAYMENT_MAX)
+                        Control.Payment(String(ByteArray(b.remaining()).also { b.get(it) }, Charsets.UTF_8))
+                    else null
                 OP_BULK_REQUEST -> if (b.remaining() >= 4) Control.BulkRequest(b.int) else null
                 OP_BULK_OFFER -> if (b.remaining() >= 7) Control.BulkOffer(b.int, b.get().toInt() and 0xFF, b.short.toInt() and 0xFFFF) else null
                 OP_BULK_READY -> if (b.remaining() >= 4) Control.BulkReady(b.int) else null
