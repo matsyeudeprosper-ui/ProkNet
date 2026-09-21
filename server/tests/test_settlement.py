@@ -190,5 +190,145 @@ class SettlementTest(unittest.TestCase):
         self.assertTrue(all(t["at"] > 0 and t["actor"] for t in trail))
 
 
+class PaymentTransactionTest(unittest.TestCase):
+    """v0.15.1: one real operator transfer, allocated across the obligations it settles.
+
+    The structural fix. Three tiny sessions become one MTN payment, so the unit of
+    payment is the transfer, not the obligation. The rule that makes that safe is that
+    (rail, operator reference) is ONE transaction and can never be presented
+    independently against unrelated debts.
+    """
+
+    def setUp(self):
+        self.s = settlement.Settlements(":memory:")
+        self.now = 1_700_000_000_000
+        self.buyer = "aa" * 16
+        self.seller = "bb" * 16
+        self.ids = []
+        for i, amount in enumerate((300, 700, 500)):
+            sid = settlement.settlement_id("sess-%d" % i, "contract-%d" % i, "cp-%d" % i)
+            g, fee, net = settlement.split(amount, 5)
+            self.s.db.execute(
+                "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
+                " gross, seller_net, prok_fee, status, created_at, expires_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, "sess-%d" % i, self.buyer, self.seller, "cp-%d" % i, g, net, fee,
+                 settlement.PENDING, self.now, self.now + 86_400_000))
+            self.ids.append((sid, amount))
+        self.s.db.commit()
+
+    def allocations(self):
+        return [(sid, amount) for sid, amount in self.ids]
+
+    def test_one_transfer_settles_three_sessions(self):
+        total = sum(a for _, a in self.ids)
+        self.assertEqual(1_500, total)
+        out = self.s.open_payment("MTN_MOMO", "ABC123", self.buyer, self.seller, total,
+                                  self.allocations(), self.now)
+        self.assertTrue(out["ok"], out.get("error"))
+        self.assertEqual(total, out["allocated"])
+        pid = out["payment_id"]
+        self.assertEqual(3, len(self.s.allocations(pid)))
+        for sid, _ in self.ids:
+            self.assertEqual(settlement.PAYMENT_INITIATED, self.s.get(sid)["status"])
+
+        done = self.s.confirm_payment(pid, total, self.now + 1_000, verified=True)
+        self.assertTrue(done["ok"])
+        self.assertEqual(3, len(done["settled"]))
+        for sid, _ in self.ids:
+            self.assertEqual(settlement.CONFIRMED, self.s.get(sid)["status"])
+            self.assertEqual("ABC123", self.s.get(sid)["payment_ref"])
+        self.assertEqual(0, self.s.wallet(self.buyer)["to_pay"])
+
+    def test_the_same_operator_reference_is_one_transaction(self):
+        total = sum(a for _, a in self.ids)
+        first = self.s.open_payment("MTN_MOMO", "ABC123", self.buyer, self.seller, total, self.allocations(), self.now)
+        again = self.s.open_payment("MTN_MOMO", "ABC123", self.buyer, self.seller, total, self.allocations(), self.now + 1)
+        self.assertTrue(again["duplicate"])
+        self.assertEqual(first["payment_id"], again["payment_id"])
+        self.assertEqual(1, self.s.db.execute("SELECT COUNT(*) c FROM payment_transactions").fetchone()["c"])
+
+    def test_the_same_reference_reused_for_a_different_payment_is_a_security_review(self):
+        self.s.open_payment("MTN_MOMO", "ABC123", self.buyer, self.seller, 1_500, self.allocations(), self.now)
+        out = self.s.open_payment("MTN_MOMO", "ABC123", self.buyer, self.seller, 9_900,
+                                  [self.ids[0]], self.now + 1)
+        self.assertFalse(out["ok"])
+        self.assertEqual(settlement.SECURITY_REVIEW, out["status"])
+        pid = self.s.payment_id("MTN_MOMO", "ABC123")
+        self.assertEqual(settlement.SECURITY_REVIEW, self.s.payment(pid)["status"])
+        self.assertEqual(settlement.SECURITY_REVIEW, self.s.get(self.ids[0][0])["status"])
+
+    def test_allocations_may_never_exceed_what_was_paid(self):
+        out = self.s.open_payment("MTN_MOMO", "REF-SHORT", self.buyer, self.seller, 1_000,
+                                  self.allocations(), self.now)
+        self.assertFalse(out["ok"])
+        self.assertIn("exceed the amount paid", out["error"])
+        self.assertIsNone(self.s.payment(self.s.payment_id("MTN_MOMO", "REF-SHORT")))
+
+    def test_an_obligation_may_not_be_allocated_more_than_it_owes(self):
+        sid, amount = self.ids[0]
+        out = self.s.open_payment("MTN_MOMO", "REF-BIG", self.buyer, self.seller, 9_000,
+                                  [(sid, amount * 5)], self.now)
+        self.assertFalse(out["ok"])
+        self.assertIn("still owes", out["error"])
+
+    def test_a_confirmed_obligation_cannot_be_paid_twice(self):
+        sid, amount = self.ids[0]
+        p = self.s.open_payment("MTN_MOMO", "REF-1", self.buyer, self.seller, amount, [(sid, amount)], self.now)
+        self.s.confirm_payment(p["payment_id"], amount, self.now + 1, verified=True)
+        self.assertEqual(settlement.CONFIRMED, self.s.get(sid)["status"])
+        self.assertEqual(0, self.s.remaining(sid))
+        out = self.s.open_payment("MTN_MOMO", "REF-2", self.buyer, self.seller, amount, [(sid, amount)], self.now + 2)
+        self.assertFalse(out["ok"])
+        self.assertIn("already paid", out["error"])
+
+    def test_a_duplicate_confirmation_is_a_no_op(self):
+        total = sum(a for _, a in self.ids)
+        p = self.s.open_payment("MTN_MOMO", "ABC999", self.buyer, self.seller, total, self.allocations(), self.now)
+        self.s.confirm_payment(p["payment_id"], total, self.now + 1, verified=True)
+        for _ in range(3):
+            again = self.s.confirm_payment(p["payment_id"], total, self.now + 2, verified=True)
+            self.assertTrue(again["duplicate"])
+        self.assertEqual(3, self.s.db.execute(
+            "SELECT COUNT(*) c FROM payment_allocations").fetchone()["c"])
+        self.assertEqual(0, self.s.wallet(self.buyer)["to_pay"])
+
+    def test_a_confirmation_for_a_different_amount_is_a_security_review(self):
+        total = sum(a for _, a in self.ids)
+        p = self.s.open_payment("MTN_MOMO", "ABC777", self.buyer, self.seller, total, self.allocations(), self.now)
+        out = self.s.confirm_payment(p["payment_id"], 100, self.now + 1, verified=True)
+        self.assertFalse(out["ok"])
+        self.assertEqual(settlement.SECURITY_REVIEW, out["status"])
+        for sid, _ in self.ids:
+            self.assertEqual(settlement.SECURITY_REVIEW, self.s.get(sid)["status"])
+
+    def test_an_unverified_confirmation_settles_nothing(self):
+        total = sum(a for _, a in self.ids)
+        p = self.s.open_payment("MTN_MOMO", "ABC555", self.buyer, self.seller, total, self.allocations(), self.now)
+        out = self.s.confirm_payment(p["payment_id"], total, self.now + 1, verified=False)
+        self.assertFalse(out["ok"])
+        for sid, _ in self.ids:
+            self.assertNotEqual(settlement.CONFIRMED, self.s.get(sid)["status"])
+
+    def test_a_partial_payment_leaves_the_rest_owing(self):
+        sid, amount = self.ids[1]      # 700
+        p = self.s.open_payment("MTN_MOMO", "PART-1", self.buyer, self.seller, 300, [(sid, 300)], self.now)
+        self.assertTrue(p["ok"])
+        self.s.confirm_payment(p["payment_id"], 300, self.now + 1, verified=True)
+        self.assertEqual(settlement.PAYMENT_SEEN, self.s.get(sid)["status"])
+        self.assertEqual(400, self.s.remaining(sid), "the rest is still owed")
+        p2 = self.s.open_payment("MTN_MOMO", "PART-2", self.buyer, self.seller, 400, [(sid, 400)], self.now + 2)
+        self.assertTrue(p2["ok"], p2.get("error"))
+        self.s.confirm_payment(p2["payment_id"], 400, self.now + 3, verified=True)
+        self.assertEqual(settlement.CONFIRMED, self.s.get(sid)["status"])
+        self.assertEqual(0, self.s.remaining(sid))
+
+    def test_a_payment_cannot_mix_obligations_belonging_to_other_people(self):
+        stranger = "cc" * 16
+        out = self.s.open_payment("MTN_MOMO", "REF-X", stranger, self.seller, 1_500, self.allocations(), self.now)
+        self.assertFalse(out["ok"])
+        self.assertIn("other parties", out["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

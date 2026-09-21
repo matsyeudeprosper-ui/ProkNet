@@ -25,11 +25,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import evidence
 from . import protocol
 from . import settlement
+from . import signed_request
 from .db import Brain
 
 MAX_BODY = 256 * 1024
+#: How long an obligation may wait to be paid.
+SETTLEMENT_TTL_MS = 30 * 24 * 3600 * 1000
 RATE_WINDOW_MS = 60_000
 RATE_MAX_PER_NODE = 30
 
@@ -45,6 +49,8 @@ class State:
         # verified here yet and none may therefore confirm a payment. Set it from the
         # environment in production.
         self.webhook_secret = ""
+        # v0.15.1: replay protection for signed settlement submissions
+        self.nonces = signed_request.Nonces()
         self.syncs = 0
         self.rejected = 0
 
@@ -83,13 +89,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _body(self):
+        """Returns (parsed, raw_bytes). The raw bytes are what the signature covers."""
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0 or length > MAX_BODY:
-            return None
+            return None, b""
+        raw = self.rfile.read(length)
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8", errors="replace"))
+            return json.loads(raw.decode("utf-8", errors="replace")), raw
         except Exception:
-            return None
+            return None, raw
 
     def do_GET(self):
         if self.path.startswith("/v1/settlements/"):
@@ -150,35 +158,60 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, protocol.render_download(d["server_time"], d["cells"], d["requests"], d["jobs"], d["statuses"], d["advice"]))
 
     def _settlement_post(self):
-        body = self._body()
+        body, raw = self._body()
         if body is None:
             self._json(400, {"error": "bad or oversized JSON body"})
             return
         now = int(time.time() * 1000)
+
+        # v0.15.1: a webhook comes from an operator, not from a Prok identity, so it is
+        # authenticated by the rail's own signature instead of ours.
+        if self.path != "/v1/payments/webhook":
+            try:
+                with STATE.lock:
+                    submitter = signed_request.verify(self.headers, raw, STATE.nonces, now)
+            except signed_request.AuthError as e:
+                self._json(401, {"error": str(e)})
+                return
+        else:
+            submitter = ""
+
         with STATE.lock:
             if self.path == "/v1/settlements":
-                # `actor` must come from a verified signature. Until the signed-submission
-                # path is wired end to end, the pilot runs on a trusted network and this
-                # is recorded as claimed rather than proven. It is not payment either way.
-                actor = body.get("actor", "buyer")
-                if actor not in ("buyer", "seller"):
-                    self._json(400, {"error": "actor must be buyer or seller"})
-                    return
+                # The phone submits EVIDENCE, not amounts. The server re-derives the
+                # money and the settlement id from the signed contract and the signed
+                # closing checkpoint, and refuses anything it cannot verify itself.
                 try:
-                    self._json(200, STATE.settlements.report(body, actor, now))
-                except KeyError as e:
-                    self._json(400, {"error": "missing field %s" % e})
+                    derived = evidence.verify(body, now, SETTLEMENT_TTL_MS)
+                except evidence.EvidenceError as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                if protocol.node_id(body["submitter_pub"]) != submitter:
+                    self._json(401, {"error": "the signing identity is not the submitter in the evidence"})
+                    return
+                self._json(200, STATE.settlements.record(derived, now))
                 return
+
             if self.path == "/v1/payments/initiate":
-                self._json(200, STATE.settlements.initiate(
-                    body.get("settlement_id", ""), body.get("rail", "NONE"), body.get("reference", ""), now))
+                # one real operator transfer, allocated across the obligations it settles
+                allocations = [(a.get("settlement_id", ""), int(a.get("allocated", 0)))
+                               for a in body.get("allocations", [])]
+                self._json(200, STATE.settlements.open_payment(
+                    body.get("rail", "NONE"), body.get("operator_ref", ""),
+                    body.get("buyer_id", ""), body.get("seller_id", ""),
+                    int(body.get("amount", 0)), allocations, now, body.get("destination", "")))
                 return
+
             if self.path == "/v1/payments/webhook":
                 # verified=False until an operator signing secret exists. A webhook that
                 # cannot be verified is recorded for the audit trail and changes nothing.
                 verified = bool(STATE.webhook_secret) and _webhook_signature_ok(
                     self.headers.get("X-Prok-Signature", ""), body, STATE.webhook_secret)
-                self._json(200 if verified else 202, STATE.settlements.webhook(body, now, verified))
+                pid = body.get("payment_id", "")
+                if not pid and body.get("rail") and body.get("reference"):
+                    pid = STATE.settlements.payment_id(body["rail"], body["reference"])
+                out = STATE.settlements.confirm_payment(pid, int(body.get("amount", 0)), now, verified)
+                self._json(200 if out.get("ok") else 202, out)
                 return
         self._json(404, {"error": "not found"})
 

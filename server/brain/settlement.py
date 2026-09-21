@@ -21,6 +21,8 @@ import sqlite3
 
 DOMAIN = "ProkNet-settlement-1"
 
+SECURITY_REVIEW = "SECURITY_REVIEW"
+
 PENDING = "PENDING"
 PAYMENT_INITIATED = "PAYMENT_INITIATED"
 PAYMENT_SEEN = "PAYMENT_SEEN"
@@ -30,6 +32,7 @@ EXPIRED = "EXPIRED"
 DISPUTED = "DISPUTED"
 
 OUTSTANDING = (PENDING, PAYMENT_INITIATED, PAYMENT_SEEN)
+NEEDS_HUMAN = (DISPUTED, SECURITY_REVIEW)
 FINAL = (CONFIRMED, FAILED, EXPIRED)
 
 
@@ -70,8 +73,40 @@ CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status);
 CREATE INDEX IF NOT EXISTS idx_settlements_buyer ON settlements(buyer_id);
 CREATE INDEX IF NOT EXISTS idx_settlements_seller ON settlements(seller_id);
 
+-- v0.15.1: ONE real operator transfer. A buyer may settle three tiny sessions with a
+-- single MTN payment, so an obligation is not the unit of payment; this is.
+--
+-- The uniqueness rule that matters: (rail, operator_reference) is UNIQUE. One real
+-- operator transaction can therefore never produce two independent payment records, and
+-- the same reference can never be presented separately against unrelated obligations.
+-- It may cover several obligations, but only through allocations of THIS row.
+CREATE TABLE IF NOT EXISTS payment_transactions(
+    payment_id   TEXT PRIMARY KEY,
+    rail         TEXT NOT NULL,
+    operator_ref TEXT NOT NULL,
+    buyer_id     TEXT NOT NULL,
+    seller_id    TEXT NOT NULL,
+    destination  TEXT NOT NULL DEFAULT '',
+    gross_paid   INTEGER NOT NULL,
+    status       TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    verified_at  INTEGER NOT NULL DEFAULT 0,
+    note         TEXT NOT NULL DEFAULT '',
+    UNIQUE(rail, operator_ref)
+);
+
+-- How much of one payment settles which obligation. The primary key stops the same
+-- payment being allocated twice to the same obligation.
+CREATE TABLE IF NOT EXISTS payment_allocations(
+    payment_id    TEXT NOT NULL,
+    settlement_id TEXT NOT NULL,
+    allocated     INTEGER NOT NULL,
+    PRIMARY KEY(payment_id, settlement_id)
+);
+CREATE INDEX IF NOT EXISTS idx_alloc_settlement ON payment_allocations(settlement_id);
+
 -- Every payment event ever accepted, so a retried webhook is recognised rather than
--- applied twice. The idempotency key is the rail's own reference.
+-- applied twice. The idempotency key is the real transaction, not the obligation.
 CREATE TABLE IF NOT EXISTS payment_events(
     event_key    TEXT PRIMARY KEY,
     settlement_id TEXT NOT NULL,
@@ -106,6 +141,54 @@ class Settlements:
         self.db.commit()
 
     # ---- reporting -------------------------------------------------------------------
+
+    def record(self, derived: dict, now: int) -> dict:
+        """v0.15.1: store an obligation the SERVER derived from verified evidence.
+
+        Nothing here comes from a phone's claim about money. `derived` is the output of
+        `evidence.verify`, which re-computed the amounts and the settlement id from the
+        signed contract and the signed closing checkpoint.
+
+        The first party to submit creates the row. The second is a corroboration: because
+        both derivations came from the same signed bytes, they must agree, and a
+        disagreement means one of them is presenting different evidence for the same
+        session, which is a dispute rather than an update.
+        """
+        sid = derived["settlement_id"]
+        actor = derived["actor"]
+        row = self.get(sid)
+        if row is None:
+            self.db.execute(
+                "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
+                " gross, seller_net, prok_fee, status, created_at, expires_at, buyer_reported, seller_reported)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, derived["session_id"], derived["buyer_id"], derived["seller_id"],
+                 derived["checkpoint_hash"], derived["gross"], derived["seller_net"], derived["prok_fee"],
+                 PENDING, now, int(derived["expires_at"]),
+                 1 if actor == "buyer" else 0, 1 if actor == "seller" else 0))
+            self._audit(sid, now, actor, "-", PENDING, "verified evidence")
+            self.db.commit()
+            return {"ok": True, "settlement_id": sid, "status": PENDING, "agreed": False,
+                    "gross": derived["gross"], "seller_net": derived["seller_net"], "prok_fee": derived["prok_fee"]}
+
+        if row["status"] in NEEDS_HUMAN:
+            return {"ok": True, "settlement_id": sid, "status": row["status"], "agreed": False}
+        if int(row["gross"]) != derived["gross"] or row["checkpoint_hash"] != derived["checkpoint_hash"]:
+            # two verified derivations cannot differ unless the evidence differs
+            self.db.execute("UPDATE settlements SET status=?, note=? WHERE settlement_id=?",
+                            (DISPUTED, "verified %d and %d" % (int(row["gross"]), derived["gross"]), sid))
+            self._audit(sid, now, actor, row["status"], DISPUTED, "conflicting verified evidence")
+            self.db.commit()
+            return {"ok": True, "settlement_id": sid, "status": DISPUTED, "agreed": False}
+
+        col = "buyer_reported" if actor == "buyer" else "seller_reported"
+        self.db.execute("UPDATE settlements SET %s=1 WHERE settlement_id=?" % col, (sid,))
+        self.db.commit()
+        row = self.get(sid)
+        return {"ok": True, "settlement_id": sid, "status": row["status"],
+                "agreed": bool(row["buyer_reported"]) and bool(row["seller_reported"]),
+                "gross": int(row["gross"]), "seller_net": int(row["seller_net"]), "prok_fee": int(row["prok_fee"])}
+
 
     def report(self, claim: dict, actor: str, now: int) -> dict:
         """One phone reports what a session owed.
@@ -242,7 +325,7 @@ class Settlements:
         for r in self.db.execute(
                 "SELECT * FROM settlements WHERE buyer_id=? OR seller_id=?", (node_id, node_id)):
             buyer = r["buyer_id"] == node_id
-            if r["status"] == DISPUTED:
+            if r["status"] in NEEDS_HUMAN:
                 out["disputed"] += 1
                 continue
             if r["status"] in OUTSTANDING:
@@ -257,6 +340,141 @@ class Settlements:
                 else:
                     out["received"] += int(r["seller_net"])
         return out
+
+    # ---- v0.15.1: real transfers, and what they settle ---------------------------------
+
+    def payment_id(self, rail: str, operator_ref: str) -> str:
+        return hashlib.sha256(("ProkNet-payment-1|%s|%s" % (rail, operator_ref)).encode("utf-8")).hexdigest()[:32]
+
+    def open_payment(self, rail: str, operator_ref: str, buyer_id: str, seller_id: str,
+                     amount: int, allocations: list, now: int, destination: str = "") -> dict:
+        """Record one real operator transfer and what it is meant to settle.
+
+        `allocations` is [(settlement_id, centimes)]. The invariants enforced here are the
+        ones that stop money going missing or being counted twice:
+
+        - the same (rail, reference) is ONE transaction, never two;
+        - the allocations may not exceed the amount actually transferred;
+        - no obligation may be allocated more than it still owes;
+        - a confirmed obligation cannot be paid again.
+        """
+        if not operator_ref:
+            return {"ok": False, "error": "an operator reference is required"}
+        if amount <= 0:
+            return {"ok": False, "error": "amount must be positive"}
+
+        pid = self.payment_id(rail, operator_ref)
+        existing = self.payment(pid)
+        if existing is not None:
+            # the same real transfer presented again
+            if int(existing["gross_paid"]) != amount or existing["buyer_id"] != buyer_id or existing["seller_id"] != seller_id:
+                self._flag_payment(pid, now, "same reference, different amount or parties")
+                return {"ok": False, "error": "this reference is already used for a different payment",
+                        "status": SECURITY_REVIEW, "payment_id": pid}
+            return {"ok": True, "duplicate": True, "payment_id": pid, "status": existing["status"]}
+
+        total = sum(int(a[1]) for a in allocations)
+        if total <= 0:
+            return {"ok": False, "error": "nothing allocated"}
+        if total > amount:
+            return {"ok": False, "error": "allocations exceed the amount paid"}
+
+        for sid, centimes in allocations:
+            row = self.get(sid)
+            if row is None:
+                return {"ok": False, "error": "unknown settlement %s" % sid}
+            if row["status"] == CONFIRMED:
+                return {"ok": False, "error": "an obligation in this payment is already paid"}
+            if row["status"] in (DISPUTED, SECURITY_REVIEW):
+                return {"ok": False, "error": "an obligation in this payment is under review"}
+            if row["buyer_id"] != buyer_id or row["seller_id"] != seller_id:
+                return {"ok": False, "error": "an obligation in this payment belongs to other parties"}
+            if int(centimes) <= 0:
+                return {"ok": False, "error": "an allocation must be positive"}
+            if int(centimes) > self.remaining(sid):
+                return {"ok": False, "error": "an allocation exceeds what that session still owes"}
+
+        self.db.execute(
+            "INSERT INTO payment_transactions(payment_id, rail, operator_ref, buyer_id, seller_id,"
+            " destination, gross_paid, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (pid, rail, operator_ref, buyer_id, seller_id, destination, amount, PAYMENT_INITIATED, now))
+        for sid, centimes in allocations:
+            self.db.execute(
+                "INSERT INTO payment_allocations(payment_id, settlement_id, allocated) VALUES(?,?,?)",
+                (pid, sid, int(centimes)))
+            row = self.get(sid)
+            self._set(sid, PAYMENT_INITIATED, now, "buyer", row["status"], "payment %s" % pid[:12])
+        self.db.commit()
+        return {"ok": True, "payment_id": pid, "status": PAYMENT_INITIATED, "allocated": total}
+
+    def payment(self, pid: str):
+        return self.db.execute("SELECT * FROM payment_transactions WHERE payment_id=?", (pid,)).fetchone()
+
+    def allocations(self, pid: str):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM payment_allocations WHERE payment_id=?", (pid,))]
+
+    def remaining(self, sid: str) -> int:
+        """What an obligation still owes after every allocation already made against it."""
+        row = self.get(sid)
+        if row is None:
+            return 0
+        if row["status"] == CONFIRMED:
+            return 0
+        allocated = self.db.execute(
+            "SELECT COALESCE(SUM(a.allocated), 0) s FROM payment_allocations a"
+            " JOIN payment_transactions p ON p.payment_id = a.payment_id"
+            " WHERE a.settlement_id=? AND p.status=?", (sid, CONFIRMED)).fetchone()["s"]
+        return max(0, int(row["gross"]) - int(allocated))
+
+    def confirm_payment(self, pid: str, amount: int, now: int, verified: bool) -> dict:
+        """A rail verified one real transfer. Every obligation it covers settles together."""
+        p = self.payment(pid)
+        if p is None:
+            return {"ok": False, "error": "unknown payment"}
+        if not verified:
+            self._flag_payment(pid, now, "confirmation could not be verified")
+            return {"ok": False, "error": "signature not verified"}
+        if p["status"] == CONFIRMED:
+            return {"ok": True, "duplicate": True, "status": CONFIRMED}
+        if int(p["gross_paid"]) != amount:
+            self._flag_payment(pid, now, "confirmed %d, expected %d" % (amount, int(p["gross_paid"])))
+            return {"ok": False, "error": "amount does not match", "status": SECURITY_REVIEW}
+
+        allocs = self.allocations(pid)
+        if sum(a["allocated"] for a in allocs) > amount:
+            self._flag_payment(pid, now, "allocations exceed the verified amount")
+            return {"ok": False, "error": "allocations exceed the verified amount", "status": SECURITY_REVIEW}
+
+        self.db.execute("UPDATE payment_transactions SET status=?, verified_at=? WHERE payment_id=?",
+                        (CONFIRMED, now, pid))
+        settled = []
+        for a in allocs:
+            sid = a["settlement_id"]
+            row = self.get(sid)
+            if row is None or row["status"] == CONFIRMED:
+                continue
+            # a partial allocation leaves the obligation owing the rest
+            still = self.remaining(sid)
+            if still <= 0:
+                self.db.execute("UPDATE settlements SET rail=?, payment_ref=? WHERE settlement_id=?",
+                                (p["rail"], p["operator_ref"], sid))
+                self._set(sid, CONFIRMED, now, "payment", row["status"], "paid by %s" % pid[:12])
+                settled.append(sid)
+            else:
+                self._set(sid, PAYMENT_SEEN, now, "payment", row["status"],
+                          "partly paid, %d still owed" % still)
+        self.db.commit()
+        return {"ok": True, "status": CONFIRMED, "settled": settled}
+
+    def _flag_payment(self, pid: str, now: int, why: str):
+        self.db.execute("UPDATE payment_transactions SET status=?, note=? WHERE payment_id=?",
+                        (SECURITY_REVIEW, why, pid))
+        for a in self.allocations(pid):
+            row = self.get(a["settlement_id"])
+            if row is not None and row["status"] != CONFIRMED:
+                self._set(a["settlement_id"], SECURITY_REVIEW, now, "server", row["status"], why)
+        self.db.commit()
 
     def audit(self, sid: str):
         return [dict(r) for r in self.db.execute(
