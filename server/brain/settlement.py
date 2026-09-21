@@ -319,6 +319,26 @@ class Settlements:
             self.db.commit()
         return {"ok": True, "status": status}
 
+    def note_unverified_webhook(self, event: dict, now: int):
+        """v0.16.2: record it and change nothing.
+
+        An unverified webhook used to freeze the payment and every obligation it named.
+        That turned an unauthenticated endpoint into a way to stop a real seller being
+        paid, so it is now audit only.
+        """
+        key = "unverified|%s|%s|%s" % (event.get("rail", ""), event.get("reference", ""),
+                                       event.get("payment_id", ""))
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO payment_events(event_key, settlement_id, rail, reference,"
+                    " status, amount, received_at, source) VALUES(?,?,?,?,?,?,?,?)",
+                    (key, event.get("settlement_id", ""), event.get("rail", "NONE"),
+                     event.get("reference", ""), "IGNORED", int(event.get("amount", 0) or 0),
+                     now, "unverified"))
+        except Exception:
+            pass
+
     def expire(self, now: int) -> int:
         """Obligations nobody paid inside their window. Run on the cleanup timer."""
         rows = self.db.execute(

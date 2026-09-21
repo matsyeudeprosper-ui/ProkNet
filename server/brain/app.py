@@ -26,7 +26,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import evidence
+from . import paybox
 from . import protocol
+from . import ruleconfig
 from . import settlement
 from . import signed_request
 from .db import Brain
@@ -34,6 +36,15 @@ from .db import Brain
 MAX_BODY = 256 * 1024
 #: How long an obligation may wait to be paid.
 SETTLEMENT_TTL_MS = 30 * 24 * 3600 * 1000
+
+#: A changed destination waits before it is used, so a stolen phone cannot redirect
+#: payments instantly. Must match DestinationClaim.CHANGE_COOLING_MS on the phones.
+DESTINATION_COOLING_MS = 10 * 60 * 1000
+
+#: The public key phones pin for receipt-parser rules. DELIBERATELY NOT the server's own
+#: transport identity: a compromised Brain may then withhold a config but never forge one.
+#: Empty means this deployment publishes no rules, and the built-in ones keep working.
+CONFIG_PUBLIC_KEY = ""
 RATE_WINDOW_MS = 60_000
 RATE_MAX_PER_NODE = 30
 
@@ -42,6 +53,8 @@ class State:
     def __init__(self, db_path: str):
         self.brain = Brain(db_path)
         self.settlements = settlement.Settlements(db_path)
+        self.pay = paybox.PayBox(db_path)
+        self.rules = ruleconfig.RuleStore(self.pay.db, CONFIG_PUBLIC_KEY)
         self.lock = threading.Lock()
         self.rate = {}          # node_id -> [timestamps]
         self.started = int(time.time() * 1000)
@@ -49,8 +62,9 @@ class State:
         # verified here yet and none may therefore confirm a payment. Set it from the
         # environment in production.
         self.webhook_secret = ""
-        # v0.15.1: replay protection for signed settlement submissions
-        self.nonces = signed_request.Nonces()
+        # v0.16.2: replay protection that survives a restart. In memory it vanished when
+        # the process did, which made every recent signed request replayable again.
+        self.nonces = signed_request.Nonces(self.pay.db)
         self.syncs = 0
         self.rejected = 0
 
@@ -80,6 +94,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _query(self, key: str) -> str:
+        if "?" not in self.path:
+            return ""
+        for part in self.path.split("?", 1)[1].split("&"):
+            if part.startswith(key + "="):
+                from urllib.parse import unquote
+                return unquote(part[len(key) + 1:])
+        return ""
+
     def _json(self, code: int, obj):
         data = json.dumps(obj).encode("utf-8")
         self.send_response(code)
@@ -99,7 +122,62 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None, raw
 
+    def _who(self):
+        """The verified identity behind a GET, or None.
+
+        v0.16.2: everything that returns somebody's money, debts, payments or device risk
+        must prove who is asking. A GET has no body, so the signature covers the empty
+        body plus the method and path.
+        """
+        try:
+            with STATE.lock:
+                return signed_request.verify(self.headers, b"", STATE.nonces,
+                                             method="GET", path=self.path.split("?")[0])
+        except signed_request.AuthError:
+            return None
+
     def do_GET(self):
+        # ---- v0.16.2: private payment state, authenticated and authorised ----
+        if self.path.startswith("/v1/pay/"):
+            who = self._who()
+            if who is None:
+                self._json(401, {"error": "this endpoint requires a signed request"})
+                return
+            now = int(time.time() * 1000)
+            try:
+                with STATE.lock:
+                    if self.path.startswith("/v1/pay/destination"):
+                        seller = self._query("seller")
+                        rail = self._query("rail") or "MTN_MOMO"
+                        # only somebody who actually owes this seller may ask where it is paid
+                        if not STATE.settlements.db.execute(
+                                "SELECT 1 FROM settlements WHERE buyer_id=? AND seller_id=? LIMIT 1",
+                                (who, seller)).fetchone() and who != seller:
+                            self._json(403, {"error": "you have no obligation to this seller"})
+                            return
+                        d = STATE.pay.destination_for_buyer(seller, rail, now, DESTINATION_COOLING_MS)
+                        self._json(200, {"destination": d})
+                        return
+                    if self.path.startswith("/v1/pay/expectations"):
+                        # the seller's pending inbox; only its own
+                        self._json(200, {"expectations": STATE.pay.pending_expectations(who, now)})
+                        return
+                    if self.path.startswith("/v1/pay/receipts"):
+                        self._json(200, {"receipts": STATE.pay.pending_receipts(who)})
+                        return
+                    if self.path.startswith("/v1/pay/reply"):
+                        r = STATE.pay.reply_for(self._query("payment"), who)
+                        self._json(200 if r else 404, r or {"error": "unknown expectation"})
+                        return
+                    if self.path.startswith("/v1/pay/rules"):
+                        self._json(200, {"rules": STATE.rules.current()})
+                        return
+            except paybox.PayError as e:
+                self._json(400, {"error": str(e)})
+                return
+            self._json(404, {"error": "not found"})
+            return
+
         if self.path.startswith("/v1/settlements/"):
             sid = self.path[len("/v1/settlements/"):].split("?")[0]
             with STATE.lock:
@@ -111,13 +189,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"settlement": dict(row), "audit": trail})
             return
         if self.path.startswith("/v1/wallet"):
-            node = ""
-            if "?" in self.path:
-                for part in self.path.split("?", 1)[1].split("&"):
-                    if part.startswith("node="):
-                        node = part[5:]
-            if not node:
-                self._json(400, {"error": "node required"})
+            # v0.16.2: a wallet is somebody's money. It used to be readable by anybody who
+            # knew a node id, which is not a secret. Now you may read only your own.
+            who = self._who()
+            if who is None:
+                self._json(401, {"error": "this endpoint requires a signed request"})
+                return
+            node = self._query("node") or who
+            if node != who:
+                self._json(403, {"error": "you may only read your own wallet"})
                 return
             with STATE.lock:
                 self._json(200, STATE.settlements.wallet(node))
@@ -131,7 +211,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n")
 
     def do_POST(self):
-        if self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments"):
+        if (self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments")
+                or self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/")):
             self._settlement_post()
             return
         if self.path != "/v1/sync":
@@ -169,7 +250,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/payments/webhook":
             try:
                 with STATE.lock:
-                    submitter = signed_request.verify(self.headers, raw, STATE.nonces, now)
+                    submitter = signed_request.verify(self.headers, raw, STATE.nonces, now,
+                                                      method="POST", path=self.path.split("?")[0])
             except signed_request.AuthError as e:
                 self._json(401, {"error": str(e)})
                 return
@@ -209,18 +291,81 @@ class Handler(BaseHTTPRequestHandler):
                     int(body.get("amount", 0)), allocations, now, body.get("destination", "")))
                 return
 
+            # ---- v0.16.2: the Brain as a carrier for signed payment objects ----
+            if self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/"):
+                try:
+                    self._json(200, self._pay_post(body, submitter, now))
+                except paybox.PayError as e:
+                    self._json(400, {"error": str(e)})
+                except ruleconfig.ConfigError as e:
+                    self._json(400, {"error": str(e)})
+                return
+
             if self.path == "/v1/payments/webhook":
                 # verified=False until an operator signing secret exists. A webhook that
                 # cannot be verified is recorded for the audit trail and changes nothing.
                 verified = bool(STATE.webhook_secret) and _webhook_signature_ok(
                     self.headers.get("X-Prok-Signature", ""), body, STATE.webhook_secret)
+                # v0.16.2: an UNVERIFIED webhook must change nothing at all. It used to
+                # push the payment and every obligation it touched into SECURITY_REVIEW,
+                # which meant anybody who could reach this endpoint could freeze a real
+                # seller's money by posting nonsense. It is now audited and ignored.
+                if not verified:
+                    STATE.settlements.note_unverified_webhook(body, now)
+                    self._json(202, {"ok": False, "error": "signature not verified"})
+                    return
                 pid = body.get("payment_id", "")
                 if not pid and body.get("rail") and body.get("reference"):
                     pid = STATE.settlements.payment_id(body["rail"], body["reference"])
-                out = STATE.settlements.confirm_payment(pid, int(body.get("amount", 0)), now, verified)
+                out = STATE.settlements.confirm_payment(pid, int(body.get("amount", 0)), now, True)
                 self._json(200 if out.get("ok") else 202, out)
                 return
         self._json(404, {"error": "not found"})
+
+    def _pay_post(self, body: dict, submitter: str, now: int) -> dict:
+        """Carry and validate; never author.
+
+        The server verifies every signature and refuses anything inconsistent, but the
+        seller stays the final authority on ACCEPTED versus BUSY, because only the seller
+        can see every buyer's live window at once.
+        """
+        p = self.path
+        if p == "/v1/pay/destination":
+            return STATE.pay.put_destination(body.get("line", ""), body.get("seller_pub", ""),
+                                             submitter, now)
+        if p == "/v1/pay/expectation":
+            outstanding = {}
+            for sid in body.get("settlement_ids", []) or []:
+                row = STATE.settlements.get(sid)
+                if row is not None:
+                    outstanding[sid] = STATE.settlements.remaining(sid)
+            return STATE.pay.put_expectation(body.get("line", ""), body.get("buyer_pub", ""),
+                                             submitter, now, DESTINATION_COOLING_MS,
+                                             outstanding or None)
+        if p == "/v1/pay/reply":
+            return STATE.pay.put_reply(body.get("payment_id", ""), body.get("reply", ""), submitter, now)
+        if p == "/v1/pay/receipt":
+            return STATE.pay.put_receipt(body.get("line", ""), body.get("seller_pub", ""), submitter, now)
+        if p == "/v1/pay/receipt/ack":
+            return STATE.pay.ack_receipt(body.get("payment_id", ""), submitter)
+        if p == "/v1/pay/end":
+            return STATE.pay.end_expectation(body.get("payment_id", ""), submitter, now)
+        if p == "/v1/pay/rules":
+            return STATE.rules.publish(int(body.get("version", 0)), int(body.get("validFrom", 0)),
+                                       body.get("terms", {}), body.get("signature", ""), now)
+        if p == "/v1/device/risk":
+            # the pseudonym is a domain-separated hash; no hardware identifier reaches here
+            pseudonym = str(body.get("pseudonym", ""))[:64]
+            STATE.pay.note_device(pseudonym, submitter, now)
+            # derived from OUR OWN verified settlement state; a client saying it owes
+            # nothing changes nothing
+            def unresolved_for(identity):
+                r = STATE.settlements.db.execute(
+                    "SELECT COALESCE(SUM(gross), 0) s FROM settlements WHERE buyer_id=? AND status IN (?,?,?)",
+                    (identity, settlement.PENDING, settlement.PAYMENT_INITIATED, settlement.PAYMENT_SEEN)).fetchone()
+                return int(r["s"])
+            return STATE.pay.device_risk(pseudonym, submitter, unresolved_for)
+        raise paybox.PayError("not found")
 
     def log_message(self, fmt, *args):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
@@ -247,7 +392,9 @@ def cleanup_loop(state: State, every_s: int):
         try:
             with state.lock:
                 n = state.brain.cleanup()
-                n["settlements_expired"] = state.settlements.expire(int(time.time() * 1000))
+                now_ms = int(time.time() * 1000)
+                n["settlements_expired"] = state.settlements.expire(now_ms)
+                n["payment_windows_swept"] = state.pay.sweep(now_ms)
             if any(n.values()):
                 print("cleanup: %s" % n, flush=True)
         except Exception as e:  # never let the timer die
