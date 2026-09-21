@@ -257,22 +257,28 @@ class PayBox:
             raise PayError("only the seller may publish its own destination")
         d.verify(seller_pub)
 
+        # v0.16.3: versions belong to the SELLER, not to the (seller, rail) pair, because
+        # that is how the phone numbers them - `DestinationClaim.nextVersion` counts the
+        # seller's one claim. Keeping a separate counter per rail here would have let a
+        # seller who moved from MTN to Airtel leave a stale MTN claim looking current for
+        # ever, and buyers would keep paying a number the seller had abandoned.
         row = self.db.execute(
-            "SELECT * FROM pay_destinations WHERE seller_id=? AND rail=? AND version=?",
-            (d.seller_id, d.rail, d.version)).fetchone()
+            "SELECT * FROM pay_destinations WHERE seller_id=? AND version=?",
+            (d.seller_id, d.version)).fetchone()
         if row is not None:
             # Same version: idempotent when it is the same CLAIM, not the same bytes.
             # ECDSA signatures are randomised, so a phone re-uploading the claim it already
             # holds produces different bytes every time; comparing raw lines would have
             # rejected an honest retry while still catching a genuinely different claim.
-            same = (row["msisdn"] == normalize_msisdn(d.msisdn) and row["dest_hash"] == d.hash())
+            same = (row["rail"] == d.rail and row["msisdn"] == normalize_msisdn(d.msisdn)
+                    and row["dest_hash"] == d.hash())
             if not same:
                 raise PayError("a different claim already exists at this version")
             return {"ok": True, "duplicate": True, "version": d.version}
 
         top = self.db.execute(
-            "SELECT MAX(version) v FROM pay_destinations WHERE seller_id=? AND rail=?",
-            (d.seller_id, d.rail)).fetchone()["v"]
+            "SELECT MAX(version) v FROM pay_destinations WHERE seller_id=?",
+            (d.seller_id,)).fetchone()["v"]
         if top is not None and d.version <= top:
             raise PayError("a newer destination already exists")
 
@@ -284,16 +290,20 @@ class PayBox:
                  d.created_at, now, line, seller_pub))
         return {"ok": True, "version": d.version, "hash": d.hash()}
 
-    def active_destination(self, seller_id: str, rail: str, now: int, cooling_ms: int):
-        """The claim a payment should use right now.
+    def active_destination(self, seller_id: str, now: int, cooling_ms: int):
+        """The one claim a payment should use right now, on whatever rail it names.
 
-        During the cooling period after a change this is still the OLD number, so there is
+        A seller has ONE place it is paid. Which operator that is can change, and the rail
+        is simply part of what changed, so the newest claim wins regardless of rail.
+
+        During the cooling period after a change this is still the OLD claim, so there is
         never a moment when neither works and a transfer already on its way still lands
-        somewhere valid.
+        somewhere valid. That holds across a rail change too: a seller who moves from MTN
+        to Airtel keeps receiving on MTN until the window closes.
         """
         rows = self.db.execute(
-            "SELECT * FROM pay_destinations WHERE seller_id=? AND rail=? ORDER BY version DESC LIMIT 2",
-            (seller_id, rail)).fetchall()
+            "SELECT * FROM pay_destinations WHERE seller_id=? ORDER BY version DESC LIMIT 2",
+            (seller_id,)).fetchall()
         if not rows:
             return None
         newest = rows[0]
@@ -303,14 +313,39 @@ class PayBox:
             return newest
         return rows[1]
 
-    def destination_for_buyer(self, seller_id: str, rail: str, now: int, cooling_ms: int):
-        row = self.active_destination(seller_id, rail, now, cooling_ms)
+    def _as_destination(self, row):
         # the seller's public key travels with the claim. It is not a secret, and the
         # buyer re-derives the seller id from it before believing anything, so a Brain
         # that swapped it would simply produce a claim that verifies against nobody.
         return None if row is None else {
             "line": row["line"], "version": int(row["version"]), "hash": row["dest_hash"],
-            "seller_pub": row["seller_pub"]}
+            "rail": row["rail"], "seller_pub": row["seller_pub"]}
+
+    def destinations_for_buyer(self, seller_id: str, now: int, cooling_ms: int):
+        """Where this seller may be paid, as a list, without the buyer naming a rail.
+
+        v0.16.3: the phone used to ask for MTN_MOMO by name. An Airtel seller was then
+        silently unreachable through the Brain - the buyer owed money and was told the
+        provider had not said where to be paid. A buyer cannot know which operator a
+        seller uses, so it stops guessing and the seller's own signed claim says.
+
+        The product gives a seller one active receiving destination at a time, so this
+        returns exactly that one, explicitly, rather than every claim ever made. A list
+        because the caller should not have to change the day that stops being true.
+        """
+        d = self._as_destination(self.active_destination(seller_id, now, cooling_ms))
+        return [] if d is None else [d]
+
+    def destination_for_buyer(self, seller_id: str, rail: str, now: int, cooling_ms: int):
+        """The active destination, but only if it is on the rail the caller named.
+
+        A caller that names the wrong rail gets nothing rather than a number on another
+        one, because a payment sent over MTN to an Airtel number does not arrive.
+        """
+        row = self.active_destination(seller_id, now, cooling_ms)
+        if row is None or row["rail"] != rail:
+            return None
+        return self._as_destination(row)
 
     # ---- expectations ---------------------------------------------------------------
 
@@ -327,7 +362,9 @@ class PayBox:
         if e.amount <= 0 or not e.settlement_ids:
             raise PayError("expectation covers nothing")
 
-        dest = self.active_destination(e.seller_id, e.rail, now, cooling_ms)
+        dest = self.active_destination(e.seller_id, now, cooling_ms)
+        if dest is not None and dest["rail"] != e.rail:
+            raise PayError("the destination is not on that rail")
         if dest is None:
             raise PayError("this seller has no destination on record")
         if e.destination_hash != dest["dest_hash"]:

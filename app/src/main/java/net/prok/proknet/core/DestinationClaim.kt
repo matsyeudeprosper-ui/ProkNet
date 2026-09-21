@@ -53,11 +53,20 @@ object DestinationClaim {
      * covers the replay of an old claim and any attempt by another identity to redirect a
      * seller's money.
      */
+    /**
+     * v0.16.3: a seller may change operator.
+     *
+     * This used to refuse any claim on a different rail from the one already held, which
+     * meant a seller who moved from MTN to Airtel could not say so - their own phone
+     * rejected the claim it had just made, and buyers kept being sent to an abandoned
+     * number. A seller has ONE place it is paid, and the operator is part of what can
+     * change; the version is what decides, and the signature is what proves the seller
+     * asked for it.
+     */
     fun mayReplace(current: Claim?, next: Claim): Boolean = when {
         !next.valid -> false
         current == null -> true
         current.sellerId != next.sellerId -> false
-        current.rail != next.rail -> false
         else -> next.version > current.version
     }
 

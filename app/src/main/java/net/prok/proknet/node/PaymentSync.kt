@@ -104,22 +104,30 @@ class PaymentSync(
     }
 
     /**
-     * Buyer: collect the destination for a provider we owe but never received one from.
+     * Buyer: collect the destinations for a provider we owe but never received one from.
      *
-     * Without this the Brain path cannot start at all. `beginPayment` refuses when there is
-     * no destination, so a buyer who walked away before the seller published one would be
-     * left owing money with no way to pay it.
+     * Without this the Brain path cannot start at all. `beginPayment` refuses when there
+     * is no destination, so a buyer who walked away before the seller published one would
+     * be left owing money with no way to pay it.
+     *
+     * v0.16.3: **the rail is not named here.** It used to ask for MTN_MOMO, which meant an
+     * Airtel seller was simply unreachable through the Brain, and the buyer was told the
+     * provider had not said where to be paid. A buyer cannot know which operator a seller
+     * uses; the seller says, by signing a claim on each rail it is on, and every one of
+     * them is taken.
      */
     private fun pullDestinations() {
         for (seller in payments.creditorsWithoutDestination()) {
-            val (code, text) = get("/v1/pay/destination?seller=" + seller + "&rail=MTN_MOMO")
+            val (code, text) = get("/v1/pay/destinations?seller=" + seller)
             if (code !in 200..299) continue
-            val o = objectsFrom(text, "destination").firstOrNull() ?: continue
-            val line = o["line"] ?: continue
-            val claim = PayWire.parseDestinationClaim(line) ?: continue
-            val pub = pubFor(claim.claim.sellerId, o["seller_pub"]) ?: continue
-            if (payments.onDestinationClaim(line, pub))
-                DiagLog.i(tag, "learned where to pay prok-" + seller.take(8) + " without meeting them")
+            for (o in objectsFrom(text, "destinations")) {
+                val line = o["line"] ?: continue
+                val claim = PayWire.parseDestinationClaim(line) ?: continue
+                val pub = pubFor(claim.claim.sellerId, o["seller_pub"]) ?: continue
+                if (payments.onDestinationClaim(line, pub))
+                    DiagLog.i(tag, "learned where to pay prok-" + seller.take(8) +
+                        " on " + claim.claim.rail + " without meeting them")
+            }
         }
     }
 
@@ -266,10 +274,11 @@ class PaymentSync(
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 15_000; c.readTimeout = 20_000
-        // the signature covers the method and the path as well, so it cannot be moved to
-        // another endpoint that happens to accept the same body
+        // v0.16.3: the signature covers the method and the whole canonical request
+        // target, QUERY INCLUDED. Signing only the path would let a signature made for
+        // one payment be replayed to read another one's reply.
         val headers = SignedApi.sign(body, identity, System.currentTimeMillis(),
-            method = method, path = path.substringBefore("?"))
+            method = method, path = path)
         for ((k, v) in headers.asMap()) c.setRequestProperty(k, v)
         if (method == "POST") {
             c.doOutput = true

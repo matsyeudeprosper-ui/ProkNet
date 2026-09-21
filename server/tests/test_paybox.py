@@ -299,6 +299,114 @@ class PayBoxTest(unittest.TestCase):
 
 
 
+
+class RailsTest(unittest.TestCase):
+    """v0.16.3: a buyer must not have to guess which operator a seller uses.
+
+    The Android Brain fetch asked for MTN_MOMO and nothing else, so an Airtel seller was
+    silently unreachable: the buyer owed money and the honest answer came back "this
+    provider has not said where to be paid". Nobody could have told from the screen that
+    the question had been asked wrongly.
+
+    The product gives a seller ONE place it is paid. Which operator that is can change,
+    and the rail is simply part of what changed - which is why versions here count per
+    seller, exactly as `DestinationClaim.nextVersion` does on the phone. A separate
+    counter per rail would have left a seller who moved to Airtel with a stale MTN claim
+    that still looked current, and buyers would have kept paying an abandoned number.
+    """
+
+    def setUp(self):
+        self.box = paybox.PayBox(":memory:")
+        self.now = 1_700_000_000_000
+        self.seller = keypair()
+        self.buyer = keypair()
+
+    def publish(self, rail, msisdn="066123456", version=1, at=None):
+        line = dest_line(self.seller, msisdn=msisdn, version=version, rail=rail)
+        return self.box.put_destination(line, pub_hex(self.seller), node_id(self.seller),
+                                        at if at is not None else self.now)
+
+    def offered(self, at=None):
+        return self.box.destinations_for_buyer(
+            node_id(self.seller), self.now if at is None else at, COOLING)
+
+    def test_an_mtn_seller_is_reachable(self):
+        self.publish("MTN_MOMO")
+        got = self.offered()
+        self.assertEqual(1, len(got))
+        self.assertEqual("MTN_MOMO", got[0]["rail"])
+
+    def test_an_airtel_seller_is_reachable(self):
+        self.publish("AIRTEL_MONEY", msisdn="055987654")
+        got = self.offered()
+        self.assertEqual(1, len(got), "an Airtel-only seller used to be invisible")
+        self.assertEqual("AIRTEL_MONEY", got[0]["rail"])
+        # and it is the seller's own signed claim, verifiable by a buyer that never met it
+        paybox.Destination(got[0]["line"]).verify(got[0]["seller_pub"])
+
+    def test_a_seller_with_no_claim_offers_nothing(self):
+        self.assertEqual([], self.offered())
+
+    def test_the_rail_comes_from_what_the_seller_signed_not_from_a_list_in_the_code(self):
+        # the day an operator we have never heard of appears, it must simply work
+        self.publish("SOME_NEW_RAIL")
+        self.assertEqual("SOME_NEW_RAIL", self.offered()[0]["rail"])
+
+    # ---- changing operator ----------------------------------------------------------
+
+    def test_a_seller_moving_from_mtn_to_airtel_keeps_receiving_on_mtn_while_it_cools(self):
+        self.publish("MTN_MOMO", msisdn="066111111", version=1)
+        later = self.now + 60_000
+        self.publish("AIRTEL_MONEY", msisdn="055222222", version=2, at=later)
+
+        during = self.offered(later + 1_000)[0]
+        self.assertEqual("MTN_MOMO", during["rail"],
+                         "a transfer already on its way must still land somewhere valid")
+        self.assertEqual(paybox.normalize_msisdn("066111111"),
+                         paybox.Destination(during["line"]).msisdn)
+
+        after = self.offered(later + COOLING + 1)[0]
+        self.assertEqual("AIRTEL_MONEY", after["rail"])
+        self.assertEqual(paybox.normalize_msisdn("055222222"),
+                         paybox.Destination(after["line"]).msisdn)
+
+    def test_the_abandoned_rail_does_not_stay_offered(self):
+        self.publish("MTN_MOMO", msisdn="066111111", version=1)
+        later = self.now + 60_000
+        self.publish("AIRTEL_MONEY", msisdn="055222222", version=2, at=later)
+        after = self.offered(later + COOLING + 1)
+        self.assertEqual(1, len(after), "one seller, one place it is paid")
+        self.assertEqual("AIRTEL_MONEY", after[0]["rail"])
+
+    def test_a_stale_claim_on_the_old_rail_cannot_be_republished_over_the_new_one(self):
+        self.publish("MTN_MOMO", msisdn="066111111", version=1)
+        self.publish("AIRTEL_MONEY", msisdn="055222222", version=2, at=self.now + 60_000)
+        with self.assertRaises(paybox.PayError):
+            # the same version on another rail is a DIFFERENT claim, not an honest retry
+            self.publish("MTN_MOMO", msisdn="066999999", version=2, at=self.now + 70_000)
+        # re-posting the IDENTICAL old claim is an honest retry from a phone that never
+        # heard the first answer, so it is accepted - and it still does not come back
+        out = self.publish("MTN_MOMO", msisdn="066111111", version=1, at=self.now + 70_000)
+        self.assertTrue(out["duplicate"])
+        self.assertEqual("AIRTEL_MONEY", self.offered(self.now + 10 * COOLING)[0]["rail"],
+                         "an old claim must never become current again")
+
+    def test_republishing_the_same_claim_is_still_an_honest_retry(self):
+        self.publish("AIRTEL_MONEY", msisdn="055222222", version=1)
+        out = self.publish("AIRTEL_MONEY", msisdn="055222222", version=1, at=self.now + 5_000)
+        self.assertTrue(out["duplicate"], "ECDSA is randomised; the same claim is the same claim")
+
+    # ---- naming a rail explicitly -------------------------------------------------------
+
+    def test_naming_the_wrong_rail_returns_nothing_rather_than_another_number(self):
+        self.publish("AIRTEL_MONEY", msisdn="055222222")
+        self.assertIsNone(self.box.destination_for_buyer(
+            node_id(self.seller), "MTN_MOMO", self.now, COOLING),
+            "money sent over MTN to an Airtel number does not arrive")
+        self.assertIsNotNone(self.box.destination_for_buyer(
+            node_id(self.seller), "AIRTEL_MONEY", self.now, COOLING))
+
+
 class SignerKeyTravelsTest(unittest.TestCase):
     """v0.16.2: the signing key rides along with every carried object.
 

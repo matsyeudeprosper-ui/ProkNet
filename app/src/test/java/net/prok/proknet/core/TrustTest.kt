@@ -175,9 +175,16 @@ class TrustTest {
         // another identity may never redirect this seller
         assertFalse(DestinationClaim.mayReplace(v1,
             DestinationClaim.Claim("ff".repeat(16), Settlement.Rail.MTN_MOMO, "066000000", 9, 3L)))
-        // nor may a different rail overwrite this one
-        assertFalse(DestinationClaim.mayReplace(v1,
-            DestinationClaim.Claim(sellerId, Settlement.Rail.AIRTEL_MONEY, "066000000", 9, 3L)))
+        // v0.16.3: but the SAME seller may move to another operator. A seller has one
+        // place it is paid, and which operator that is can change; refusing this left a
+        // seller who moved to Airtel unable to say so, with buyers still being sent to
+        // the abandoned number.
+        assertTrue(DestinationClaim.mayReplace(v1,
+            DestinationClaim.Claim(sellerId, Settlement.Rail.AIRTEL_MONEY, "055000000", 2, 3L)))
+        // and that is still governed by the version, not by the rail
+        assertFalse("an older claim on another rail is still older",
+            DestinationClaim.mayReplace(v2,
+                DestinationClaim.Claim(sellerId, Settlement.Rail.AIRTEL_MONEY, "055000000", 1, 3L)))
         assertEquals(3, DestinationClaim.nextVersion(v2))
     }
 
