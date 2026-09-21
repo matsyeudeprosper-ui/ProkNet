@@ -895,6 +895,137 @@ session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
 complete. The buyer treats SESSION_END as an ending rather than a fault: it
 closes the VPN and says "Le fournisseur a arrêté le partage."
 
+## Cash at a kiosk, verified automatically (v0.16.0)
+
+The habit in Congo-Brazzaville already works, and the design constraint is
+that **we do not change it**:
+
+```
+buyer owes 10 CFA
+  -> walks to any ordinary Mobile Money kiosk
+  -> hands over cash and the seller's normal MTN or Airtel number
+  -> kiosk sends it the way it always does
+  -> done
+```
+
+The kiosk installs nothing, scans nothing, signs nothing and has never heard
+of ProkNet. The buyer has no transaction reference to give us, and asking for
+one would break the habit the whole design exists to preserve.
+
+So what ProkNet adds is on the **seller's** phone: it notices the operator's
+ordinary "you have received" message and matches it to the debt.
+
+### Two sources, one abstraction
+
+`DIRECT_SMS` reads the telephony API, where the sender address comes from the
+network. `DEFAULT_SMS_NOTIFICATION` reads a notification posted by the phone's
+**default SMS application**, which is the practical source for most builds
+because the SMS permissions are restricted on Play. The rest of ProkNet never
+asks which one produced a candidate; it only asks how much it is worth.
+
+The obvious attack is that any app can post "you have received 50 CFA", so a
+notification counts only when the default SMS app posted it — something a
+hostile app cannot become silently. Screenshots, clipboard text, buyer-supplied
+text and typed sentences are not sources, and there is no method anywhere that
+accepts them.
+
+### The parser is scored, never templated
+
+Writing `if (text.startsWith("Vous avez reçu"))` would be a payment system that
+quietly stops clearing debts the day MTN adds a promotional line. We have no
+real operator samples and are not waiting for any, so the parser is built to
+survive wording it has never seen.
+
+The text is normalised (accents, case, unicode spaces, separators) and then
+**scored**. Credit words pull one way, sending and withdrawal words pull the
+other and outrank them. Every number in the message competes to be the amount,
+scored on proximity to receipt verbs and currency tokens, and pushed down by a
+preceding "solde", by being nine digits or more, or by sitting inside a date or
+a clock time. The expected amount is the strongest single signal, and it can
+only ever promote a number that is genuinely present.
+
+The dictionaries are data, so an operator rewording can later arrive as a
+**signed** configuration rather than a new APK. An unsigned configuration must
+never be able to alter financial matching.
+
+When two amounts score alike, the answer is AMBIGUOUS and nothing is cleared.
+The bias is stated once and applied everywhere: **a false negative costs a
+retry, a false positive gives away Internet for free.**
+
+### Matching without a reference
+
+A `PaymentExpectation` is created when the buyer taps PAYER: seller, rail,
+destination hash, exact amount, a twenty-minute window, and the obligations it
+covers. A receipt matches on all of those plus the operator's message, and on
+nothing else.
+
+Two things were deliberately **not** done:
+
+- **We do not add centimes to fingerprint a transfer.** Charging somebody 51
+  CFA instead of 50 to tell their payment apart is taking their money to solve
+  our engineering problem.
+- **We do not ask for a reference.** It would work, and it would break the
+  habit.
+
+Instead ambiguity is *prevented*: one seller may not hold two live expectations
+for the same amount on the same rail. Two buyers each owing 50 CFA simply take
+turns, seconds apart, and neither pays anything extra. Different amounts run
+concurrently without trouble.
+
+### Three kinds of truth, never collapsed
+
+| | |
+|---|---|
+| `SESSION_VERIFIED` | both phones signed the usage |
+| `PAYMENT_DEVICE_VERIFIED` | the seller's phone observed the incoming money itself |
+| `PAYMENT_OPERATOR_VERIFIED` | MTN or Airtel confirmed through their API — **future only** |
+
+A signed session does not mean it was paid. A message seen on a phone is not an
+operator attestation, and nothing in this build may ever claim to be one; a
+test enforces that no source can produce the operator level. For the pilot,
+device-verified is enough to clear a debt, and the property that matters is
+that the evidence is **observed by the seller, not asserted by the buyer**.
+
+### Who decides
+
+Neither party. The buyer cannot, because they benefit from the wrong answer.
+The seller cannot, because a button they press is worth nothing to a buyer who
+has already handed over cash. There is no "I have paid" button and no
+"I received it" button, and there never will be. The state machine decides, and
+when it cannot decide it clears nothing.
+
+### Making non-payment boring
+
+Designed on the assumption that some people will simply not pay. The defence is
+arithmetic rather than goodwill: a brand-new identity may owe about one short
+session (10 CFA in the pilot) and gets nothing more until a payment is
+**observed**. Trust then grows through observed payments only — 25, 50, 100 CFA
+— and never because somebody pressed a button. Free and sponsored Internet are
+never gated, because neither costs the seller anything.
+
+The gate is checked before any Bluetooth channel, handshake or probe, so a
+blocked buyer is told on the home screen rather than after a connection has
+been built.
+
+**Reinstalling does not reset the debt.** A device pseudonym is derived from an
+app-scoped identifier and hashed with a domain separator before it is stored or
+sent. No hardware serial, no IMEI, no advertising id, nothing that follows
+anybody to another app. A new identity on a device that still owes money starts
+with no credit at all.
+
+This is **anti-abuse, not identity**. A factory reset defeats it and somebody
+determined will get through. That is precisely why the exposure behind it is one
+short session: we would rather be bypassable than collect invasive identifiers
+to pretend otherwise.
+
+### Privacy
+
+Nothing reads the inbox. Nothing scans history. A message is inspected only
+while a payment is actually expected, and what is kept is its sha256, the parsed
+amount, the time, the source metadata, the parser version and the confidence.
+The message body never travels and is never stored; a test asserts a sender name
+and phone number in a message do not appear in the signed receipt.
+
 ## The phones now prove it (v0.15.3)
 
 v0.15.1 made the server stop believing amounts: it re-derives the money from

@@ -2628,3 +2628,100 @@ Switch back. Compte must reappear under Activité.
 - Account, network or Developer cards visible under the Wallet.
 - Any regression in sections 59 to 64.
 
+## 66. v0.16.0 paying at a kiosk, verified automatically
+
+This is the milestone that touches real money habits, so test it as a person in
+Brazzaville would, not as an engineer.
+
+You need both phones plus **one real Mobile Money transfer**, or a message that
+looks like one arriving on the seller's phone.
+
+### 66a. The seller gets ready
+
+On the OUKITEL: Gagner -> Réglages du partage.
+
+Set a number under **Recevoir les paiements** (MTN or Airtel). It must then show
+the operator and a **masked** number.
+
+Under **Vérification automatique**, tap ACTIVER. Android's own notification
+access screen must open. Grant it to ProkNet. Come back: it must read
+**Activée ✓**.
+
+If you do not grant it, the line must say the verification needs enabling, and
+free sharing must still work.
+
+### 66b. A debt is created
+
+Run a short paid session from the OnePlus and stop it. The OnePlus Wallet must
+show **À payer** with a small amount.
+
+### 66c. The buyer is told what to do, and nothing more
+
+On the OnePlus: Wallet -> PAYER.
+
+Expected: the amount, the operator, the seller's masked number, and an
+instruction saying you may use your usual Mobile Money method **or a kiosk**,
+and that ProkNet will detect the reception automatically.
+
+The only button is **J'AI COMPRIS**. There must be **no** button anywhere that
+says you have paid. Tap it: the screen must say the payment is awaited.
+
+### 66d. The real payment
+
+Send exactly that amount to the seller's number, the ordinary way: a kiosk, or
+your own Mobile Money app. **Do not tell ProkNet anything.** Do not type a
+reference. There is nowhere to type one.
+
+Expected on the OUKITEL, within seconds of the operator's message arriving:
+
+- the amount appears as received;
+- the obligation becomes **Reçu ✓**;
+- no button was pressed by anybody.
+
+Expected on the OnePlus once the receipt reaches it: **Payé ✓**, and À payer
+back to zero.
+
+COPY NETWORK on the OUKITEL should show the payment line with the source and
+the outcome.
+
+### 66e. The wrong amount does not clear anything
+
+Create another debt. Start a payment. Send a **different** amount.
+
+Expected: nothing is cleared. The debt stands, and the buyer may try again.
+
+### 66f. A message from the wrong place is ignored
+
+With a payment expected, have any other app post a notification saying money was
+received, or send yourself an ordinary SMS containing the amount from a normal
+phone number.
+
+Expected: nothing is cleared. Only the default SMS application may speak for the
+operator.
+
+### 66g. The credit limit
+
+With a debt outstanding and unpaid, tap GET INTERNET on the OnePlus.
+
+Expected: refused **before any Bluetooth activity at all**, with
+"Réglez N CFA pour continuer". It must refuse instantly.
+
+A free source must still work at that moment.
+
+Then pay properly and confirm a paid session works again.
+
+### 66h. Nothing else changed
+
+Walk the app once: get Internet, share Internet, map, Wallet, Activité, Compte,
+Gagner. Everything from v0.15.x must behave as before.
+
+### What would make this a FAIL
+
+- Being asked for a transaction reference anywhere.
+- Any button that lets the buyer or the seller declare a payment.
+- A debt cleared by a message from an app that is not the default SMS app.
+- A debt cleared by the wrong amount.
+- The credit limit refusing only after Bluetooth setup.
+- The seller's full phone number visible anywhere.
+- Any regression in sections 59 to 65.
+
