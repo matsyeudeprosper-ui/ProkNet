@@ -160,6 +160,71 @@ class CrossLanguageFixtureTest {
         println("KOTLIN_RULES_SIGNATURE=" + sig.toHex())
     }
 
+    // ================= which destination a payment must use =================
+
+    /**
+     * v0.16.4. Payment routing is the second place the two languages could quietly
+     * disagree, and the consequence is worse than a refused configuration: the buyer pays
+     * a number the seller is no longer watching, or the seller refuses its own buyer.
+     *
+     * One divergence was already there. The phone measured the cooling window from the
+     * claim's signed `createdAt`; the server measured it from the moment it happened to
+     * receive the claim. A phone offline for an hour would have moved to its new number
+     * while the Brain still sent buyers to the old one, and neither side could have seen
+     * the disagreement.
+     */
+    private fun activeCases(): List<Triple<String, List<DestinationClaim.Claim>, Pair<Long, Int>>> {
+        val text = fixtureFile().readText(Charsets.UTF_8)
+        val at = text.indexOf("\"active_destination\"")
+        require(at >= 0) { "fixture has no active_destination section" }
+        val section = text.substring(at)
+        val out = ArrayList<Triple<String, List<DestinationClaim.Claim>, Pair<Long, Int>>>()
+        for (m in Regex("\\{\\s*\"claims\"[\\s\\S]*?\"name\"\\s*:\\s*\"([^\"]*)\"[\\s\\S]*?\"now\"\\s*:\\s*(\\d+)")
+                .findAll(section)) {
+            // each case object, taken whole so the claims inside belong to it
+            val start = m.range.first
+            var depth = 0; var i = start
+            while (i < section.length) {
+                if (section[i] == '{') depth++
+                if (section[i] == '}') { depth--; if (depth == 0) break }
+                i++
+            }
+            val body = section.substring(start, i + 1)
+            val claims = Regex(
+                "\"created_at\"\\s*:\\s*(\\d+),\\s*\"msisdn\"\\s*:\\s*\"([^\"]*)\",\\s*\"rail\"\\s*:\\s*\"([^\"]*)\",\\s*\"version\"\\s*:\\s*(\\d+)")
+                .findAll(body).map {
+                    DestinationClaim.Claim("ee".repeat(16),
+                        Settlement.Rail.valueOf(it.groupValues[3]), it.groupValues[2],
+                        it.groupValues[4].toInt(), it.groupValues[1].toLong())
+                }.toList()
+            val expected = Regex("\"expected_version\"\\s*:\\s*(\\d+)").find(body)!!.groupValues[1].toInt()
+            out.add(Triple(m.groupValues[1], claims, m.groupValues[2].toLong() to expected))
+        }
+        return out
+    }
+
+    @Test fun the_fixture_really_contains_the_cases_it_claims_to() {
+        val cases = activeCases()
+        assertEquals("the fixture must hold every case the spec lists", 10, cases.size)
+        assertTrue(cases.all { it.second.isNotEmpty() })
+    }
+
+    @Test fun the_active_destination_matches_the_server_for_every_case() {
+        for ((name, claims, expect) in activeCases()) {
+            val (now, version) = expect
+            val active = DestinationClaim.active(claims, now)
+            assertNotNull(name, active)
+            assertEquals(name, version, active!!.version)
+        }
+    }
+
+    @Test fun the_cooling_window_is_ten_minutes_on_both_sides() {
+        val text = fixtureFile().readText(Charsets.UTF_8)
+        val ms = Regex("\"cooling_ms\"\\s*:\\s*(\\d+)").find(text)!!.groupValues[1].toLong()
+        assertEquals("a different window on each side is a payment sent to the wrong number",
+            DestinationClaim.CHANGE_COOLING_MS, ms)
+    }
+
     // ================= the pinned key is the deployed one =================
 
     @Test fun the_app_pins_a_real_configuration_key() {

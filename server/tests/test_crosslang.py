@@ -22,7 +22,7 @@ import json
 import os
 import unittest
 
-from brain import protocol, ruleconfig, signed_request
+from brain import paybox, protocol, ruleconfig, signed_request
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "crosslang.json")
 
@@ -142,6 +142,75 @@ class CrossLanguageRuleConfigTest(unittest.TestCase):
         for sig in (self.f["python_signature"], self.f["kotlin_signature"]):
             self.assertFalse(ruleconfig.verify(self.f["version"], self.f["validFrom"],
                                                broken, sig, self.f["public"]))
+
+
+class ActiveDestinationTest(unittest.TestCase):
+    """v0.16.4: the phone and the server must route a payment to the same number.
+
+    This is the second place the two languages could quietly disagree, and the consequence
+    is worse than a refused configuration: the buyer pays a number the seller is no longer
+    watching, or the seller refuses its own buyer's payment because it is still watching
+    the old one. Neither side can see the other's answer, so nothing would report it.
+
+    One divergence was already here. This server measured the cooling window from
+    `stored_at` - when it happened to receive the claim - while the phone measures it from
+    the `created_at` the seller signed. A phone offline for an hour would have moved to its
+    new number while the Brain still sent buyers to the old one.
+    """
+
+    def setUp(self):
+        self.f = load()["active_destination"]
+        self.box = paybox.PayBox(":memory:")
+        self.seller = "ee" * 16
+
+    def put(self, claims):
+        """Rows straight into the table: the signature path is covered elsewhere, and what
+        is under test here is only which row comes back."""
+        for c in claims:
+            self.box.db.execute(
+                "INSERT INTO pay_destinations(seller_id, rail, version, msisdn, dest_hash,"
+                " created_at, stored_at, line, seller_pub) VALUES(?,?,?,?,?,?,?,?,?)",
+                (self.seller, c["rail"], c["version"], c["msisdn"],
+                 paybox.destination_hash(c["rail"], c["msisdn"]),
+                 c["created_at"],
+                 # deliberately NOT created_at: a server that used this would disagree
+                 # with the phone, which cannot see it
+                 c["created_at"] + 7 * 3600 * 1000,
+                 "line-v%d" % c["version"], "aa" * 64))
+        self.box.db.commit()
+
+    def test_the_fixture_holds_the_cases_the_spec_lists(self):
+        self.assertEqual(10, len(self.f["cases"]))
+        self.assertEqual(10 * 60 * 1000, self.f["cooling_ms"])
+
+    def test_every_case_agrees_with_the_phone(self):
+        for case in self.f["cases"]:
+            with self.subTest(case["name"]):
+                box = paybox.PayBox(":memory:")
+                self.box = box
+                self.put(case["claims"])
+                row = box.active_destination(self.seller, case["now"], self.f["cooling_ms"])
+                self.assertIsNotNone(row, case["name"])
+                self.assertEqual(case["expected_version"], int(row["version"]), case["name"])
+
+    def test_the_window_is_measured_from_the_signed_timestamp_not_from_arrival(self):
+        """The bug this replaced, stated on its own.
+
+        Every row above was stored seven hours after it was created. If the window were
+        measured from arrival, a claim well past its cooling period would still be treated
+        as new and the old number would keep being handed out.
+        """
+        claims = [
+            {"version": 1, "rail": "MTN_MOMO", "msisdn": "066111111", "created_at": 1_700_000_000_000},
+            {"version": 2, "rail": "AIRTEL_MONEY", "msisdn": "055222222", "created_at": 1_700_000_060_000},
+        ]
+        self.put(claims)
+        # an hour after the second claim was made: long past cooling by its own clock,
+        # still "brand new" by the arrival clock
+        now = 1_700_000_060_000 + 3600 * 1000
+        row = self.box.active_destination(self.seller, now, 10 * 60 * 1000)
+        self.assertEqual(2, int(row["version"]),
+                         "the seller moved to Airtel an hour ago; buyers must be told")
 
 
 class PinnedKeyTest(unittest.TestCase):

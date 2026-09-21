@@ -1,4 +1,200 @@
 {
+  "active_destination": {
+    "cases": [
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          }
+        ],
+        "expected_version": 1,
+        "name": "only one claim ever made",
+        "now": 1700000000001
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "055222222",
+            "rail": "AIRTEL_MONEY",
+            "version": 2
+          }
+        ],
+        "expected_version": 1,
+        "name": "a change, well inside the cooling window",
+        "now": 1700000061000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "055222222",
+            "rail": "AIRTEL_MONEY",
+            "version": 2
+          }
+        ],
+        "expected_version": 1,
+        "name": "one millisecond before the window closes",
+        "now": 1700000659999
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "055222222",
+            "rail": "AIRTEL_MONEY",
+            "version": 2
+          }
+        ],
+        "expected_version": 2,
+        "name": "the exact moment the window closes",
+        "now": 1700000660000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "055222222",
+            "rail": "AIRTEL_MONEY",
+            "version": 2
+          }
+        ],
+        "expected_version": 2,
+        "name": "long after the window closed",
+        "now": 1700000665000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "066999999",
+            "rail": "MTN_MOMO",
+            "version": 2
+          }
+        ],
+        "expected_version": 1,
+        "name": "same operator, new number, inside cooling",
+        "now": 1700000061000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "066999999",
+            "rail": "MTN_MOMO",
+            "version": 2
+          }
+        ],
+        "expected_version": 2,
+        "name": "same operator, new number, after cooling",
+        "now": 1700000660000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "066999999",
+            "rail": "MTN_MOMO",
+            "version": 2
+          },
+          {
+            "created_at": 1700000120000,
+            "msisdn": "066333333",
+            "rail": "MTN_MOMO",
+            "version": 3
+          }
+        ],
+        "expected_version": 2,
+        "name": "three claims, inside the newest window: the PREVIOUS one, not the oldest",
+        "now": 1700000121000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          },
+          {
+            "created_at": 1700000060000,
+            "msisdn": "066999999",
+            "rail": "MTN_MOMO",
+            "version": 2
+          },
+          {
+            "created_at": 1700000120000,
+            "msisdn": "066333333",
+            "rail": "MTN_MOMO",
+            "version": 3
+          }
+        ],
+        "expected_version": 3,
+        "name": "three claims, after the newest window",
+        "now": 1700000720000
+      },
+      {
+        "claims": [
+          {
+            "created_at": 1700000000000,
+            "msisdn": "066111111",
+            "rail": "MTN_MOMO",
+            "version": 1
+          }
+        ],
+        "expected_version": 1,
+        "name": "a claim whose window has not opened yet is still the one to use",
+        "now": 1699999999000
+      }
+    ],
+    "cooling_ms": 600000,
+    "note": "v0.16.4. The cooling window is measured from the claim's own created_at, which is inside the bytes the seller signed - NOT from when a server happened to receive it, which is a number the phone cannot see. DestinationClaim.active on the phone and PayBox.active_destination on the server must both produce expected_version for every case here."
+  },
   "note": "v0.16.3 cross-language fixture. TEST KEYS ONLY - these private keys are in the repository on purpose and must never be used for anything real. Python writes this file; the Kotlin tests read it and must agree byte for byte. kotlin_signature fields are captured from a Kotlin test run so the Python side can verify a signature Android actually produced.",
   "request": {
     "body": "7b227061796d656e745f6964223a227031222c227265706c79223a224143434550544544227d",

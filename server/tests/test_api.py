@@ -19,7 +19,7 @@ from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from brain import app, evidence, settlement, signed_request
+from brain import app, evidence, paybox, settlement, signed_request
 from tests.test_evidence import checkpoint_bytes, contract_bytes, keypair, node_id, pub_hex, sign
 from tests.test_paybox import dest_line, exp_line
 
@@ -563,6 +563,113 @@ class PayApiTest(unittest.TestCase):
         self.assertEqual(200, self.publish_destination()[0])
         self.assertEqual(403, self.call(
             "GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.stranger)[0])
+
+    # ---- v0.16.4: a settled debt is not a standing right to a phone number ----------------
+
+    def settle(self, sid):
+        app.STATE.settlements.db.execute(
+            "UPDATE settlements SET status=? WHERE settlement_id=?",
+            (settlement.CONFIRMED, sid))
+        app.STATE.settlements.db.commit()
+
+    def test_a_buyer_who_has_paid_everything_loses_access_to_the_number(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        path = "/v1/pay/destinations?seller=" + node_id(self.seller)
+        self.assertEqual(200, self.call("GET", path, self.buyer)[0], "while the debt stands")
+
+        self.settle(self.settlement_id)
+
+        code, out = self.call("GET", path, self.buyer)
+        self.assertEqual(403, code, "a settled debt is not a standing right to a phone number")
+        body = json.dumps(out)
+        for leak in ("066123456", "66123456", "MTN_MOMO", "destinations"):
+            self.assertNotIn(leak, body, "a refusal must reveal nothing about the seller")
+        # not the destination hash either
+        self.assertNotIn(paybox.destination_hash("MTN_MOMO", "066123456"), body)
+
+    def test_an_expired_or_disputed_debt_does_not_keep_the_number_readable(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        path = "/v1/pay/destinations?seller=" + node_id(self.seller)
+        for status in (settlement.EXPIRED, settlement.DISPUTED, settlement.SECURITY_REVIEW):
+            app.STATE.settlements.db.execute(
+                "UPDATE settlements SET status=? WHERE settlement_id=?", (status, self.settlement_id))
+            app.STATE.settlements.db.commit()
+            self.assertEqual(403, self.call("GET", path, self.buyer)[0],
+                             "%s is not money still owed" % status)
+
+    def test_every_state_that_means_money_is_owed_keeps_it_readable(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        path = "/v1/pay/destinations?seller=" + node_id(self.seller)
+        for status in (settlement.PENDING, settlement.PAYMENT_INITIATED, settlement.PAYMENT_SEEN):
+            app.STATE.settlements.db.execute(
+                "UPDATE settlements SET status=? WHERE settlement_id=?", (status, self.settlement_id))
+            app.STATE.settlements.db.commit()
+            self.assertEqual(200, self.call("GET", path, self.buyer)[0],
+                             "%s means the buyer still has to pay somebody" % status)
+
+    def test_the_seller_can_always_read_its_own_however_settled(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        self.settle(self.settlement_id)
+        self.assertEqual(200, self.call(
+            "GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.seller)[0])
+
+    # ---- v0.16.4: rotation, through the Brain ------------------------------------------------
+
+    def publish_claim(self, rail, msisdn, version, created):
+        raw = json.dumps({
+            "line": dest_line(self.seller, msisdn=msisdn, version=version, rail=rail,
+                              created=created),
+            "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        return self.call("POST", "/v1/pay/destination", self.seller, raw)
+
+    def offered(self):
+        out = self.call("GET", "/v1/pay/destinations?seller=" + node_id(self.seller), self.buyer)[1]
+        return out["destinations"]
+
+    def test_a_buyer_that_already_has_a_destination_is_given_the_newer_one(self):
+        """The refresh the phone now performs on every sync, seen from the server."""
+        t0 = int(time.time() * 1000) - 3600 * 1000      # an hour ago: well past cooling
+        t1 = t0 + 60_000
+        self.assertEqual(200, self.publish_claim("MTN_MOMO", "066111111", 1, t0)[0])
+        first = self.offered()
+        self.assertEqual(1, len(first))
+        self.assertEqual("MTN_MOMO", first[0]["rail"])
+
+        self.assertEqual(200, self.publish_claim("AIRTEL_MONEY", "055222222", 2, t1)[0])
+        second = self.offered()
+        self.assertEqual(1, len(second), "one seller, one place it is paid")
+        self.assertEqual("AIRTEL_MONEY", second[0]["rail"],
+                         "cooling ended an hour ago; the buyer must be told")
+        self.assertEqual(2, second[0]["version"])
+
+    def test_during_cooling_the_brain_still_hands_out_the_old_claim(self):
+        now = int(time.time() * 1000)
+        self.assertEqual(200, self.publish_claim("MTN_MOMO", "066111111", 1, now - 600_000 * 2)[0])
+        self.assertEqual(200, self.publish_claim("AIRTEL_MONEY", "055222222", 2, now - 1_000)[0])
+        got = self.offered()
+        self.assertEqual(1, len(got))
+        self.assertEqual("MTN_MOMO", got[0]["rail"],
+                         "a transfer already on its way must still land somewhere valid")
+        self.assertEqual(1, got[0]["version"])
+
+    def test_the_same_operator_with_a_new_number_rotates_the_same_way(self):
+        now = int(time.time() * 1000)
+        self.assertEqual(200, self.publish_claim("MTN_MOMO", "066111111", 1, now - 600_000 * 2)[0])
+        self.assertEqual(200, self.publish_claim("MTN_MOMO", "066999999", 2, now - 1_000)[0])
+        during = self.offered()[0]
+        self.assertEqual(1, during["version"], "inside cooling, the old number")
+
+        # and once the window has closed, without anything being republished
+        self.assertEqual(200, self.publish_claim("MTN_MOMO", "066333333", 3,
+                                                 now - 600_000 * 2)[0])
+        after = self.offered()[0]
+        self.assertEqual(3, after["version"], "no restart, no manual refresh, no re-save")
+
+    def test_asking_again_when_nothing_changed_changes_nothing(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        first = self.offered()
+        for _ in range(3):
+            self.assertEqual(first, self.offered(), "repeating the question is a no-op")
 
     # ---- the webhook cannot be used as a weapon --------------------------------------------
 

@@ -11,8 +11,8 @@ android {
         applicationId = "net.prok.proknet.lab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 65
-        versionName = "0.16.3"
+        versionCode = 66
+        versionName = "0.16.4"
     }
 
     buildTypes {
@@ -54,4 +54,11 @@ dependencies {
     // plain android.app.Activity keeps the dependency tree tiny and builds fast
     // on the shared VPS. Only the Kotlin stdlib is pulled in.
     testImplementation("junit:junit:4.13.2")
+    // v0.16.4, TEST ONLY - never reaches the APK.
+    //
+    // The database migration is the one piece of this project that can only be wrong on
+    // a phone that has been upgraded, never on a fresh install, so it cannot be proved by
+    // reasoning about the SQL. These tests build real databases with the exact historical
+    // schemas and run the real migration statements against them.
+    testImplementation("org.xerial:sqlite-jdbc:3.46.0.0")
 }

@@ -52,7 +52,8 @@ class PayWireTest {
         s: PayWire.SignedExpectation, pub: ByteArray? = buyer.pub, dest: String = destHash(),
         outstanding: Map<String, Long> = mapOf("s1" to 5_000L), busy: Boolean = false,
         ready: Boolean = true, at: Long = now + 1_000,
-    ) = PayWire.sellerDecision(s, pub, seller.id, dest, outstanding, busy, ready, at)
+    ) = PayWire.sellerDecision(s, pub, seller.id, if (dest.isEmpty()) emptySet() else setOf(dest),
+        outstanding, busy, ready, at)
 
     // ================= 1. the seller says where it is paid =================
 
