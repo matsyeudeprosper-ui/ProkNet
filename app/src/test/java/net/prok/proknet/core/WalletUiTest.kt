@@ -267,4 +267,37 @@ class WalletUiTest {
         assertEquals("Airtel Money",
             WalletUi.receiving(PaymentRails.Destination(Settlement.Rail.AIRTEL_MONEY, "242050000123")).title)
     }
+    // ================= v0.15.3 =================
+
+    @Test
+    fun the_figure_that_needs_action_always_leads() {
+        val owing = listOf(ob(me, seller, 1_200))
+        assertEquals(WalletUi.Lead.TO_PAY, WalletUi.overview(view(owing)).lead)
+        // owed money but owing none: the receivable leads
+        val owed = listOf(ob(seller, me, 3_000))
+        assertEquals(WalletUi.Lead.TO_RECEIVE, WalletUi.overview(view(owed)).lead)
+        // a debt outranks a receivable, because only one of them needs doing
+        assertEquals(WalletUi.Lead.TO_PAY, WalletUi.overview(view(owing + owed)).lead)
+        // nothing to do: lead with what went well rather than a row of zeros
+        val settled = listOf(ob(seller, me, 2_000, Settlement.Status.CONFIRMED))
+        assertEquals(WalletUi.Lead.EARNED, WalletUi.overview(view(settled)).lead)
+        assertEquals(WalletUi.Lead.NOTHING, WalletUi.overview(view(emptyList())).lead)
+    }
+
+    @Test
+    fun server_verification_appears_in_the_technical_details_and_nowhere_else() {
+        val o = ob(me, seller, 1_200)
+        val d = WalletUi.detail(o, me, 5_000, "21 septembre", serverState = Evidence.word(Evidence.Sync.PENDING))
+        assertTrue(d.advanced.any { it.first == "Vérification serveur" })
+        assertEquals("En attente", d.advanced.first { it.first == "Vérification serveur" }.second)
+        // and never on the visible part of the sheet
+        val visible = listOf(d.title, d.amount, d.statusValue, d.withValue, d.action) + d.lines.flatMap { listOf(it.first, it.second) }
+        for (t in visible) {
+            assertFalse(t + " mentions a server", t.lowercase().contains("serveur"))
+            assertFalse(t + " mentions HTTP", t.contains("HTTP"))
+        }
+        // an obligation that never reached a server is not shown as wrong
+        assertEquals("—", WalletUi.detail(o, me, 5_000, "x").advanced.first { it.first == "Vérification serveur" }.second)
+    }
+
 }

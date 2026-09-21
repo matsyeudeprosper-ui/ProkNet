@@ -35,6 +35,7 @@ import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.EarnUi
+import net.prok.proknet.core.Evidence
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
@@ -834,6 +835,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         // one figure leads; the others stay quiet
         v<TextView>(R.id.wvPay).setTextColor(if (o.lead == WalletUi.Lead.TO_PAY) getColor(R.color.text) else getColor(R.color.text_muted))
         v<TextView>(R.id.wvReceive).setTextColor(if (o.lead == WalletUi.Lead.TO_RECEIVE) getColor(R.color.text) else getColor(R.color.text_muted))
+        v<TextView>(R.id.wvEarned).setTextColor(if (o.lead == WalletUi.Lead.EARNED) getColor(R.color.text) else getColor(R.color.text_muted))
 
         val dest = node.store.paymentDestination(me)
         val action = WalletUi.primaryAction(obligations, me, w, dest != null && dest.valid, node.sellOn)
@@ -903,7 +905,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val me = node.identity.idHex
         val whenText = dateFmt.format(Date(o.createdAt)) + " · " + timeFmt.format(Date(o.createdAt))
         val budget = Market.Contract.decode(node.store.sessions(200).firstOrNull { it.sessionHex == o.sessionHex }?.contract)?.buyerBudgetCentimes ?: 0L
-        val d = WalletUi.detail(o, me, budget, whenText)
+        val sync = node.store.syncRow(o.settlementId)
+        val d = WalletUi.detail(o, me, budget, whenText,
+            serverState = sync?.let { Evidence.word(it.state) } ?: "")
         val body = StringBuilder()
         body.append(d.amount).append("\n\n")
         body.append(d.statusLabel).append("\n").append(d.statusValue).append("\n\n")

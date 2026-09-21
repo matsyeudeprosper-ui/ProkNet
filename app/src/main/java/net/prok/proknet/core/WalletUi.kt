@@ -74,8 +74,23 @@ object WalletUi {
 
     // ---- the overview ---------------------------------------------------------------------------
 
-    /** Which figure gets the strongest typography. Only one may lead. */
-    enum class Lead { TO_PAY, TO_RECEIVE, NOTHING }
+    /**
+     * Which figure gets the strongest typography. Only one may lead, and the one that
+     * needs action always wins: three equal statistics tell a person nothing.
+     */
+    enum class Lead {
+        /** Money is owed. Nothing outranks that. */
+        TO_PAY,
+
+        /** Nothing owed, but money is coming. */
+        TO_RECEIVE,
+
+        /** Nothing needs action, so the informational figure leads instead of a row of zeros. */
+        EARNED,
+
+        /** A brand new wallet: nothing to lead with at all. */
+        NOTHING,
+    }
 
     class Overview(
         val toPay: String,
@@ -91,6 +106,7 @@ object WalletUi {
         lead = when {
             w.toPayCentimes > 0 -> Lead.TO_PAY          // debt always leads: it needs action
             w.toReceiveCentimes > 0 -> Lead.TO_RECEIVE
+            w.earnedTodayCentimes > 0 -> Lead.EARNED    // nothing to do, so show what went well
             else -> Lead.NOTHING
         })
 
@@ -255,7 +271,13 @@ object WalletUi {
         val advanced: List<Pair<String, String>>,
     )
 
-    fun detail(o: Settlement.Obligation, myId: String, budgetCentimes: Long, whenText: String): Detail {
+    /**
+     * @param serverState v0.15.3: how far this settlement got with the server. It appears
+     *        in the advanced section and nowhere else: a consumer card must never talk
+     *        about servers, and an obligation that has not reached one is not "wrong".
+     */
+    fun detail(o: Settlement.Obligation, myId: String, budgetCentimes: Long, whenText: String,
+               serverState: String = ""): Detail {
         val seller = o.sellerId == myId
         val lines = ArrayList<Pair<String, String>>()
         if (!seller && budgetCentimes > 0) lines.add("Budget maximum" to Market.cfa(budgetCentimes))
@@ -282,6 +304,7 @@ object WalletUi {
                 "Session" to o.sessionHex,
                 "Preuve d'usage" to o.finalCheckpointHash,
                 "Référence" to o.paymentReference.ifEmpty { "—" },
+                "Vérification serveur" to serverState.ifEmpty { "—" },
                 "Identité complète" to fullName(if (seller) o.buyerId else o.sellerId),
                 "Date" to whenText))
     }

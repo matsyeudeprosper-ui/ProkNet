@@ -330,27 +330,29 @@
                     </LinearLayout>
 
                     <View android:layout_width="match_parent" android:layout_height="20dp" />
+
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/account_title" style="@style/H1" android:layout_marginTop="12dp" android:layout_marginBottom="16dp" />
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
+                        <TextView android:id="@+id/profileName" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
+                        <TextView android:id="@+id/profileId" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                        <Button android:id="@+id/btnRename" android:text="@string/change_name" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/prok_network" style="@style/H2" />
+                        <TextView android:id="@+id/profileService" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />
+                        <Switch android:id="@+id/switchNode" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="@string/keep_running" style="@style/Body" />
+                        <Button android:id="@+id/btnBattery" android:text="@string/allow_background" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/developer_title" style="@style/H2" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/developer_text" style="@style/Muted" />
+                        <Button android:id="@+id/btnDeveloper" android:text="@string/developer_open" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+                    </LinearLayout>
+                    <TextView android:id="@+id/profileVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="" style="@style/Muted" />
+                    <View android:layout_width="match_parent" android:layout_height="24dp" />
                 </LinearLayout>
 
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/account_title" style="@style/H1" android:layout_marginTop="12dp" android:layout_marginBottom="16dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
-                    <TextView android:id="@+id/profileName" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
-                    <TextView android:id="@+id/profileId" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
-                    <Button android:id="@+id/btnRename" android:text="@string/change_name" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
                 </LinearLayout>
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/prok_network" style="@style/H2" />
-                    <TextView android:id="@+id/profileService" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />
-                    <Switch android:id="@+id/switchNode" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="@string/keep_running" style="@style/Body" />
-                    <Button android:id="@+id/btnBattery" android:text="@string/allow_background" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
-                </LinearLayout>
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/developer_title" style="@style/H2" />
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/developer_text" style="@style/Muted" />
-                    <Button android:id="@+id/btnDeveloper" android:text="@string/developer_open" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
-                </LinearLayout>
-                <TextView android:id="@+id/profileVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="" style="@style/Muted" />
-            </LinearLayout>
         </ScrollView>
     </FrameLayout>
 
