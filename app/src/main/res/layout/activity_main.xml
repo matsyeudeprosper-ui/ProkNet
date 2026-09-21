@@ -229,6 +229,8 @@
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/total_earned" style="@style/Caption" />
                     <TextView android:id="@+id/earnTotal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="0 CFA" style="@style/Big" />
                     <TextView android:id="@+id/earnSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
+                    <TextView android:id="@+id/earnReceivable" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/Body" android:visibility="gone" />
+                    <Button android:id="@+id/btnEarnWallet" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_open" style="@style/SecondaryButton" android:layout_marginTop="16dp" />
                 </LinearLayout>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/earn_notify_title" style="@style/H2" />
@@ -251,7 +253,43 @@
         <!-- ================= ACTIVITY (+ account) ================= -->
         <ScrollView android:id="@+id/tabActivity" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone" android:scrollbars="none">
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tab_activity" style="@style/H1" android:layout_marginBottom="16dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:background="@drawable/bg_card_alt" android:padding="4dp" android:layout_marginBottom="20dp">
+                    <TextView android:id="@+id/segActivity" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:gravity="center" android:text="@string/wallet_tab_activity" style="@style/H2" />
+                    <TextView android:id="@+id/segWallet" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:gravity="center" android:text="@string/wallet_tab_wallet" style="@style/H2" />
+                </LinearLayout>
+
+                <LinearLayout android:id="@+id/walletPane" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_title" style="@style/H1" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_subtitle" style="@style/Muted" android:layout_marginTop="2dp" android:layout_marginBottom="20dp" />
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp" android:layout_marginBottom="16dp">
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_to_pay" style="@style/Caption" />
+                        <TextView android:id="@+id/wvPay" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/Stat" android:layout_marginTop="4dp" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="18sp" android:autoSizeMaxTextSize="34sp" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_to_receive" style="@style/Caption" android:layout_marginTop="20dp" />
+                        <TextView android:id="@+id/wvReceive" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/Stat" android:layout_marginTop="4dp" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="18sp" android:autoSizeMaxTextSize="34sp" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_earned_today" style="@style/Caption" android:layout_marginTop="20dp" />
+                        <TextView android:id="@+id/wvEarned" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 CFA" style="@style/H2" android:layout_marginTop="4dp" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_note" style="@style/Muted" android:layout_marginTop="20dp" />
+                    </LinearLayout>
+
+                    <LinearLayout android:id="@+id/wvActionCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp" android:layout_marginBottom="16dp">
+                        <TextView android:id="@+id/wvActionTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
+                        <TextView android:id="@+id/wvActionDetail" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" android:layout_marginTop="8dp" />
+                        <Button android:id="@+id/wvActionButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/PrimaryButton" android:layout_marginTop="18dp" />
+                        <TextView android:id="@+id/wvActionSecondary" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Caption" android:layout_marginTop="14dp" android:gravity="center" />
+                    </LinearLayout>
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp" android:layout_marginBottom="24dp">
+                        <TextView android:id="@+id/wvRecvTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
+                        <TextView android:id="@+id/wvRecvDetail" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" android:layout_marginTop="8dp" />
+                        <Button android:id="@+id/wvRecvButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/SecondaryButton" android:layout_marginTop="18dp" />
+                    </LinearLayout>
+
+                    <TextView android:id="@+id/wvHistoryTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_history" style="@style/H1" android:layout_marginBottom="12dp" />
+                    <LinearLayout android:id="@+id/wvHistory" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="24dp" />
+                </LinearLayout>
+
+                <LinearLayout android:id="@+id/activityPane" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="14dp" android:layout_marginEnd="4dp">
                         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/wallet_to_pay" style="@style/Caption" />
@@ -280,6 +318,8 @@
                 </LinearLayout>
                 <LinearLayout android:id="@+id/activityList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
                 <TextView android:id="@+id/activityEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:text="@string/activity_none" style="@style/Body" android:layout_marginBottom="24dp" />
+
+                </LinearLayout>
 
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tab_profile" style="@style/H1" android:layout_marginTop="8dp" android:layout_marginBottom="14dp" />
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginBottom="14dp">

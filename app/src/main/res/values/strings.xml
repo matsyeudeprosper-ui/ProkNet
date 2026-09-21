@@ -97,6 +97,15 @@
     <string name="wallet_to_pay">À payer</string>
     <string name="wallet_to_receive">À recevoir</string>
     <string name="wallet_fees">Frais Prok</string>
+    <string name="wallet_tab_activity">Activité</string>
+    <string name="wallet_tab_wallet">Wallet</string>
+    <string name="wallet_title">Prok Wallet</string>
+    <string name="wallet_subtitle">Paiements et gains</string>
+    <string name="wallet_earned_today">Gagné aujourd\'hui</string>
+    <string name="wallet_see_all">Voir les paiements</string>
+    <string name="wallet_open">Voir le Wallet</string>
+    <string name="wallet_history">Historique</string>
+    <string name="wallet_advanced">Détails techniques</string>
     <string name="wallet_pay_title">À régler</string>
     <string name="wallet_pay_button">PAYER %1$s</string>
     <string name="wallet_pay_none">Rien à payer</string>

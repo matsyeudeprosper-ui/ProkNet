@@ -895,6 +895,93 @@ session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
 complete. The buyer treats SESSION_END as an ending rather than a fault: it
 closes the VPN and says "Le fournisseur a arrêté le partage."
 
+## The server derives the money itself (v0.15.1)
+
+v0.15.0 shipped with a gap I flagged as the largest one: `/v1/settlements`
+believed the amounts a phone sent. A phone could invent a session, recompute a
+matching settlement id from its own invented fields, and create debt. Fine for
+a diagnostic, unacceptable for real money.
+
+A phone no longer reports amounts at all. It submits **evidence**: the exact
+signed bytes of the contract and the closing checkpoint, and the four
+signatures over them. `brain/evidence.py` re-derives everything the money
+depends on and refuses anything it cannot verify:
+
+1. the contract is a valid, paid, v2 budget session;
+2. the two public keys are the parties the contract names;
+3. both parties signed **those exact** contract bytes;
+4. the checkpoint belongs to that session and is the closing one;
+5. both parties signed **those exact** checkpoint bytes;
+6. the signed cost is what the terms give, and fits the signed budget and
+   byte ceiling;
+7. the submitter is the buyer or the seller;
+8. gross, Prok fee, seller net and the settlement id are computed **here**.
+
+A claimed amount or id is accepted only as a cross-check. A disagreement is
+refused rather than corrected, because a sender that is broken or lying does
+not deserve a row in the settlements table.
+
+**Submissions are signed and used once.** Transport security and evidence are
+different things. HTTPS says the bytes were not altered; it says nothing about
+who sent them or whether this is the third replay of an hour-old submission.
+`brain/signed_request.py` requires identity, timestamp, nonce and a signature
+over the body hash, and refuses a bad signature, a stale timestamp, an altered
+body, or a reused nonce. A failed signature does not burn the nonce, so an
+attacker cannot lock out a legitimate request by guessing it.
+
+## One transfer, many obligations (v0.15.1)
+
+The v0.15.0 payment event key was `rail | reference | settlementId`, which let
+the same operator reference be presented independently against several
+unrelated obligations. The naive fix is a unique reference per obligation, and
+it is wrong: netting tiny sessions into one real transfer is deliberate, since
+nobody should authorise a Mobile Money payment for 3 CFA.
+
+So the unit of payment is the transfer, not the obligation.
+
+```
+payment_transactions   one real operator transfer, UNIQUE(rail, operator_ref)
+payment_allocations    how much of it settles which obligation
+```
+
+Three 5 CFA sessions become one 15 CFA MTN payment with three allocations.
+The invariants: allocations may not exceed the amount transferred; no
+obligation may be allocated more than it still owes; a confirmed obligation
+cannot be paid again; every obligation in one payment belongs to the same two
+parties; a duplicate confirmation is a no-op. A confirmation for a different
+amount, or the same reference reused for a different payment, moves the
+transaction and everything it touches to `SECURITY_REVIEW`. A partial payment
+leaves the rest owing, and a second transfer can clear it.
+
+## The Wallet is a product, not a report (v0.15.1)
+
+The engineering works. The Wallet had to stop looking like engineering. It now
+answers four questions without anybody reading twice: what do I owe, what am I
+owed, what has been paid, and what should I do now.
+
+`core/WalletUi.kt` decides all of that, so the screen states are testable
+rather than a matter of opinion about a screenshot. It makes three promises
+the tests enforce:
+
+- **One obvious action.** `primaryAction` returns exactly one thing to do,
+  ordered by urgency: money I owe, then nowhere to be paid, then money owed to
+  me, then nothing. It is never an empty PAY button.
+- **No technical clutter.** No status enum, no settlement id, no checkpoint
+  hash, no raw 32-character identity, no CFA per megabyte. A test sweeps every
+  visible string. The engineering lives in one "Détails techniques" sheet.
+- **Honest money words.** Never "Solde". Never a guarantee. "Payé" only when a
+  payment was actually verified; a typed reference reads "À vérifier".
+
+Structure: Activité gained a segmented switch, so the bottom navigation is
+unchanged and Wallet lives inside it. Activité answers *what happened*; Wallet
+contains money events only. One summary card leads with the figure that needs
+action, one action card, one receiving card, then history grouped by day with
+an amount, a counterparty and a status chip. `prok-24e480e6a1b2…` is shown as
+**Prok 24E4** — an abstraction over the identity, not an invented name, so it
+swaps cleanly when real profiles arrive. Gagner shows one figure and a link
+rather than a second copy of the history; Home shows at most one money line,
+and only when nothing more urgent needs that space.
+
 ## The wallet is an obligation layer, not a bank (v0.15.0)
 
 ProkNet coordinates and verifies payment. **It does not hold anybody's money.**

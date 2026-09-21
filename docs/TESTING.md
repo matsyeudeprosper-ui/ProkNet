@@ -2381,3 +2381,91 @@ A free source must still work at that moment.
 - A duplicate obligation or a doubled amount after restarting the apps.
 - The credit limit refusing only after Bluetooth setup rather than before.
 
+## 63. v0.15.1 the Wallet looks like a product
+
+Sections 61 and 62 covered whether the money is *correct*. This one is about
+whether it is *usable*. Judge it as a person, not as an engineer.
+
+### 63a. Three small sessions, one payment
+
+With the same seller, run **three** short paid sessions, stopping each one,
+without paying in between.
+
+Open **Activité** and tap **Wallet**.
+
+Expected:
+
+- One summary card. **À payer** is the strongest figure, because you owe money.
+- One action card: "Paiement à effectuer", naming the seller as **Prok XXXX**
+  and saying **3 sessions sont regroupées dans ce paiement.**
+- Exactly one button. Not three, not zero.
+- Under the figures: "Prok ne détient pas votre argent."
+- History grouped under **Aujourd'hui**, each row showing what it was, who
+  with, the amount, and **En attente**.
+
+On the OUKITEL the same screen must lead with **À recevoir** instead.
+
+### 63b. Nothing technical on screen
+
+Read the whole Wallet screen. None of these may appear anywhere on it:
+
+- `PENDING`, `PAYMENT_SEEN`, `CONFIRMED` or any other status word in capitals
+- a settlement id, a session id or a checkpoint hash
+- a full 32-character `prok-` identity
+- any price per megabyte
+- the word **Solde**
+
+Tap one history row. The detail must be in plain French: statut, avec, budget
+maximum, utilisé, frais Prok, le vendeur reçoit. The technical identifiers are
+allowed **only** behind "Détails techniques".
+
+### 63c. Mock payment of the batch
+
+Developer → long-press COPY NETWORK to enable simulated payments. Back in
+Wallet, tap the pay button and choose the simulated rail.
+
+Expected: all three sessions become **Payé ✓** together, the OUKITEL shows
+**Reçu ✓**, and À payer drops to zero with "Tout est à jour".
+
+Restart both apps. The state must be unchanged. Repeat the same mock payment:
+nothing may duplicate.
+
+### 63d. Manual reference
+
+Turn simulated payments off. Tap pay and choose **Paiement direct**.
+
+Expected: the seller's **masked** number, an instruction, and a reference box.
+After entering a reference, the confirmation must say **"En attente de
+vérification. Nous ne marquerons pas ce paiement comme reçu avant
+vérification."** and the row must read **À vérifier**, never Payé.
+
+Try the same reference again for a different seller: **"Cette référence est
+déjà utilisée."**
+
+### 63e. Receiving, and privacy
+
+On the OUKITEL, Wallet → the receiving card. Before setup it must invite you to
+configure. After setup it must show the operator and a masked number, plus one
+sentence: the number is never broadcast to nearby phones.
+
+### 63f. Empty and clean states
+
+On a phone with no history, Wallet must show a calm empty state, not a blank
+panel. Once everything is paid it must say **Tout est à jour** with no button.
+
+### 63g. Home and Gagner
+
+Home may show at most **one** money line when something is owed, and tapping it
+opens the Wallet. Gagner shows the earnings figure and a **Voir le Wallet**
+link, and must NOT repeat the transaction history.
+
+### What would make this a FAIL
+
+- More than one primary button on the Wallet screen.
+- Any technical identifier or status word visible without opening the advanced
+  sheet.
+- A typed reference shown as paid.
+- The same reference silently accepted twice.
+- Home or Gagner turning into a second accounting screen.
+- Any regression in sections 59 to 62.
+

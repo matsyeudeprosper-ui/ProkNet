@@ -41,6 +41,7 @@ import net.prok.proknet.core.PaymentRails
 import net.prok.proknet.core.ProductState
 import net.prok.proknet.core.Settlement
 import net.prok.proknet.core.Wallet
+import net.prok.proknet.core.WalletUi
 import net.prok.proknet.core.ProductState.active
 import net.prok.proknet.core.ProductState.busy
 import net.prok.proknet.core.Pricing
@@ -82,6 +83,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private var requestStartedAt = 0L
     private var locationAsked = false
     private val money by lazy { getSharedPreferences("proknet_money", Context.MODE_PRIVATE) }
+    /** v0.15.1: Activité answers "what happened"; Wallet answers "what needs my attention". */
+    private var walletTab = false
 
     // ---- v0.14: the buyer's budget and the seller's earning policy live here ----------------------
     private var budgetCentimes: Long
@@ -157,6 +160,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             if (want) ensureRunning { } else { DiagLog.i(tag, "Keep Prok running switched OFF"); ProkNetService.stop(this) }
             main.postDelayed({ refresh() }, 1500)
         }
+        v<TextView>(R.id.segActivity).setOnClickListener { walletTab = false; refresh() }
+        v<TextView>(R.id.segWallet).setOnClickListener { walletTab = true; refresh() }
         v<Button>(R.id.btnRename).setOnClickListener { renameDialog() }
         v<Button>(R.id.btnBattery).setOnClickListener { batterySettings() }
         v<Button>(R.id.btnDeveloper).setOnClickListener { startActivity(Intent(this, LabActivity::class.java)) }
@@ -409,6 +414,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 stop.text = getString(if (rr.active) R.string.cancel_big else R.string.close_big)
             }
         }
+        renderHomeMoney()
         // three quiet numbers, and the line under the sonar
         val cands = if (running) cover.candidates() else emptyList()
         val usable = cands.filter { GetInternet.blocker(it, now, null) == null }
@@ -614,6 +620,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val sold = node.store.sessions(1000).count { it.role == "seller" }
         text(R.id.earnTotal, ProductState.cfaShort(gross - fees))
         text(R.id.earnSub, (if (sold == 1) getString(R.string.earn_sessions_one) else getString(R.string.earn_sessions_many, sold)) + (if (fees > 0) getString(R.string.earn_fees, ProductState.cfaShort(fees)) else ""))
+        // v0.15.1: Gagner stays about sharing Internet. The money lives in the Wallet, so
+        // this is one figure and one link, not a second copy of the history.
+        val earnWallet = Wallet.view(node.obligations(), node.identity.idHex, System.currentTimeMillis())
+        show(R.id.earnReceivable, earnWallet.toReceiveCentimes > 0)
+        text(R.id.earnReceivable, getString(R.string.wallet_to_receive) + " · " + Market.cfa(earnWallet.toReceiveCentimes))
+        v<Button>(R.id.btnEarnWallet).setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
         val (n, bytes) = node.store.relayStats()
         text(R.id.earnRelayStats, if (n == 0L) getString(R.string.help_none) else if (n == 1L) getString(R.string.help_carried_one, ProductState.data(bytes)) else getString(R.string.help_carried_many, n.toInt(), ProductState.data(bytes)))
         v<Switch>(R.id.switchRelay).isChecked = node.relayOn
@@ -655,6 +667,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         text(R.id.walletFees, ProductState.cfaShort(obligations.filter { Settlement.isOutstanding(it.status) && it.sellerId == node.identity.idHex }.sumOf { it.prokFeeCentimes }))
         renderPayCard(obligations)
         renderReceiveWith()
+        renderWallet(obligations)
         val list = v<LinearLayout>(R.id.activityList); list.removeAllViews()
         val sessions = node.store.sessions(100)
         show(R.id.activityEmpty, sessions.isEmpty())
@@ -683,6 +696,128 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<Button>(R.id.btnBattery).text = getString(if (pm.isIgnoringBatteryOptimizations(packageName)) R.string.background_allowed else R.string.allow_background)
     }
 
+    // ---- v0.15.1: the Wallet screen ---------------------------------------------------------------
+
+    /**
+     * v0.15.1: Home must not become an accounting screen. One line, only when there is
+     * something to act on, and only when nothing more urgent is already using the space.
+     */
+    private fun renderHomeMoney() {
+        val w = Wallet.view(node.obligations(), node.identity.idHex, System.currentTimeMillis())
+        val line = when {
+            w.toPayCentimes > 0 -> Market.cfa(w.toPayCentimes) + " à payer"
+            w.toReceiveCentimes > 0 -> Market.cfa(w.toReceiveCentimes) + " à recevoir"
+            else -> ""
+        }
+        val slot = v<TextView>(R.id.homeMoney)
+        if (line.isEmpty() || slot.visibility == android.view.View.VISIBLE) return
+        slot.text = line
+        slot.visibility = android.view.View.VISIBLE
+        slot.setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
+    }
+
+    private fun renderWallet(obligations: List<Settlement.Obligation>) {
+        show(R.id.walletPane, walletTab)
+        show(R.id.activityPane, !walletTab)
+        val on = getColor(R.color.text); val off = getColor(R.color.text_muted)
+        v<TextView>(R.id.segActivity).setTextColor(if (walletTab) off else on)
+        v<TextView>(R.id.segWallet).setTextColor(if (walletTab) on else off)
+        if (!walletTab) return
+
+        val me = node.identity.idHex
+        val now = System.currentTimeMillis()
+        val w = Wallet.view(obligations, me, now)
+        val o = WalletUi.overview(w)
+        text(R.id.wvPay, o.toPay); text(R.id.wvReceive, o.toReceive); text(R.id.wvEarned, o.earnedToday)
+        // one figure leads; the others stay quiet
+        v<TextView>(R.id.wvPay).setTextColor(if (o.lead == WalletUi.Lead.TO_PAY) getColor(R.color.text) else getColor(R.color.text_muted))
+        v<TextView>(R.id.wvReceive).setTextColor(if (o.lead == WalletUi.Lead.TO_RECEIVE) getColor(R.color.text) else getColor(R.color.text_muted))
+
+        val dest = node.store.paymentDestination(me)
+        val action = WalletUi.primaryAction(obligations, me, w, dest != null && dest.valid, node.sellOn)
+        text(R.id.wvActionTitle, action.title)
+        text(R.id.wvActionDetail, action.detail)
+        show(R.id.wvActionDetail, action.detail.isNotEmpty())
+        show(R.id.wvActionButton, action.button.isNotEmpty())
+        v<Button>(R.id.wvActionButton).text = action.button
+        v<Button>(R.id.wvActionButton).setOnClickListener {
+            when (action.kind) {
+                WalletUi.ActionKind.PAY -> payDialog(action.counterpartyId, action.amountCentimes)
+                WalletUi.ActionKind.SET_UP_RECEIVING -> receiveWithDialog()
+                else -> {}
+            }
+        }
+        text(R.id.wvActionSecondary, action.secondary)
+        show(R.id.wvActionSecondary, action.secondary.isNotEmpty())
+
+        val r = WalletUi.receiving(dest)
+        text(R.id.wvRecvTitle, r.title); text(R.id.wvRecvDetail, r.detail + "\n\n" + WalletUi.PRIVACY_NOTE)
+        v<Button>(R.id.wvRecvButton).text = r.button
+        v<Button>(R.id.wvRecvButton).setOnClickListener { receiveWithDialog() }
+
+        val groups = WalletUi.history(obligations, me, now)
+        val list = v<LinearLayout>(R.id.wvHistory); list.removeAllViews()
+        show(R.id.wvHistoryTitle, groups.isNotEmpty())
+        for (g in groups) {
+            list.addView(TextView(this).apply {
+                text = g.label; setTextAppearance(R.style.Caption)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = dp(16); bottomMargin = dp(8) }
+            })
+            for (row in g.rows) list.addView(walletRow(row, obligations))
+        }
+    }
+
+    private fun walletRow(row: WalletUi.Row, obligations: List<Settlement.Obligation>): android.view.View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL
+            background = getDrawable(R.drawable.bg_card); setPadding(dp(20), dp(16), dp(20), dp(16))
+        }
+        card.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { bottomMargin = dp(8) }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        left.addView(TextView(this).apply { text = row.title; setTextAppearance(R.style.H2) })
+        left.addView(TextView(this).apply { text = row.counterparty; setTextAppearance(R.style.Muted) })
+        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.END }
+        right.addView(TextView(this).apply { text = row.amount; setTextAppearance(R.style.H2) })
+        right.addView(TextView(this).apply {
+            text = row.chip; setTextAppearance(R.style.Muted)
+            setTextColor(getColor(when (row.tone) {
+                WalletUi.Tone.GOOD -> R.color.ok
+                WalletUi.Tone.ATTENTION -> R.color.warn
+                else -> R.color.text_muted
+            }))
+        })
+        card.addView(left); card.addView(right)
+        card.setOnClickListener { obligations.firstOrNull { it.settlementId == row.settlementId }?.let { walletDetail(it) } }
+        return card
+    }
+
+    /** One transaction, in words a person understands. The engineering is one tap further. */
+    private fun walletDetail(o: Settlement.Obligation) {
+        val me = node.identity.idHex
+        val whenText = dateFmt.format(Date(o.createdAt)) + " · " + timeFmt.format(Date(o.createdAt))
+        val budget = Market.Contract.decode(node.store.sessions(200).firstOrNull { it.sessionHex == o.sessionHex }?.contract)?.buyerBudgetCentimes ?: 0L
+        val d = WalletUi.detail(o, me, budget, whenText)
+        val body = StringBuilder()
+        body.append(d.amount).append("\n\n")
+        body.append(d.statusLabel).append("\n").append(d.statusValue).append("\n\n")
+        body.append(d.withLabel).append("\n").append(d.withValue).append("\n\n")
+        body.append(whenText).append("\n")
+        for ((k, v) in d.lines) body.append("\n").append(k).append("\n").append(v).append("\n")
+        val b = AlertDialog.Builder(this).setTitle(d.title).setMessage(body.toString())
+        if (d.action.startsWith("Payer")) b.setPositiveButton(d.action) { _, _ -> payDialog(o.sellerId, Wallet.netOwedTo(node.obligations(), me, o.sellerId)) }
+        b.setNeutralButton(R.string.wallet_advanced) { _, _ ->
+            AlertDialog.Builder(this).setTitle(R.string.wallet_advanced)
+                .setMessage(d.advanced.joinToString("\n\n") { it.first + "\n" + it.second })
+                .setPositiveButton(R.string.close, null).show()
+        }
+        b.setNegativeButton(R.string.close, null).show()
+    }
+
     // ---- v0.15: paying, and being paid ----------------------------------------------------------
 
     /** The one creditor it makes most sense to settle with now. Small sessions add up first. */
@@ -707,12 +842,25 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun payDialog(sellerId: String, amount: Long) {
         val rails = node.paymentRails.filter { it.available() }
         if (rails.isEmpty()) { toast(getString(R.string.wallet_pay_none)); return }
+        val due = Wallet.payableTo(node.obligations(), node.identity.idHex, sellerId)
+        if (due.isEmpty()) { toast(getString(R.string.wallet_pay_none)); return }
+        val sheet = WalletUi.paymentSheet(due, sellerId, rails.first().displayName())
+        val body = StringBuilder()
+        body.append(sheet.toLabel).append("\n").append(sheet.toValue).append("\n\n")
+        if (sheet.grouping.isNotEmpty()) {
+            body.append(sheet.grouping).append("\n")
+            for ((k, v) in sheet.sessions) body.append("  ").append(k).append("   ").append(v).append("\n")
+            body.append("\n")
+        }
+        body.append(sheet.methodLabel)
         val names = rails.map { it.displayName() }.toTypedArray()
-        AlertDialog.Builder(this).setTitle(Market.cfa(amount)).setItems(names) { _, i ->
-            val note = node.payTo(sellerId, rails[i])
-            if (rails[i].rail == Settlement.Rail.MANUAL_PILOT) referenceDialog(sellerId, note)
-            else { toast(note); refresh() }
-        }.setNegativeButton(R.string.close, null).show()
+        AlertDialog.Builder(this).setTitle(sheet.title).setMessage(body.toString())
+            .setItems(names) { _, i ->
+                val note = node.payTo(sellerId, rails[i])
+                if (rails[i].rail == Settlement.Rail.MANUAL_PILOT) referenceDialog(sellerId, note)
+                else { toast(note); refresh() }
+            }
+            .setNegativeButton(R.string.close, null).show()
     }
 
     /**
@@ -727,9 +875,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 val manual = PaymentRails.ManualPilotRail()
                 if (!manual.looksLikeReference(ref)) { toast(getString(R.string.wallet_reference_hint)); return@setPositiveButton }
                 val me = node.identity.idHex
+                // v0.15.1: one real transfer is one reference. Reusing it silently would
+                // let two different payments claim the same operator transaction.
+                if (node.obligations().any { it.paymentReference == ref && it.sellerId != sellerId }) {
+                    toast(WalletUi.REFERENCE_IN_USE); return@setPositiveButton
+                }
                 for (o in Wallet.payableTo(node.obligations(), me, sellerId))
                     node.store.saveSettlement(Settlement.applyPayment(o, manual.check(ref), Settlement.Rail.MANUAL_PILOT, ref, System.currentTimeMillis()))
-                toast(getString(R.string.wallet_reference_pending)); refresh()
+                AlertDialog.Builder(this).setMessage(WalletUi.referenceAccepted(ref))
+                    .setPositiveButton(R.string.close, null).show()
+                refresh()
             }.setNegativeButton(R.string.close, null).show()
     }
 
