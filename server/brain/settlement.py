@@ -255,6 +255,26 @@ class Settlements:
         c = self.db.execute("SELECT * FROM settlements WHERE settlement_id=?", (sid,))
         return c.fetchone()
 
+    def has_outstanding_between(self, buyer_id: str, seller_id: str) -> bool:
+        """Does this buyer still owe this seller anything right now?
+
+        v0.16.4. The destination check used to ask whether there had EVER been a
+        settlement between the two, which meant a buyer who paid in full six months ago
+        could still ask the Brain for that seller's current Mobile Money number, for ever.
+        A settled debt is not a standing right to somebody's phone number.
+
+        OUTSTANDING is the project's one list of states that mean money is still owed, so
+        it is used rather than copied: CONFIRMED is paid, EXPIRED is closed, and DISPUTED
+        and SECURITY_REVIEW are for a human, not a reason to hand out a number.
+        """
+        if not buyer_id or not seller_id:
+            return False
+        marks = ",".join("?" * len(OUTSTANDING))
+        row = self.db.execute(
+            "SELECT 1 FROM settlements WHERE buyer_id=? AND seller_id=? AND status IN (%s) LIMIT 1"
+            % marks, (buyer_id, seller_id) + tuple(OUTSTANDING)).fetchone()
+        return row is not None
+
     # ---- payment ---------------------------------------------------------------------
 
     def initiate(self, sid: str, rail: str, reference: str, now: int) -> dict:

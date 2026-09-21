@@ -108,17 +108,18 @@ class Handler(BaseHTTPRequestHandler):
     def _owes(self, who: str, seller: str) -> bool:
         """May `who` see where `seller` is paid?
 
-        Only somebody who actually owes them, or the seller itself. A seller's Mobile
-        Money number is a real-world identifier; a node id is not a secret, so it must
-        not be enough to look one up.
+        Only somebody who owes them **right now**, or the seller itself. A seller's Mobile
+        Money number is a real-world identifier; a node id is not a secret, so it must not
+        be enough to look one up - and neither is a debt that was settled months ago.
+
+        The state list lives in settlement.py, so there is one answer to "is this still
+        owed" rather than a copy here that can drift away from it.
         """
         if not seller:
             return False
         if who == seller:
             return True
-        return STATE.settlements.db.execute(
-            "SELECT 1 FROM settlements WHERE buyer_id=? AND seller_id=? LIMIT 1",
-            (who, seller)).fetchone() is not None
+        return STATE.settlements.has_outstanding_between(who, seller)
 
     def _query(self, key: str) -> str:
         if "?" not in self.path:
