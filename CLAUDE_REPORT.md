@@ -1,3 +1,221 @@
+# CLAUDE_REPORT - ProkNet v0.16.4 "migration + destination rotation"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.16.4, build 66. **568 Android tests, 185 server tests, all passing.**
+
+Your message was cut off mid-item-10 ("Once:"), then the rest arrived. Everything
+through item 22 is implemented.
+
+## 1. Database version
+
+8 or 9 -> **10**. `MessageStore` now takes its version from `Migrations.DB_VERSION`, so
+the number and the migration cannot drift apart.
+
+## 2. The exact migration
+
+`if (oldVersion < 10) { createSettlements(db); migrateV10(db) }`.
+
+`migrateV10` reads `PRAGMA table_info`, asks the pure `Migrations.toV10` for a plan, and
+runs it **in one transaction**. An empty plan is the normal case, so it is safe to run
+twice.
+
+`payment_receipts` - rebuilt whenever any column is missing:
+
+```
+CREATE TABLE payment_receipts_v10(<the v10 shape>)
+INSERT INTO payment_receipts_v10(<all columns>) SELECT <present columns, literals for the rest>
+DROP TABLE payment_receipts
+ALTER TABLE payment_receipts_v10 RENAME TO payment_receipts
+```
+
+**Rebuilt rather than ALTERed, deliberately.** `ALTER TABLE ADD COLUMN` appends, so an
+upgraded phone would carry `..., sig, delivered` while a fresh install has
+`..., delivered, sig`. Nothing breaks today - every query is by name - but a phone whose
+table is a different shape from every test database is exactly the situation this work
+exists to end.
+
+`destination_claims` - rebuilt whenever the key is not `(seller_id, rail, version)`:
+
+```
+CREATE TABLE destination_claims_v10(... PRIMARY KEY(seller_id, rail, version))
+INSERT INTO destination_claims_v10(...) SELECT seller_id, rail, msisdn, version,
+    MAX(created_at), sig FROM destination_claims GROUP BY seller_id, rail, version
+DROP TABLE destination_claims
+ALTER TABLE destination_claims_v10 RENAME TO destination_claims
+```
+
+The GROUP BY exists so a database that somehow holds two rows for one version keeps the
+later one instead of failing the whole upgrade - a phone that cannot open its own
+database is worse than a duplicate.
+
+Nothing is fabricated: if `payment_receipts` lacked `sig`, `payment_id`, `seller_id` or
+`buyer_id`, the migration refuses. A receipt with an invented signature looks like
+evidence that money arrived and verifies against nobody.
+
+## 3. Old schemas actually tested
+
+The `CREATE TABLE` text is copied from the commits, not reconstructed:
+
+| fixture | source | what is wrong with it |
+|---|---|---|
+| build 62 | commit `6f22ec6` | `payment_receipts` has no `delivered`; `destination_claims` is `PRIMARY KEY(seller_id, rail)` |
+| build 63 | commit `867dae6` | correct already |
+| build 64 | build 63 + `pay_sync` + `receipt_rules` | correct already |
+
+Each is a real SQLite database (`org.xerial:sqlite-jdbc`, **test scope only, never in
+the APK**), and what runs against it is `Migrations.toV10`.
+
+A test asserts build 62 really is missing `delivered` and really does key on
+`(seller_id, rail)` - if that stops being true the rest of the file proves nothing. Another
+shows the failure directly: on a build-62 database, inserting claim v2 leaves **one** row,
+so there is no previous claim and cooling cannot work.
+
+## 4. Rows preserved
+
+- every receipt survives, count unchanged;
+- `sig` is compared byte for byte after the rebuild - a receipt whose signature changed is
+  not evidence;
+- an existing receipt comes through as `delivered=0`, the safe direction: it is offered to
+  the buyer again rather than silently treated as done;
+- every destination claim survives, and a new one can then be added beside it;
+- `receipt_rules`, `payment_expectations` and `settlements` are untouched - asserted by
+  comparing their full shape before and after, and by reading back a live expectation, a
+  signed rule config and an outstanding settlement.
+
+## 5. Fresh vs upgraded
+
+Identical. A test compares, for both tables, the **name, type, NOT NULL, default, key
+ordinal and column order** of every column plus the index list, between a database built
+fresh and one upgraded from build 62.
+
+## 6. Receipt redelivery after migration
+
+`receiptDelivered`'s exact SQL is run against the migrated database: 0 before marking, 1
+after. Before the migration that query would have failed outright.
+
+## 7. Destination history preservation
+
+`previousDestinationClaim`'s exact SQL is run against the migrated database and returns
+the older number - which is what cooling falls back to.
+
+## 8. Local destination rotation
+
+`sendDestinationTo` now sends `activeDestination(now)` with **that version's** signature,
+not the newest configured claim. Sending the newest was a real bug: during the ten-minute
+window the buyer built an expectation against a number the seller was not watching, and
+the seller refused its own buyer's payment.
+
+`configuredDestination()` and `activeDestination(now)` are separate on purpose. The
+settings screen may say "Airtel, en attente" while every payment still goes to MTN.
+
+The buyer picks its destination with the same shared function, so both sides of one
+conversation are looking at the same claim.
+
+## 9. Brain destination rotation
+
+`GET /v1/pay/destinations` already returned the active claim; it now decides which one
+that is from the claim's **signed `created_at`** rather than `stored_at`. See 12.
+
+The phone also pushes **every** claim the Brain has not seen, not only the newest. A phone
+that was offline when it made v1 and came back after making v2 would otherwise leave the
+Brain believing v2 was the only claim there had ever been, and it would hand buyers the new
+number with no cooling at all.
+
+## 10. Periodic destination refresh
+
+`creditorsWithoutDestination()` -> `creditorsNeedingDestinationRefresh()`: **every**
+outstanding creditor, on the normal sync cadence, whether or not a claim is already held.
+Repeating the question is a no-op - the same version is idempotent, a lower one is refused,
+only a higher one changes anything - and the log line only appears when something actually
+changed.
+
+## 11. Expectations stay pinned
+
+`sellerDecision` took one destination hash, so the moment cooling ended it began refusing
+expectations it had itself asked for minutes earlier. It now takes a set, and
+`DestinationClaim.acceptableHashes(claims, now, askedAt)` returns what is active now AND
+what was active when that buyer asked. Normally that is the same single hash.
+
+A brand-new expectation against the old number after the switch is still refused: the pin
+is for expectations that already exist, not a second live destination.
+
+## 12. Kotlin / Python active-destination agreement
+
+**A second cross-language divergence was already present.** The phone measured the cooling
+window from the claim's signed `createdAt`; the server measured it from `stored_at`, the
+moment it happened to receive the claim - a number the phone cannot see. A phone offline
+for an hour would have moved to its new number while the Brain still sent buyers to the
+old one, and neither side could have reported the disagreement.
+
+`server/tests/fixtures/crosslang.json` now carries ten timeline cases: only v1; inside
+cooling; one millisecond before the boundary; the exact boundary; after it; the same for a
+same-operator number change; three claims (the PREVIOUS one, not the oldest); and a claim
+whose timestamp is in the future. `DestinationClaim.active` and `PayBox.active_destination`
+must both produce `expected_version`. I checked it bites: restoring `stored_at` fails five
+of these.
+
+## 13. Outstanding-only destination authorization
+
+`Settlements.has_outstanding_between` uses `OUTSTANDING` - PENDING, PAYMENT_INITIATED,
+PAYMENT_SEEN - so there is one answer to "is this still owed" rather than a copy in
+`app.py` that can drift. CONFIRMED, EXPIRED, DISPUTED and SECURITY_REVIEW do not qualify.
+
+## 14. Paid former buyer
+
+403. A test settles the obligation and then asserts the refusal body contains no number in
+either form, no rail, no destination hash and no `destinations` key at all. Tests also
+cover expired/disputed/security-review, each of the three owed states, and the seller
+always being able to read its own.
+
+## 15. Totals, version, artefacts
+
+| | |
+|---|---|
+| Android tests | **568** (was 536) |
+| Server tests | **185** (was 174) |
+| Version / build | **0.16.4 / 66** |
+| APK SHA256 | `0c36d2c4c271554f46a8d4a867d318cd84c4b3b48b901ad4655fd475230c913a` |
+
+## 16. Hardware status - unchanged
+
+- **Hardware-proven:** Bluetooth/L2CAP Internet, VPN browsing, provider activation and
+  recovery, pricing and contracts, buyer/seller graceful stops, the signed final
+  checkpoint.
+- **Software-proven only:** automatic Mobile Money receipt detection, the payment
+  expectation flow, seller-signed receipts, the Brain payment path, anti-reinstall risk,
+  signed parser updates, and everything in v0.16.4.
+- Real MTN/Airtel message parsing stays unproven until you make an actual Mobile Money
+  payment.
+
+## 17. Remaining limitations
+
+- The migration is proven against real databases built from the historical SQL, but has
+  **not** run on a real upgraded phone. TESTING 70a is that test, and it needs a phone that
+  has not been wiped since build 62. If both phones have been reinstalled, say so rather
+  than reporting a pass.
+- The parser has still never seen a real MTN or Airtel message.
+- A seller has one active receiving destination. Simultaneous MTN and Airtel would be a
+  product change, not a bug fix.
+- `PAYMENT_OPERATOR_VERIFIED` is still produced by nothing; no operator webhook secret.
+- Key rotation for parser rules still needs a new APK.
+- A buyer refreshes destinations on the sync cadence, so a seller who changes their number
+  while a buyer is completely offline is learned about at the next sync, not sooner.
+
+## 18. Definition of done
+
+A phone on any earlier v0.16 build can upgrade without losing or corrupting payment state;
+the local and Brain paths expose the same active destination; changes pass through cooling
+cleanly; buyers with unresolved debt keep learning newer destinations; and once the debt is
+paid they lose access to that number.
+
+Payment architecture work stops here unless hardware testing finds a real defect. v0.17
+next when you say so.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.16.3 "final payment hardening"
 
 Date: 2026-09-21

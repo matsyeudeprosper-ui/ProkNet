@@ -2953,3 +2953,80 @@ Expected: identical behaviour. The local path never waits for a server.
 - Published wording breaking wording that already worked in 69c.
 - Anything but 401 in 69d.
 - Any regression in sections 59 to 68.
+
+## 70. v0.16.4 upgrading, and changing your number
+
+### 70a. Upgrade an old install (THE test for this release)
+
+This only works on a phone that has **not** been wiped. If either phone has had
+ProkNet uninstalled since build 62, this section cannot be run on it and that
+must be said in the report rather than glossed over.
+
+Before installing build 66, on the OUKITEL: run a paid session so there is a
+real obligation, and note what Wallet shows.
+
+Install build 66 over the top. Do **not** uninstall first.
+
+Expected: the app opens normally, Wallet shows the same obligations and the same
+amounts, and Activité shows the same history. COPY NETWORK must show the payment
+lines it showed before.
+
+**FAIL** if the app crashes on first open, if any obligation disappears, or if an
+amount changes.
+
+### 70b. A receipt still reaches the buyer after the upgrade
+
+If a receipt was waiting to be delivered before the upgrade, bring the two phones
+together after it.
+
+Expected: the buyer's debt clears. Nothing needs re-running.
+
+### 70c. Change your number
+
+On the OUKITEL, under Gagner -> Réglages du partage, change the Mobile Money
+number (same operator is fine; a different operator is better).
+
+Expected immediately: the screen shows the new number and says it will be used in
+a few minutes.
+
+Now, with a debt outstanding, tap PAYER on the OnePlus.
+
+Expected, for the next ten minutes: the OnePlus is shown the **OLD** number, and
+the seller accepts the payment. This is deliberate - a payment already on its way
+must still land somewhere valid.
+
+Wait ten minutes. Tap PAYER again.
+
+Expected: the OnePlus is now shown the **NEW** number, with no restart, no
+reinstall, and without the seller saving the number again.
+
+**FAIL** if the new number appears immediately for payment, if the seller refuses
+a payment started during the cooling window, or if the old number is still handed
+out after ten minutes.
+
+### 70d. The same, with the phones apart
+
+Repeat 70c with the OnePlus out of Bluetooth range and the Brain configured.
+
+Expected: identical. The Brain hands out the same number the seller would have.
+
+### 70e. Paying everything ends the access
+
+Pay off the debt completely. Then, on the VPS:
+
+```
+curl https://<brain>/v1/pay/destinations?seller=<seller id>
+```
+
+signed as the buyer, using whatever you normally use.
+
+Expected: **403**. A settled debt is not a standing right to somebody's phone
+number.
+
+### What would make this a FAIL
+
+- Anything lost or changed by the upgrade in 70a.
+- The new number being used for payment immediately in 70c.
+- The seller refusing a payment it was itself asked for.
+- The old number still being handed out after the cooling window.
+- Any regression in sections 59 to 69.

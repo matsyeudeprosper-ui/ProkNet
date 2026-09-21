@@ -3654,3 +3654,89 @@ to say which half was true.
 `server/tests/test_atomicity.py` injects a failure in the middle of each one and
 compares a full snapshot of every money table before and against after. Six of those
 tests fail if `_set` starts committing again.
+
+## v0.16.4 upgrading a phone, and rotating a destination
+
+### The database migration that was never written
+
+The database version tells the story:
+
+| build | version | app DB version |
+|---|---|---|
+| 62 | v0.16.0 | 8 |
+| 63 | v0.16.1 | 8 - **schema changed, version did not** |
+| 64 | v0.16.2 | 9 |
+| 65 | v0.16.3 | 9 |
+| 66 | v0.16.4 | **10** |
+
+v0.16.1 changed `payment_receipts` (adding `delivered`) and `destination_claims`
+(`PRIMARY KEY(seller_id, rail)` to `(seller_id, rail, version)`) without bumping the
+version, so no upgrade step ever ran. v0.16.2 and v0.16.3 bumped to 9 but only called
+`CREATE TABLE IF NOT EXISTS`, which does nothing at all to a table that already
+exists.
+
+A phone running since build 62 therefore still had the build-62 shapes. On it,
+`receiptDelivered` queries a column that is not there, and saving a new destination
+REPLACES the old one, so there is no previous claim and the cooling period silently
+stops working. Every test passed, because every test built its database from nothing.
+
+`Migrations.toV10` is a pure function from the schema SQLite reports to the statements
+needed, so it can be tested against real databases built with the historical
+`CREATE TABLE` text. `MessageStore.migrateV10` reads `PRAGMA table_info`, runs the
+plan in one transaction, and does nothing when there is nothing to do - so running it
+twice is safe.
+
+Both tables are **rebuilt**, not altered, even for the single missing `delivered`
+column. `ALTER TABLE ADD COLUMN` appends, so an upgraded phone would have
+`..., sig, delivered` while a fresh install has `..., delivered, sig`. Nothing breaks
+today, since every query is by name - but a phone whose table is a different shape
+from every test database is precisely the situation this work exists to end. A test
+compares names, types, NOT NULL, defaults, key ordinals, column order and indexes
+between a fresh install and an upgraded one.
+
+Nothing is fabricated. If `payment_receipts` were missing `sig` the migration refuses
+rather than writing an empty signature, because a receipt with a fabricated signature
+looks like evidence that money arrived and verifies against nobody.
+
+### Destination rotation
+
+A seller has one place they are paid. Changing it starts a ten-minute cooling window
+during which buyers are still sent to the OLD number, so a transfer already on its way
+still lands somewhere valid. Three things had to be true at once and were not:
+
+1. **The claim handed to a buyer must be the active one, not the newest configured
+   one.** `sendDestinationTo` sent the newest, so during cooling the buyer built an
+   expectation against a number the seller was not watching and the seller refused its
+   own buyer's payment. There are two different truths - `configuredDestination()` and
+   `activeDestination(now)` - and they must not be mixed. The settings screen may say
+   "Airtel, en attente" while every payment in flight still goes to MTN.
+2. **A buyer must keep asking for newer claims.** `creditorsWithoutDestination()` only
+   asked when the buyer had none, so a seller could change their number and the buyer
+   would pay the old one until the debt was settled.
+   `creditorsNeedingDestinationRefresh()` asks for every outstanding creditor on every
+   sync; repeating the question is a no-op because a claim that is not newer changes
+   nothing.
+3. **An expectation already created stays pinned.** The seller compared against one
+   hash, so the moment cooling ended it began refusing expectations it had itself asked
+   for minutes earlier. `DestinationClaim.acceptableHashes` returns what is active now
+   AND what was active when that buyer asked - normally the same single hash.
+
+The window is measured from the claim's own signed `createdAt`. The server used to
+measure it from `stored_at`, the moment it happened to receive the claim - a number the
+phone cannot see. A phone offline for an hour would have moved to its new number while
+the Brain still sent buyers to the old one, and neither side could have noticed.
+`server/tests/fixtures/crosslang.json` now carries ten timeline cases that
+`DestinationClaim.active` and `PayBox.active_destination` must both answer identically.
+
+The phone also pushes **every** claim the Brain has not seen, not only the newest,
+because the Brain works out which one is active from the history.
+
+### A settled debt is not a standing right to a phone number
+
+`_owes` authorised a destination read if there had ever been a settlement between the
+two parties, so a buyer who paid in full six months ago could still ask the Brain for
+that seller's current Mobile Money number, for ever.
+`Settlements.has_outstanding_between` uses the project's one list of states that mean
+money is still owed - PENDING, PAYMENT_INITIATED, PAYMENT_SEEN - rather than a copy
+that can drift. CONFIRMED is paid, EXPIRED is closed, and DISPUTED and SECURITY_REVIEW
+are for a human, not a reason to hand out a number.
