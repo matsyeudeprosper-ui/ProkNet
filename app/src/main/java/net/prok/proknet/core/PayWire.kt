@@ -200,16 +200,22 @@ object PayWire {
      * @param outstanding     what each named settlement still owes, from the seller's own records
      * @param liveSameAmount  a live accepted expectation for this amount already exists
      */
+    /**
+     * @param myDestHashes every destination of ours this expectation may name. Normally
+     *        one. During a change it is also the one that was active when the buyer asked,
+     *        because a buyer sent to a kiosk with the old number must not be refused for
+     *        having done exactly what it was told. See `DestinationClaim.acceptableHashes`.
+     */
     fun sellerDecision(
-        s: SignedExpectation, buyerPub: ByteArray?, myId: String, myDestHash: String,
+        s: SignedExpectation, buyerPub: ByteArray?, myId: String, myDestHashes: Set<String>,
         outstanding: Map<String, Long>, liveSameAmount: Boolean, ready: Boolean, now: Long,
     ): Reply {
         val e = s.expectation
         if (e.sellerId != myId) return Reply.NOT_FOR_ME
         if (buyerPub == null || !verifyExpectation(s, buyerPub)) return Reply.BAD_SIGNATURE
         if (!ready) return Reply.NOT_READY
-        if (myDestHash.isEmpty()) return Reply.UNKNOWN_DESTINATION
-        if (e.destinationHash != myDestHash) return Reply.UNKNOWN_DESTINATION
+        if (myDestHashes.isEmpty()) return Reply.UNKNOWN_DESTINATION
+        if (e.destinationHash !in myDestHashes) return Reply.UNKNOWN_DESTINATION
         if (now >= e.expiresAt) return Reply.EXPIRED
         if (e.expiresAt - e.createdAt > 2 * PaymentExpectation.DEFAULT_WINDOW_MS) return Reply.EXPIRED
         if (e.includedSettlementIds.isEmpty() || e.amountCentimes <= 0) return Reply.BAD_AMOUNT

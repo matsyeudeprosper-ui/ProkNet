@@ -300,6 +300,14 @@ class PayBox:
         never a moment when neither works and a transfer already on its way still lands
         somewhere valid. That holds across a rail change too: a seller who moves from MTN
         to Airtel keeps receiving on MTN until the window closes.
+
+        v0.16.4: the window is measured from the claim's own **created_at**, which is
+        inside the bytes the seller signed. It used to be measured from `stored_at`, the
+        moment this server happened to receive it - a number the phone cannot see and does
+        not share. A phone that was offline for an hour would have moved to its new number
+        while the Brain still told buyers to use the old one, and nothing on either side
+        could have noticed the disagreement. `DestinationClaim.usableFrom` on the phone
+        uses the same field, and a shared fixture pins the two together.
         """
         rows = self.db.execute(
             "SELECT * FROM pay_destinations WHERE seller_id=? ORDER BY version DESC LIMIT 2",
@@ -309,7 +317,7 @@ class PayBox:
         newest = rows[0]
         if len(rows) == 1:
             return newest
-        if now >= int(newest["stored_at"]) + cooling_ms:
+        if now >= int(newest["created_at"]) + cooling_ms:
             return newest
         return rows[1]
 

@@ -85,6 +85,48 @@ object DestinationClaim {
 
     fun usable(c: Claim, previous: Claim?, now: Long): Boolean = now >= usableFrom(c, previous)
 
+    /**
+     * v0.16.4: which of a seller's claims a payment should use at [now].
+     *
+     * The newest one, unless it is still cooling, in which case the one before it - so
+     * there is never a moment when neither works and a transfer already on its way still
+     * lands somewhere valid. A rail change is not special: a seller has one place it is
+     * paid, and the operator is simply part of what changed.
+     *
+     * The window is measured from the claim's own [Claim.createdAt], which is inside the
+     * bytes the seller signed. `PayBox.active_destination` on the server measures it from
+     * the same field, and `server/tests/fixtures/crosslang.json` holds the cases both must
+     * answer identically. It used to use the moment the server received the claim, which
+     * the phone cannot see: a phone offline for an hour would have moved to its new number
+     * while the Brain still sent buyers to the old one.
+     *
+     * Pure, and takes the claims rather than a store, so the fixture runs the same
+     * function the phone runs.
+     */
+    fun active(claims: List<Claim>, now: Long): Claim? {
+        if (claims.isEmpty()) return null
+        val ordered = claims.sortedByDescending { it.version }
+        val newest = ordered[0]
+        val previous = ordered.getOrNull(1) ?: return newest
+        return if (usable(newest, previous, now)) newest else previous
+    }
+
+    /**
+     * v0.16.4: the destination hashes a seller must still accept a payment to.
+     *
+     * Two, during a change: the one that is active now, and the one that was active when
+     * the buyer asked. A buyer given the old number just before the cooling window closed
+     * has already walked to a kiosk with it, and the facts inside a signed expectation -
+     * rail, destination, amount - cannot be rewritten afterwards. Refusing it because the
+     * seller has since moved on would make the seller reject a payment it had itself asked
+     * for, minutes earlier.
+     *
+     * Usually one hash, because usually nothing has changed.
+     */
+    fun acceptableHashes(claims: List<Claim>, now: Long, askedAt: Long): Set<String> =
+        listOfNotNull(active(claims, now), active(claims, askedAt))
+            .map { it.hash() }.toSet()
+
     fun coolingLine(): String = "Nouveau numéro enregistré. Il sera utilisé dans quelques minutes."
 
     // ---- the wire ----------------------------------------------------------------------------------

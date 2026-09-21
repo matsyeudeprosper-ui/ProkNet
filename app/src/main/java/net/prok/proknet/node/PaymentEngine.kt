@@ -108,7 +108,11 @@ class PaymentEngine(
      * does not assert that anything has been paid.
      */
     fun beginPayment(sellerId: String, now: Long = System.currentTimeMillis()): PaymentExpectation.Creation {
-        val dest = store.destinationClaim(sellerId)
+        // v0.16.4: the claim the SELLER considers active, worked out from the same signed
+        // timestamps with the same function the seller uses. Taking simply the newest
+        // claim we hold would build an expectation against a number the seller has not
+        // started watching yet, and the seller would refuse its own buyer.
+        val dest = DestinationClaim.active(store.destinationClaims(sellerId), now)
             ?: return PaymentExpectation.Creation(null, PaymentExpectation.Refusal.NO_DESTINATION,
                 "Le fournisseur n'a pas encore indiqué où recevoir son paiement.")
         val due = Wallet.payableTo(store.settlements(), identity.idHex, sellerId)
@@ -198,7 +202,10 @@ class PaymentEngine(
         val s = net.prok.proknet.core.PayWire.parseExpectation(line)
             ?: return net.prok.proknet.core.PayWire.Reply.BAD_SIGNATURE
         val e = s.expectation
-        val dest = activeDestination(now)
+        // v0.16.4: what we would tell a buyer now, AND what we told this buyer when it
+        // asked. A signed expectation's destination is a fact, not a preference.
+        val claims = store.destinationClaims(identity.idHex)
+        val acceptable = DestinationClaim.acceptableHashes(claims, now, e.createdAt)
         // what those sessions still owe, from our own settlement records
         val outstanding = e.includedSettlementIds.associateWith { id ->
             store.settlement(id)?.let { if (Settlement.isOutstanding(it.status)) it.buyerOwes else 0L } ?: -1L
@@ -207,7 +214,7 @@ class PaymentEngine(
             it.active(now) && it.amountCentimes == e.amountCentimes && it.rail == e.rail && it.buyerId != e.buyerId
         }
         val reply = net.prok.proknet.core.PayWire.sellerDecision(
-            s, buyerPub, identity.idHex, dest?.hash() ?: "", outstanding, busy,
+            s, buyerPub, identity.idHex, acceptable, outstanding, busy,
             sellerReadiness() == Trust.SellerReadiness.READY, now)
         if (reply == net.prok.proknet.core.PayWire.Reply.ACCEPTED) {
             accepted[e.paymentId] = e
@@ -270,16 +277,18 @@ class PaymentEngine(
     }
 
     /**
-     * v0.16.2: providers we owe and have no payment destination for.
+     * v0.16.4: every provider we still owe, whether or not we already hold a claim.
      *
-     * On the local path the seller hands its destination over in person. A buyer who left
-     * before that happened owes money with nowhere to send it, so the Brain fetches the
-     * seller's own signed claim instead.
+     * v0.16.2 asked only about creditors we had NO destination for. That meant a buyer who
+     * had learnt v1 never asked again: the seller could change their number, the buyer
+     * would keep the old one for as long as the debt lasted, and the seller would refuse
+     * the expectation when it finally arrived. Asking every time is safe and cheap,
+     * because a claim that is not newer is ignored - the same version is idempotent, a
+     * lower one is refused, and only a higher one changes anything.
      */
-    fun creditorsWithoutDestination(): List<String> = store.settlements(200)
+    fun creditorsNeedingDestinationRefresh(): List<String> = store.settlements(200)
         .filter { it.buyerId == identity.idHex && Settlement.isOutstanding(it.status) }
         .map { it.sellerId }.distinct()
-        .filter { store.destinationClaim(it) == null }
 
     /** Every buyer with an outstanding debt to us, so they can be told where to pay. */
     fun myDebtors(): List<String> = store.settlements(200)
@@ -287,12 +296,21 @@ class PaymentEngine(
         .map { it.buyerId }.distinct()
 
     /** Push the destination to everybody who owes us and can be reached right now. */
-    fun publishDestination(): Int = myDebtors().count { sendDestinationTo(it) }
+    fun publishDestination(now: Long = System.currentTimeMillis()): Int =
+        myDebtors().count { sendDestinationTo(it, now) }
 
-    /** Hand our signed destination to a buyer that owes us. */
-    fun sendDestinationTo(buyerId: String): Boolean {
-        val c = myDestination() ?: return false
-        val sig = store.destinationSig(identity.idHex) ?: return false
+    /**
+     * Hand a buyer the destination it should pay to.
+     *
+     * v0.16.4: the **active** claim, not simply the newest one. During the ten minutes
+     * after a change those are different, and sending the newest one was a real bug: the
+     * buyer would build an expectation against the new number while the seller was still
+     * watching the old one, so the seller refused its own buyer's payment. The two sides
+     * of one conversation must be looking at the same destination.
+     */
+    fun sendDestinationTo(buyerId: String, now: Long = System.currentTimeMillis()): Boolean {
+        val c = activeDestination(now) ?: return false
+        val sig = store.destinationSig(identity.idHex, c.version) ?: return false
         return send?.invoke(buyerId, net.prok.proknet.core.PayWire.destinationClaim(c, sig)) ?: false
     }
 
@@ -304,9 +322,19 @@ class PaymentEngine(
     fun activeDestination(now: Long = System.currentTimeMillis()): DestinationClaim.Claim? {
         val newest = store.destinationClaim(identity.idHex) ?: return null
         val previous = store.previousDestinationClaim(identity.idHex, newest.version)
-        if (previous == null) return newest
-        return if (DestinationClaim.usable(newest, previous, now)) newest else previous
+        // v0.16.4: the decision itself is pure and shared with the cross-language fixture
+        return DestinationClaim.active(listOfNotNull(newest, previous), now)
     }
+
+    /**
+     * v0.16.4: the newest claim the seller has CONFIGURED, which during a cooling period
+     * is not the one buyers are being paid to.
+     *
+     * Two different truths, deliberately kept apart. The settings screen may say "Airtel,
+     * en attente" while every payment in flight is still going to the old MTN number.
+     * Mixing them is what made the seller refuse its own buyer's payment.
+     */
+    fun configuredDestination(): DestinationClaim.Claim? = myDestination()
 
     // ---- a candidate message arrives ----------------------------------------------------------------
 
