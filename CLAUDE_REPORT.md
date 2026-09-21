@@ -1,180 +1,279 @@
-# CLAUDE_REPORT - ProkNet v0.15.3 "end-to-end settlement trust"
+# CLAUDE_REPORT - ProkNet v0.16.0 "automatic Mobile Money receipt verification"
 
 Date: 2026-09-21
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 408/408 Android tests and 70/70 server tests pass, released
-as build 61. Three gaps closed, no new features. Hardware acceptance is
-TESTING 65.**
+Status: **built, 455/455 Android tests and 70/70 server tests pass, released
+as build 62. Hardware acceptance is TESTING 66, and it needs one real Mobile
+Money transfer.**
 
 | | |
 |---|---|
-| `ed69f52` | android: persist and submit signed settlement evidence |
-| `f8a1ba6` | server: enforce settlement and payment submitter authorization |
-| `c9bd13c` | ui: Compte belongs to Activité only |
+| `541e458` | fix: settlement retries for ever + old-obligation backfill |
+| `a10895e` | payments: signed destination, sources, parser, matcher, trust |
+| `50109e7` | ui: automatic cash-to-Mobile-Money flow, capture and persistence |
 
-All three gaps you named were real. I checked each in the code before
-changing anything.
+The product rule held throughout: **nobody in Congo changes how they pay.**
+Cash to any kiosk, the seller's ordinary number, walk away. The kiosk installs
+nothing and has never heard of ProkNet. Everything below exists so the seller's
+phone can notice the operator's own message and clear the debt by itself.
 
----
+## 1. Receipt capture architecture
 
-## 1. Android evidence persistence
+Two sources behind one abstraction, so the rest of ProkNet never asks which one
+produced a candidate:
 
-**Almost nothing had to be stored that was not already stored**, which is the
-best possible answer to your second point. The `sessions` table already keeps
-the contract bytes with both signatures; the `checkpoints` table already keeps
-each checkpoint body with the seller signature and the buyer countersignature.
-Every byte the server's verifier needs was durable from the moment the session
-ended.
+```
+ReceiptCapture
+ ├── SmsReceiptReceiver        DIRECT_SMS
+ └── ReceiptListener           DEFAULT_SMS_NOTIFICATION
+          ↓
+    DeviceReceipt.Candidate  →  ReceiptParser  →  PaymentExpectation.match
+                                              →  DeviceReceipt.Receipt (seller-signed)
+```
 
-The only new table is `settlement_sync`: the queue state, not the evidence.
-Schema version 6 to 7, migrating by creating the new table.
+Capture and interpretation are kept apart deliberately: an operator rewording
+its messages must never require touching the Android plumbing, and an Android
+API change must never touch the money logic.
 
-`core/Evidence.kt` assembles the package **from the database**, never from a
-live object. That is what makes a settlement survive a restart: the session
-ended days ago and every byte it signed is still on disk. Public keys come from
-`identity.pubBytes` and the `peer_keys` row learned during the handshake.
+## 2. Notification versus direct SMS
 
-It sends evidence, not results. The claimed settlement id and gross travel as
-optional cross-checks the server may refuse us on, exactly as you specified.
+| Source | Confidence | Why |
+|---|---|---|
+| `DIRECT_SMS` | `DEVICE_SMS_VERIFIED` | the sender address comes from the network |
+| `DEFAULT_SMS_NOTIFICATION` | `DEVICE_NOTIFICATION_VERIFIED` | a notification is a rendering, not the message |
 
-**No unsigned fallback.** `Evidence.build` returns a `Missing` reason rather
-than throwing, and there is deliberately no branch that asks the server to
-trust a local amount. The reasons are ordinary: a free session owes nothing, a
-session whose closing checkpoint was never countersigned has nothing anybody
-may be billed for, a v1 session is out of scope. In each case no submission is
-ever attempted, and the phone still shows the local obligation honestly.
+The notification source is the practical one, because `RECEIVE_SMS` is
+restricted on Play and ProkNet has no business becoming anybody's SMS app. The
+direct source is feature-gated and simply never fires without the permission.
 
-## 2. Signed request
+The obvious attack is that any app can post "you have received 50 CFA", so a
+notification counts **only** when the phone's default SMS application posted
+it, which a hostile app cannot become silently. Screenshots, clipboard text,
+buyer-supplied text and typed sentences are not sources, and there is no method
+in the codebase that accepts them.
 
-`core/SignedApi.kt` is the phone half of `signed_request.py`: identity,
-timestamp, nonce, and a signature over
-`ProkNet-api-1|ts|nonce|sha256(body)`.
+## 3. Generic parser design
 
-**The body is built once and the same array is signed and written.** Your
-warning about re-serialising was the right one to give: a different key order
-or one extra space changes the hash. The code makes it structurally impossible
-rather than merely avoiding it, and a test flips one byte of the body to prove
-the verification fails.
+No template, anywhere. `if (text.startsWith("Vous avez reçu"))` would be a
+payment system that stops clearing debts the day MTN adds a promotional line.
 
-I also ported the verifier to Kotlin so the two halves can be checked against
-each other on this side of the wire, rather than discovering a mismatch on the
-phones.
+Normalise accents, case, unicode spaces, separators. Then **score**: credit
+words pull one way; sending, withdrawal and debit words pull the other and
+outrank them; OTP, promotional and balance-only messages are refused outright.
 
-## 3. Sync queue, retry and offline behaviour
+The dictionaries are data, so an operator rewording can arrive later as a
+**signed** configuration rather than a new APK. A test proves a phrase we have
+never seen starts working when it is added to the rules, with no code change.
 
-`node/SettlementSync.kt`. Queued on settlement by both phones independently;
-drained on the existing brain-sync timer and immediately after a session, on a
-background executor.
+## 4. Amount extraction
 
-- Doubling backoff from 30 seconds to a 6 hour ceiling, capped at 12 attempts.
-  No tight loop, and a phone back from a week offline does not hammer the
-  server.
-- **A failed submission never touches the local obligation.** The queue row
-  carries the failure; the money is untouched.
-- A retry is a new timestamp, a new nonce and a new signature over the **same
-  deterministic settlement**, so it is a fresh request rather than a replay.
-- **A duplicate is success.** The id is derived from signed facts, so "already
-  reported" is exactly the outcome we wanted.
-- 400 and 403 stop the retries, because the evidence itself is wrong and
-  resending the same bytes cannot help. 401 (clock skew, reused nonce), 5xx and
-  timeouts stay retryable.
+Every number competes. Each is scored on proximity to receipt verbs and to a
+currency token, and pushed down by a preceding "solde"/"balance", by being nine
+digits or more (a phone number or transaction id; no payment between two people
+is a hundred million francs), and by sitting inside a date or clock time, which
+are masked before extraction.
 
-**Offline-first is preserved.** The server is a witness, not a participant. Two
-phones still find each other, agree a price, share Internet and settle with
-nobody else involved. Both phones report independently and the server
-reconciles; neither waits for the other.
+Thousands separators and fractions are told apart by shape rather than guessed:
+`1 250`, `1.250`, `1,250` are all 1250, while `50,75` is a fraction.
 
-## 4. Server: payment initiation authorization
+The expected amount is the strongest single signal, and it can only ever
+*promote* a number genuinely present. A test proves that waiting for 50 and
+receiving a message saying 40 never produces 50.
 
-Your reading was exact. `/v1/payments/initiate` verified the request signature
-and then trusted `buyer_id` from the JSON body, so any valid Prok identity
-could start a payment in somebody else's name.
+## 5. No-reference matching
 
-- the authenticated submitter must **be** the buyer named in the payment, or
-  403, and the stored buyer is now taken from the verified identity rather than
-  the body;
-- a payment must name its seller, and every allocation must belong to that same
-  buyer and seller, so one transfer cannot pay one seller for another's work;
-- `payment_destinations` records where a seller is paid per rail; a payment
-  naming a different destination for a seller already on record is refused as a
-  security review rather than sent somewhere new on a phone's say-so.
+Seller + rail + exact amount + a twenty-minute window + a message on the
+seller's phone. Nothing else, and no test in the suite supplies a reference,
+because in real life nobody will. If the operator happens to include one it is
+kept as extra evidence and is never required.
 
-Request replay and payment idempotency stay separate, as you insisted: a fresh
-nonce satisfies the request layer, while the same rail and operator reference
-is still recognised as the same real transfer. A test asserts both at once.
+The amount must be **exact**. A kiosk sends what it is told, so "close enough"
+means somebody else's payment.
 
-## 5. Activity / Wallet / Compte
+## 6. Ambiguity handling
 
-You were right, and I confirmed it in the layout before touching it: the Compte
-section closed **outside** both `activityPane` and `walletPane`, so switching to
-Wallet left the account, network and developer cards under the money screen.
+Prevented rather than resolved. One seller may not hold two live expectations
+for the same amount on the same rail; the second buyer is asked to wait a few
+minutes. Different amounts run concurrently without trouble.
 
-The whole section moved inside `activityPane`. Selecting Wallet now hides it
-with the history.
+Two things I deliberately did not do, both of which would have been easier:
 
-Two smaller things while I was there. The summary card led with nothing when
-both figures were zero, leaving three equal zeros; it now leads with whatever
-needs action and falls back to the informational figure. And server
-verification state appears in the transaction detail under "Détails
-techniques" and nowhere else — a consumer card never mentions a server, and an
-obligation that has not reached one is not shown as wrong.
+- **No fingerprinting centimes.** Charging somebody 51 CFA instead of 50 to
+  tell their transfer apart is taking their money to solve our problem.
+- **No reference requirement.** It would work, and it would break the habit the
+  whole release exists to preserve.
 
-## 6. Tests
+If two expectations somehow do fit, nothing is chosen. If the parser is unsure,
+nothing is cleared. A false negative costs a retry; a false positive gives away
+Internet.
 
-408 Android JVM tests (+12) and 70 server tests (+15).
+## 7. Seller destination binding
 
-- `EvidenceTest` (10): the package shape against the server's required fields,
-  both roles, the cross-check, every `Missing` case, signature over exact bytes
-  with a tampered-byte check, skew, retry freshness, bounded backoff, and how
-  each HTTP answer is read.
-- `WalletUiTest` (+2): the leading figure, and server state confined to the
-  advanced sheet.
-- `tests/test_api.py` (15): **driven over a real socket against the real
-  handler**, so the wiring is under test and not just the pieces. Valid
-  evidence accepted; both phones reporting one settlement; retry with a new
-  nonce idempotent; reused nonce 401; body modified after signing 401; stranger
-  400; signing identity not matching the evidence submitter 401; unsigned 401;
-  and the five payment authorization cases including the impostor, the foreign
-  obligation, the two-seller batch and the contradicting destination.
+`DestinationClaim`: seller identity, rail, normalised number, version,
+timestamp, **signed by the seller**. This is what v0.15.3 was missing — the
+server checked a destination table that nothing ever populated.
 
-All 396 previous Android tests and all 55 previous server tests pass
-unmodified.
+Only the seller may say where the seller is paid. The buyer receives the number
+to read aloud at a kiosk and can never propose or alter it. A replacement needs
+a strictly higher version from the same identity and the same rail, so a
+replayed old claim cannot move the money back, and a change waits ten minutes
+before use so a stolen phone cannot redirect payments instantly.
 
-## 7. Version / build / commit / hash
+## 8. PaymentExpectation model
 
-Build 61, versionName 0.15.3, verified with `aapt2 dump badging`.
-SHA256 `375facae6f54054d090e609797fbaafde6f76b263267ef19abd7b3e7b1623862`.
-Commits `ed69f52`, `f8a1ba6`, `c9bd13c` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.3
+`paymentId, buyerId, sellerId, rail, destinationHash, amountCentimes,
+createdAt, validFrom, expiresAt, includedSettlementIds, state`
 
-## 8. Hardware test
+States: `WAITING → MATCHED | EXPIRED | NEEDS_REVIEW | CANCELLED`. The id is
+deterministic. An expired window leaves the debt exactly as it was; only the
+attempt ends.
 
-**TESTING 65**, and 65b is the one that matters: run a paid session with the
-server unreachable and confirm the session, the settlement and the Wallet all
-work with **no error reaching the user**. Then make the server reachable and
-confirm the evidence uploads and the detail sheet reads "Vérifié". Then repeat
-with a force-stop before the sync. Finally check that no account, network or
-Developer card appears under the Wallet.
+## 9. DevicePaymentReceipt model
 
-## 9. Known limitations
+`paymentId, sellerId, buyerId, rail, destinationHash, expectedCentimes,
+observedCentimes, observedAt, source, sourcePackage, messageEvidenceHash,
+parserVersion, confidence, matchedSettlementIds, reference`
 
-- **Still no real Mobile Money.** MTN and Airtel remain unavailable and refuse
-  to initiate, exactly as before. This release is trust wiring, not operator
-  integration.
-- **No webhook signing secret ships**, so nothing can be confirmed by webhook.
-- **The server accepts a phone's proposed allocations** after validating them
-  against what each obligation still owes and who the parties are. A phone can
-  propose a silly split; it will be refused, not accepted.
-- **The destination check only bites once a seller is on record.** The first
-  payment to a new seller establishes the destination. Until operator
-  integration exists there is no independent source to check the first one
-  against, and I would rather say that than pretend otherwise.
-- The sync queue drains on the brain timer and after a session. There is no
-  connectivity-change trigger, so a phone that regains signal may wait for the
-  next tick.
-- `Evidence.interpret` reads the server's verdict by substring on the JSON. It
-  is adequate for two known response shapes and should become a real parse if
-  the response grows.
-- Everything from v0.15.2 still stands, including that the Gagner hero has no
-  animation.
+**Signed by the seller**, because the party who benefits from a debt
+disappearing is not the party who should attest it was paid. A test confirms
+the buyer's key cannot verify it and that inflating the amount breaks the
+signature.
+
+## 10. Buyer trust rules
+
+| Verified payments | Limit |
+|---|---|
+| 0 | 10 CFA |
+| 3 | 25 CFA |
+| 10 | 50 CFA |
+| 25 | 100 CFA |
+
+Policy values, not protocol constants. A stranger gets about one short session
+and nothing more until a payment is **observed**. Trust never grows because
+somebody pressed a button, and no such button exists. Free and sponsored
+Internet are never gated. Checked before any Bluetooth channel, handshake or
+probe.
+
+## 11. Device-binding design
+
+`sha256("ProkNet-device-v1" | app-scoped identifier)`, truncated. No hardware
+serial, no IMEI, no advertising id, nothing that follows anybody to another
+app. A new identity on a device that still owes money starts with **zero**
+credit, not a ban: free and sponsored Internet keep working, and paying the old
+debt restores everything.
+
+Said plainly in the docs: **this is anti-abuse, not identity.** A factory reset
+defeats it. Somebody determined will get through. That is exactly why the
+exposure behind it is one short session — I would rather be bypassable than
+collect invasive identifiers to pretend otherwise.
+
+## 12. Privacy treatment
+
+Nothing reads the inbox. Nothing scans history. A message is inspected only
+while a payment is actually expected, and if nothing is outstanding the listener
+returns immediately without looking at the content at all.
+
+What is kept: the sha256 of the one message that matched, the parsed amount, the
+time, the source package, the parser version and the confidence. The body never
+travels and is never stored. A test takes a message containing a name and a
+phone number and asserts neither appears anywhere in the signed receipt.
+
+## 13. Old obligation backfill and infinite retry
+
+`MAX_ATTEMPTS = 12` is gone. A phone whose server was down for a long weekend
+could strand a real financial proof for ever. The evidence does not rot: it is
+signed bytes about a session that genuinely happened and is just as valid in
+three months. Retry is now indefinite with the same doubling backoff bounded at
+six hours — never abandoned, never a tight loop. `longPending()` flags a long
+wait in the diagnostic without giving up.
+
+`backfill()` runs on every start and enqueues every local obligation that has
+verifiable evidence and is not already queued, so anything booked before the
+queue existed, or dropped by the old limit, is picked up again.
+
+## 14. What still requires Android permissions
+
+| | |
+|---|---|
+| Notification access | **Required** for the notification source. Granted by the seller in Android's own settings screen and revocable there. |
+| `RECEIVE_SMS` | **Optional.** Declared; the stronger source when present. Restricted on Play, so the product must work without it, and it does. |
+
+Neither is needed by a buyer. Neither is needed for free or sponsored sharing.
+Without either, paid sharing honestly says automatic verification needs
+enabling rather than pretending it works.
+
+## 15. Device-verified versus operator-verified
+
+`PAYMENT_DEVICE_VERIFIED` means the seller's phone observed the money arriving.
+`PAYMENT_OPERATOR_VERIFIED` means MTN or Airtel confirmed it through their API,
+and **nothing in this build can produce it**. A test asserts no source maps to
+it. For the pilot, device-verified clears a debt; the property that matters is
+that the evidence is observed by the seller rather than asserted by the buyer.
+
+MTN and Airtel API rails remain unavailable and refuse to initiate, unchanged.
+When operator access arrives it becomes an additional high-confidence verifier
+rather than a rewrite.
+
+## 16. Tests
+
+455 Android JVM tests (+47) and 70 server tests.
+
+- `ReceiptParserTest` (17): a wide synthetic corpus — ten ways of saying money
+  arrived, accents and spacing, thousands separators, seven ways money leaves,
+  balances, OTP and promotional messages, the payment chosen over the running
+  balance, phone numbers and dates rejected, two-amount ambiguity, an expected
+  amount never conjuring a number, optional references, and the dictionaries
+  being extensible without code.
+- `PaymentMatchingTest` (16): a kiosk payment clearing a debt with no reference,
+  exact amounts, windows, two amounts told apart, the same-amount lock, refusing
+  to guess between two fits, source eligibility including a hostile app and a
+  hidden notification, deduplication, the seller signing, and the raw message
+  never reaching the receipt.
+- `TrustTest` (14): the first session, tiers, reinstall, the pseudonym revealing
+  nothing, seller readiness, and the whole destination-claim lifecycle.
+
+Two calibration bugs found and fixed while writing them: the scoring threshold
+rejected clean messages at 56 against a threshold of 60, and a date was being
+read as an amount.
+
+## 17. Version / build / commit / hash
+
+Build 62, versionName 0.16.0, verified with `aapt2 dump badging`.
+SHA256 `7faff0ca560a6150b8a4edd29113e3746987be16876673fc08fdad2d2dd4a924`.
+Commits `541e458`, `a10895e`, `50109e7` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.16.0
+
+## 18. Hardware test
+
+**TESTING 66**, and it needs one real Mobile Money transfer. The seller sets a
+number and grants notification access; a short session creates a debt; the buyer
+taps PAYER and is told an amount and a masked number; somebody sends that exact
+amount the ordinary way, telling ProkNet nothing; the seller's phone should
+clear the debt within seconds of the operator's message, with no button pressed
+by anybody.
+
+## 19. Known limitations
+
+- **The parser has never seen a real MTN or Airtel message.** It is built to
+  survive wording it does not know, and the corpus is synthetic. The first real
+  hardware run is the real test, and the dictionaries are data precisely so a
+  surprise is a configuration change rather than a release.
+- **The signed remote configuration is designed, not built.** Rules are
+  replaceable in code today; carrying them from the Brain with a signature is
+  the next step, and an unsigned one must never be accepted.
+- **Receipt delivery to the buyer is local only.** The seller signs a receipt
+  and applies it; `onReceiptFromSeller` exists and is tested, but nothing yet
+  carries it over the tunnel or the brain, so a buyer currently sees the debt
+  cleared when the two phones next meet or when the server path is wired.
+- **Device history is not yet server-side.** `deviceHasUnresolvedDebt` is a
+  local flag; the pseudonym and the association need the brain to be
+  authoritative, otherwise a reinstall clears the local flag too.
+- **The expectation lock is per-phone.** Two buyers owing the same seller the
+  same amount are only serialised if the lock is visible to both, which today
+  means the seller's phone; a server-side lock is the complete version.
+- **Notification content can be truncated** by the system. If the amount cannot
+  be read, nothing matches, which is the safe direction but will occasionally
+  mean a manual retry.
+- Everything from v0.15.3 still stands, including no operator API and no webhook
+  signing secret.
