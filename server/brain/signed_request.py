@@ -34,16 +34,47 @@ class AuthError(Exception):
     """The request is not authentic. The message is safe to return."""
 
 
+def canonical_target(request_target: str) -> str:
+    """The request target as both sides must spell it before signing.
+
+    Now that the path is part of the signature, the two halves must agree on it exactly,
+    including the query. The query matters: `/v1/pay/reply?payment=A` and
+    `?payment=B` ask about two different people's money, so they must not share a
+    signature.
+
+    The rule is deliberately dull, because a clever rule is one the two languages will
+    eventually disagree about:
+
+    - keep the path exactly as sent, percent-encoding and all;
+    - drop an empty query entirely;
+    - otherwise sort the raw `k=v` pieces and rejoin them with `&`.
+
+    Nothing is decoded. Decoding is where two implementations drift: `%2F` and `/` would
+    canonicalise the same on one side and not the other.
+    """
+    if "?" not in request_target:
+        return request_target
+    path, _, query = request_target.partition("?")
+    parts = sorted(x for x in query.split("&") if x)
+    return path if not parts else path + "?" + "&".join(parts)
+
+
 def signing_line(ts: int, nonce: str, body_hash: str, method: str = "", path: str = "") -> bytes:
     """What the phone signs.
 
-    v0.16.2 binds the METHOD and PATH as well. Without them a signature made for one
-    endpoint could be replayed against another that happens to accept the same body, which
-    matters now that several payment endpoints take similar JSON. Older clients that sign
-    only the first three fields are still accepted, so v0.16.1 phones keep working.
+    Two shapes exist. The bound one covers the METHOD and the canonical request target as
+    well, so a captured request cannot be replayed at a different endpoint that happens to
+    accept the same body:
+
+        ProkNet-api-1|<ts>|<nonce>|<body sha256>|<METHOD>|<canonical target>
+
+    The unbound one is v0.16.1's and is now refused on every money route. It survives only
+    so that a non-money compatibility path could keep it deliberately, and so that the
+    tests can prove it is refused.
     """
     if method or path:
-        return ("%s|%d|%s|%s|%s|%s" % (DOMAIN, ts, nonce, body_hash, method.upper(), path)).encode("utf-8")
+        return ("%s|%d|%s|%s|%s|%s" % (DOMAIN, ts, nonce, body_hash, method.upper(),
+                                       canonical_target(path))).encode("utf-8")
     return ("%s|%d|%s|%s" % (DOMAIN, ts, nonce, body_hash)).encode("utf-8")
 
 
@@ -105,10 +136,15 @@ CREATE INDEX IF NOT EXISTS idx_nonce_expiry ON request_nonces(expires);
 
 
 def verify(headers, raw_body: bytes, nonces: Nonces, now: int = None,
-           method: str = "", path: str = "") -> str:
+           method: str = "", path: str = "", require_bound: bool = True) -> str:
     """Check a signed request and return the submitting identity's node id.
 
     `headers` is anything with `.get`, so the HTTP handler and the tests use the same path.
+
+    v0.16.3: `require_bound` defaults to True. A signature that does not cover the method
+    and the canonical request target is refused, because accepting both shapes kept the
+    cross-endpoint replay surface of v0.16.1 alive on exactly the routes that move money.
+    Pass False only on a route that is deliberately not money.
     """
     if now is None:
         now = int(time.time() * 1000)
@@ -127,15 +163,24 @@ def verify(headers, raw_body: bytes, nonces: Nonces, now: int = None,
     except ValueError:
         raise AuthError("bad timestamp")
 
+    if require_bound and not (method or path):
+        # a route that forgot to pass its target would otherwise accept every legacy
+        # signature while looking like it was checking one
+        raise ValueError("require_bound needs the method and the request target")
+
     if abs(now - ts) > MAX_SKEW_MS:
         raise AuthError("timestamp outside the accepted window")
 
     digest = body_hash(raw_body)
-    # v0.16.2 binds method and path; a v0.16.1 phone signs only the first three fields,
-    # so both shapes are accepted and the bound one is preferred
-    bound = bool(method or path) and protocol.verify(prok, signing_line(ts, nonce, digest, method, path), sig)
-    if not bound and not protocol.verify(prok, signing_line(ts, nonce, digest), sig):
-        raise AuthError("signature does not verify")
+    bound = bool(method or path) and protocol.verify(
+        prok, signing_line(ts, nonce, digest, method, path), sig)
+    if not bound:
+        if require_bound:
+            # do not fall back. A body-only signature is valid at every endpoint that
+            # accepts that body, which is the replay this binding exists to stop.
+            raise AuthError("signature must cover the method and the request target")
+        if not protocol.verify(prok, signing_line(ts, nonce, digest), sig):
+            raise AuthError("signature does not verify")
 
     # last, so a replay of a request that never verified cannot burn a nonce
     if not nonces.use(prok, nonce, now):

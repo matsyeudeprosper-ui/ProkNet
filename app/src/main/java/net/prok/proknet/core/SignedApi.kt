@@ -31,15 +31,46 @@ object SignedApi {
     fun bodyHash(body: ByteArray): String = Crypto.sha256(body).toHex()
 
     /**
-     * Byte-for-byte what `signed_request.signing_line` builds on the server.
+     * The request target as both sides must spell it before signing.
      *
-     * v0.16.2 binds the METHOD and PATH too. Without them a signature made for one
-     * endpoint could be replayed against another that accepts the same body, which matters
-     * now that several payment endpoints take similar JSON.
+     * The query is part of it. `/v1/pay/reply?payment=A` and `?payment=B` ask about two
+     * different people's money, so they must not share a signature.
+     *
+     * The rule is deliberately dull, because a clever rule is one the two languages will
+     * eventually disagree about:
+     *
+     * - keep the path exactly as sent, percent-encoding and all;
+     * - drop an empty query entirely;
+     * - otherwise sort the raw `k=v` pieces and rejoin them with `&`.
+     *
+     * Nothing is decoded. Decoding is where two implementations drift: `%2F` and `/`
+     * would canonicalise the same on one side and not the other.
+     *
+     * Mirrors `signed_request.canonical_target`, and a fixture test pins the two together.
+     */
+    fun canonicalTarget(requestTarget: String): String {
+        val q = requestTarget.indexOf('?')
+        if (q < 0) return requestTarget
+        val path = requestTarget.substring(0, q)
+        val parts = requestTarget.substring(q + 1).split("&").filter { it.isNotEmpty() }.sorted()
+        return if (parts.isEmpty()) path else path + "?" + parts.joinToString("&")
+    }
+
+    /**
+     * Byte-for-byte what `signed_request.signing_line` builds on the server:
+     *
+     *     ProkNet-api-1|<ts>|<nonce>|<sha256 of the body>|<METHOD>|<canonical target>
+     *
+     * The METHOD and the target are inside the signature. Without them a signature made
+     * for one endpoint could be replayed against another that accepts the same body.
+     *
+     * The short form, without them, is v0.16.1's. Every money route on the server refuses
+     * it now; it survives only so the tests can prove that.
      */
     fun signingLine(ts: Long, nonce: String, bodyHash: String, method: String = "", path: String = ""): ByteArray =
         if (method.isNotEmpty() || path.isNotEmpty())
-            (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash + "|" + method.uppercase() + "|" + path).toByteArray(Charsets.UTF_8)
+            (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash + "|" + method.uppercase() + "|" +
+                canonicalTarget(path)).toByteArray(Charsets.UTF_8)
         else (DOMAIN + "|" + ts + "|" + nonce + "|" + bodyHash).toByteArray(Charsets.UTF_8)
 
     /**

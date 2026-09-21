@@ -215,59 +215,112 @@ class SignedRequestTest(unittest.TestCase):
         self.nonces = signed_request.Nonces()
         self.body = b'{"hello":"world"}'
 
+    METHOD = "POST"
+    TARGET = "/v1/settlements"
+
     def headers(self, **over):
         digest = signed_request.body_hash(self.body)
         ts = over.pop("ts", self.now)
         nonce = over.pop("nonce", "nonce-0001")
+        method = over.pop("method", self.METHOD)
+        target = over.pop("target", self.TARGET)
         h = {
             "X-Prok-Identity": pub_hex(self.priv),
             "X-Prok-Timestamp": str(ts),
             "X-Prok-Nonce": nonce,
-            "X-Prok-Signature": sign(self.priv, signed_request.signing_line(ts, nonce, digest)),
+            "X-Prok-Signature": sign(self.priv, signed_request.signing_line(
+                ts, nonce, digest, method, target)),
         }
         h.update(over)
         return h
 
+    def check(self, h, body=None, now=None, **kw):
+        return signed_request.verify(h, self.body if body is None else body, self.nonces,
+                                     self.now if now is None else now,
+                                     method=kw.pop("method", self.METHOD),
+                                     path=kw.pop("path", self.TARGET), **kw)
+
     def test_a_properly_signed_request_is_accepted_once(self):
-        who = signed_request.verify(self.headers(), self.body, self.nonces, self.now)
-        self.assertEqual(node_id(self.priv), who)
+        self.assertEqual(node_id(self.priv), self.check(self.headers()))
 
     def test_a_replay_is_refused(self):
         h = self.headers()
-        signed_request.verify(h, self.body, self.nonces, self.now)
+        self.check(h)
         with self.assertRaises(signed_request.AuthError) as cm:
-            signed_request.verify(h, self.body, self.nonces, self.now + 1_000)
+            self.check(h, now=self.now + 1_000)
         self.assertIn("already been used", str(cm.exception))
 
     def test_an_altered_body_breaks_the_signature(self):
         with self.assertRaises(signed_request.AuthError) as cm:
-            signed_request.verify(self.headers(), b'{"hello":"tampered"}', self.nonces, self.now)
-        self.assertIn("does not verify", str(cm.exception))
+            self.check(self.headers(), body=b'{"hello":"tampered"}')
+        self.assertIn("must cover", str(cm.exception))
 
     def test_an_old_or_future_timestamp_is_refused(self):
         for ts in (self.now - 10 * 60 * 1000, self.now + 10 * 60 * 1000):
             with self.assertRaises(signed_request.AuthError) as cm:
-                signed_request.verify(self.headers(ts=ts), self.body, self.nonces, self.now)
+                self.check(self.headers(ts=ts))
             self.assertIn("window", str(cm.exception))
 
     def test_an_unsigned_request_is_refused(self):
         with self.assertRaises(signed_request.AuthError):
-            signed_request.verify({}, self.body, self.nonces, self.now)
+            self.check({})
         with self.assertRaises(signed_request.AuthError):
-            signed_request.verify(self.headers(**{"X-Prok-Signature": ""}), self.body, self.nonces, self.now)
+            self.check(self.headers(**{"X-Prok-Signature": ""}))
+
+    # ---- v0.16.3: the target is inside the signature ------------------------------------
+
+    def test_a_signature_for_one_target_does_not_verify_at_another(self):
+        h = self.headers()
+        with self.assertRaises(signed_request.AuthError):
+            self.check(h, path="/v1/pay/receipt")
+        with self.assertRaises(signed_request.AuthError):
+            self.check(h, method="GET")
+
+    def test_a_legacy_body_only_signature_is_refused_on_a_money_route(self):
+        digest = signed_request.body_hash(self.body)
+        legacy = {
+            "X-Prok-Identity": pub_hex(self.priv),
+            "X-Prok-Timestamp": str(self.now),
+            "X-Prok-Nonce": "nonce-legacy-1",
+            "X-Prok-Signature": sign(self.priv, signed_request.signing_line(
+                self.now, "nonce-legacy-1", digest)),
+        }
+        with self.assertRaises(signed_request.AuthError) as cm:
+            self.check(legacy)
+        self.assertIn("must cover", str(cm.exception))
+        # and it is still a valid signature - it is refused for WHAT it covers, not
+        # because it is malformed
+        self.assertEqual(node_id(self.priv),
+                         signed_request.verify(legacy, self.body, self.nonces, self.now,
+                                               require_bound=False))
+
+    def test_asking_for_a_bound_check_without_a_target_is_a_programming_error(self):
+        with self.assertRaises(ValueError):
+            signed_request.verify(self.headers(), self.body, self.nonces, self.now)
+
+    def test_the_canonical_target_sorts_the_query_and_decodes_nothing(self):
+        c = signed_request.canonical_target
+        self.assertEqual("/v1/pay/reply", c("/v1/pay/reply"))
+        self.assertEqual("/v1/pay/reply", c("/v1/pay/reply?"))
+        self.assertEqual("/v1/pay/destinations?seller=abc", c("/v1/pay/destinations?seller=abc"))
+        self.assertEqual("/v1/p?a=1&b=2", c("/v1/p?b=2&a=1"))
+        self.assertEqual("/v1/p?a=1&b=2", c("/v1/p?a=1&b=2"))
+        # different resource, different signature
+        self.assertNotEqual(c("/v1/pay/reply?payment=A"), c("/v1/pay/reply?payment=B"))
+        # nothing is decoded: %2F must not quietly become /
+        self.assertEqual("/v1/p?x=%2Fy", c("/v1/p?x=%2Fy"))
 
     def test_a_failed_signature_does_not_burn_the_nonce(self):
         # otherwise an attacker could lock out a legitimate request by guessing its nonce
         bad = self.headers()
         bad["X-Prok-Signature"] = sign(keypair(), signed_request.signing_line(
-            self.now, "nonce-0001", signed_request.body_hash(self.body)))
+            self.now, "nonce-0001", signed_request.body_hash(self.body), self.METHOD, self.TARGET))
         with self.assertRaises(signed_request.AuthError):
-            signed_request.verify(bad, self.body, self.nonces, self.now)
-        self.assertEqual(node_id(self.priv),
-                         signed_request.verify(self.headers(), self.body, self.nonces, self.now))
+            self.check(bad)
+        self.assertEqual(node_id(self.priv), self.check(self.headers()))
 
     def test_nonces_expire_but_not_before_the_skew_window_closes(self):
-        signed_request.verify(self.headers(), self.body, self.nonces, self.now)
+        self.check(self.headers())
         self.assertEqual(1, len(self.nonces.seen))
         self.nonces.sweep(self.now + signed_request.MAX_SKEW_MS)
         self.assertEqual(1, len(self.nonces.seen), "a nonce must outlive the window its timestamp is valid in")

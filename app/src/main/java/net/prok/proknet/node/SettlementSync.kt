@@ -105,8 +105,11 @@ class SettlementSync(
             val body = pkg.body()
             // a retry is a new request over the same evidence: new time, new nonce, new
             // signature, same deterministic settlement id
-            val headers = SignedApi.sign(body, identity, now)
-            val (code, text) = post(brainUrl() + "/v1/settlements", body, headers.asMap())
+            // v0.16.3: the signature covers the method and the path as well. The server
+            // refuses a body-only signature on every money route, and this is one.
+            val path = "/v1/settlements"
+            val headers = SignedApi.sign(body, identity, now, method = "POST", path = path)
+            val (code, text) = post(brainUrl() + path, body, headers.asMap())
             val verdict = Evidence.interpret(code, text)
             when (verdict) {
                 Evidence.Sync.REPORTED -> {
