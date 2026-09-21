@@ -1,222 +1,151 @@
-# CLAUDE_REPORT - ProkNet v0.15.1 "Wallet polish + settlement trust"
+# CLAUDE_REPORT - ProkNet v0.15.2 "Gagner and Activité, redesigned"
 
 Date: 2026-09-20
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 379/379 Android tests and 55/55 server tests pass, released
-as build 59. The v0.15.0 seller-stop gate is now HARDWARE PROVEN on the
-OUKITEL + OnePlus pair. Wallet hardware acceptance is TESTING 63 and has not
-been run.**
+Status: **built, 396/396 Android tests and 55/55 server tests pass, released
+as build 60. A UI release: no new capability, no protocol change, nothing
+removed. Hardware acceptance is TESTING 64.**
+
+Commit `e1730d5`.
+
+## 1. What was actually wrong
+
+**Gagner** had grown to seven cards of equal visual weight, stacked around the
+button that does the work:
 
 | | |
 |---|---|
-| `f8496fc` | security: signed settlement evidence verification |
-| `42c6629` | payments: PaymentTransaction and allocations |
-| `014fc73` | ui: professional Prok Wallet redesign |
+| 1 | source line + warning |
+| 2 | auto-price text + estimate + three price chips + fee note |
+| 3 | "Mon forfait" toggle hiding two number fields and a save button |
+| 4 | the start button |
+| 5 | three stat boxes, then a customer line, then a stop button |
+| 6 | total earned + receivable + a heavy Wallet button |
+| 7 | notifications switch, coverage switch, relay panel |
 
-Recorded as proven for this device pair: short seller-ended sessions settle
-non-zero, both phones agree on the figure, and reconnect works. That closes
-the gate I would not build the money layer on top of.
+Nothing told the eye what mattered. A first-time user meets a price policy and
+a form before they meet the offer, so the screen reads as paperwork.
 
----
+**Activité** had a different problem. When the Wallet arrived in v0.15.1 the old
+money widgets stayed behind, so the screen still carried three money boxes, a
+custody note, a payment card and a receiving-method card — all of them one tap
+away in the Wallet — and the account settings were buried under them. Two
+screens were doing one job.
 
-# PART A — settlement trust
+## 2. Gagner: one question, three cards
 
-## 1. The server derives the money itself
+The screen asks one thing: *do you want to share your Internet right now?*
 
-This was the gap I flagged as the largest in v0.15.0, and you were right to
-make it the condition. `/v1/settlements` believed the amounts a phone sent. A
-phone could invent a session, recompute a matching settlement id from its own
-invented fields, and create debt.
+1. **The hero.** One state, one title, one sentence, **one button**. The
+   button's meaning comes from the state, so the two panes and two buttons
+   (`netShareSetup`/`netShareActive`, `btnStartSharing`/`btnStopSharing`)
+   collapsed into `btnEarnAction`. While sharing, the three live figures sit
+   *inside* the hero instead of competing with it as three cards. A dot carries
+   the state: grey, amber when visible, green when someone is connected.
+2. **Money.** One big figure, what is owed underneath, and a quiet text link to
+   the Wallet instead of a heavy button.
+3. **Réglages du partage.** One row, a summary line, a chevron. Everything
+   expert-level lives behind it.
 
-A phone no longer reports amounts at all. It submits **evidence**: the exact
-signed bytes of the contract and the closing checkpoint, plus the four
-signatures over them. `brain/evidence.py` re-derives everything and refuses
-what it cannot verify, in this order:
+Four states, all tested: no source, ready, waiting, serving.
 
-1. the contract is a valid, paid, v2 budget session;
-2. the two public keys are the parties the contract names;
-3. both parties signed **those exact** contract bytes;
-4. the checkpoint belongs to that session and is the closing one;
-5. both parties signed **those exact** checkpoint bytes;
-6. the signed cost is what the terms give, and fits the signed budget and the
-   signed byte ceiling;
-7. the submitter is the buyer or the seller, and is the same identity that
-   signed the HTTP request;
-8. gross, Prok fee, seller net and the settlement id are computed **here**.
+## 3. Nothing was removed, only moved
 
-A claimed amount or id is accepted only as a cross-check, and a disagreement
-is **refused rather than corrected**. A sender that is broken or lying does
-not get a row.
+Behind the Réglages row: the three price choices, the bundle form, the fee
+note, notifications, coverage sharing, relay, and the diagnostic source detail.
+The summary line ("Équilibré · Alertes activées") shows the state without
+opening it.
 
-The binary layouts mirror `Market.Contract` and `Market.Checkpoint` exactly.
-Writing that decoder found a real bug in my own assumption: contract v2 is
-**88 bytes**, not the 84 I had written in the v0.14.1 notes. The Kotlin
-constant was always right; my arithmetic in the report was not. The tests pin
-the real number now.
+I verified this mechanically rather than by eye: every `R.id` referenced in
+`MainActivity` is checked against the layouts, and none is missing. The four
+ids that disappeared were deliberately replaced by the single hero button.
 
-## 2. Signed requests and replay
+## 4. Two wording rules the tests enforce
 
-`brain/signed_request.py`. Every submission carries identity, timestamp,
-nonce and a signature over the body hash, domain-separated. Refused: a bad
-signature, a timestamp more than five minutes out, an altered body, a reused
-nonce. Nonces are remembered for twice the skew window, so a replay cannot
-slip through after its nonce is forgotten but while its timestamp is still
-valid — that ordering is tested explicitly.
+- **No subtitle is ever two sentences.** This caught a real one: the sharing
+  state read "Votre téléphone est visible. Vous serez payé dès que quelqu'un se
+  connecte." The first half is already implied by the title "Vous partagez", so
+  it is gone.
+- **Nothing says "clients".** A person counts people, so the live figure is
+  "Personne connectée", not "Clients".
 
-A failed signature does **not** burn the nonce. Otherwise an attacker could
-lock out a legitimate request by guessing its nonce, which would be a denial
-of service built into the defence.
+Each price choice now explains itself in one line, so the three words are not a
+riddle: cheaper means more people connect, earn more means more per person.
 
-Transport HTTPS and evidence are treated as different things, as you asked.
-The webhook route is exempt from Prok signing because it comes from an
-operator, not a Prok identity; it is authenticated by the rail's own secret.
+**Stopping is calm.** It was a red `DangerButton`. Stopping sharing is
+completely reversible, so it is now a secondary button, and the filled one is
+reserved for the action we actually want. (My first attempt set the text colour
+to the danger red *on* the danger background, which would have been invisible.
+Caught before building.)
 
-## 3. PaymentTransaction and allocations
+## 5. Activité: a history, and only that
 
-You were right that the simple fix was the wrong one. The old event key was
-`rail | reference | settlementId`, which let one operator reference be
-presented independently against unrelated obligations. But netting tiny
-sessions into one transfer is deliberate, so a unique reference per obligation
-would have broken the feature to fix the bug.
+The duplicated widgets were **deleted**, not hidden: three money boxes, the
+custody note, the payment card, the receiving-method card, and the two render
+functions that fed them. Everything they did is reachable in the Wallet pane.
 
-The unit of payment is now the transfer:
+Activité is now sessions grouped by day, each row showing what it was, who with,
+the amount and its state. The account moved out from underneath into its own
+**Compte** section.
 
-```
-payment_transactions   one real operator transfer, UNIQUE(rail, operator_ref)
-payment_allocations    how much of it settles which obligation, PK(payment, settlement)
-```
+`core/ActivityUi.kt` deliberately reuses `WalletUi.dayLabel`,
+`WalletUi.shortName` and the Wallet's status words, so the two histories cannot
+drift apart visually or disagree about the same fact. A test asserts that.
 
-Three 5 CFA sessions become one 15 CFA payment with three allocations.
+A free session reads **Gratuit**, not "0 CFA" — a zero reads like something went
+wrong.
 
-**Invariants, all enforced in `open_payment`/`confirm_payment` and tested:**
+## 6. Design rules applied
 
-- `sum(allocations) <= amount transferred`;
-- `allocation <= what that obligation still owes`, where "still owes" nets
-  every confirmed allocation already made against it;
-- a confirmed obligation cannot be paid again;
-- every obligation in one payment belongs to the same two parties;
-- one `(rail, reference)` is one transaction, enforced by a UNIQUE constraint,
-  never two;
-- a duplicate confirmation is a no-op;
-- a confirmation for a different amount, or the same reference reused for a
-  different payment, moves the transaction **and every obligation it touches**
-  to `SECURITY_REVIEW`;
-- a partial payment leaves the rest owing, and a second transfer clears it.
+One card radius and one card background across both screens. Spacing on a
+4-point rhythm, 26dp inside the important cards and 20dp elsewhere. One filled
+button per screen. Status colour carried by three tones rather than a palette.
+Section headings instead of a flat stack. Amounts in the strong weight, labels
+muted and small. No uppercase, no monospace, no dense paragraphs.
 
-## 4. Manual payments stay honest
+## 7. Tests
 
-A typed reference still reaches `PAYMENT_SEEN` and no further. On the phone, a
-reference already used for a different seller is refused with "Cette référence
-est déjà utilisée." rather than silently reused.
+396 Android JVM tests (+17) and 55 server tests, all previous ones unmodified.
 
----
+- `EarnUiTest` (10): the four states, the no-source explanation, the resting
+  offer, sharing and serving, one button per state, the live figures, the
+  earnings block, the settings summary, the policy hints, the demand prompt,
+  and a sweep for enums, protocol words, "clients" and shouting.
+- `ActivityUiTest` (7): row content, free sessions, wording shared with the
+  Wallet, day grouping, the empty state, and a sweep for raw identities,
+  megabytes, enums and session ids.
 
-# PART B — the Wallet redesign
+Two failures during the work were my own assertions, not the code: a naive
+"shouting" check flagged "11 CFA" because CFA is an acronym and digits are not
+letters, and a megabyte check had earlier flagged "MTN **Mo**bile Money".
 
-## 5. Information architecture
+## 8. Version / build / commit / hash
 
-Bottom navigation unchanged, as instructed. Activité gained a segmented
-switch, `[ Activité ] [ Wallet ]`, defaulting to Activité.
+Build 60, versionName 0.15.2, verified with `aapt2 dump badging`.
+SHA256 `a392664d23935500b69822073470cd0739585723d375c7d27a7a171afe2ba055`.
+Commit `e1730d5` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.2
 
-- **Activité** answers *what happened*.
-- **Wallet** answers *what money needs attention*, and contains money events
-  only.
+## 9. Hardware test
 
-Screen order: header, one summary card, one action card, one receiving card,
-history grouped by day. Not six equal boxes.
+**TESTING 64.** Count the buttons on Gagner before opening Réglages: there must
+be one. Open Réglages and confirm every control still works — price choice,
+bundle, all three switches. Start sharing, connect the OnePlus, watch the hero
+change state, stop. Then check Activité shows only history plus Compte, and
+that no money figure appears on both Activité and Wallet.
 
-## 6. The three promises, enforced by tests
+## 10. Known limitations
 
-`core/WalletUi.kt` decides the whole screen, so its states are tested rather
-than argued about from a screenshot.
-
-- **One obvious action.** `primaryAction` returns exactly one thing, ordered
-  by urgency: money I owe → nowhere to be paid → money owed to me → nothing
-  yet → all clear. Never an empty PAY button. A debt outranks the
-  set-up-receiving prompt, because money I owe is more urgent than money I
-  might earn.
-- **No technical clutter.** A test sweeps every string the screen can show and
-  fails on a status enum, a settlement id, a checkpoint hash, a raw identity,
-  a megabyte or the word "Solde". All of it lives behind one
-  "Détails techniques" sheet.
-- **Honest money words.** "Payé" only after verification. A typed reference
-  reads "À vérifier". No guarantee, no balance.
-
-## 7. Hierarchy and copy
-
-The summary card leads with **À payer** when there is debt and **À recevoir**
-otherwise; the other figures go muted. The Prok fee is **not** a headline
-figure — it is in the transaction detail, where it belongs.
-
-Status words: En attente, À vérifier, Payé ✓, Reçu ✓, Échoué, Expiré,
-Contesté. Each carries one of three tones, so nothing needs a rainbow of
-colours.
-
-`prok-24e480e6a1b2…` shows as **Prok 24E4**. Deliberately an abstraction over
-the identity rather than an invented name, since inventing one would imply a
-profile we do not have. When real names arrive, one function changes.
-
-## 8. Earn and Home
-
-Gagner keeps its earnings figure, adds "À recevoir" and one **Voir le Wallet**
-link, and does not repeat the history. Home shows at most **one** money line,
-only when something is owed, and only when nothing more urgent already needs
-that space — the live-session amount still wins.
-
-## 9. Tests
-
-379 Android JVM tests (+16) and 55 server tests (+32).
-
-- `WalletUiTest` (16): empty, owing one seller, owing several, three netted
-  sessions, seller awaiting payment, seller with no receiving method, all
-  clear, disputed, failed, expired, manual reference wording, day grouping and
-  direction signs, identity display, receiving states, and the clutter sweep.
-- `test_evidence.py` (21): forged evidence, each of the four signatures
-  individually, a signature over different bytes, mismatched keys, a borrowed
-  checkpoint, a non-final checkpoint, a cost the terms do not give, usage past
-  the ceiling, a stranger submitting, free and v1 sessions, tampered amounts
-  and ids, plus the full replay suite.
-- `test_settlement.py` (+11): one transfer settling three sessions, reference
-  uniqueness, reuse as a security review, allocations over the amount, over
-  what is owed, double payment, duplicate confirmation, wrong amount,
-  unverified confirmation, partial payment, mixed parties.
-
-One test failure was my own assertion, not the code: a naive megabyte check
-matched "MTN **Mo**bile Money". Fixed with a word boundary.
-
-## 10. Version / build / commit / hash
-
-Build 59, versionName 0.15.1, verified with `aapt2 dump badging`.
-SHA256 `21b2b484c72440b74c7962bb0ea1ea1631aafe8150bf40b4753f5ffb02ed2962`.
-Commits `f8496fc`, `42c6629`, `014fc73` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.1
-
-## 11. Hardware test
-
-**TESTING 63.** Three short paid sessions with one seller, then open Wallet.
-One summary card leading with À payer, one action card naming Prok XXXX and
-saying three sessions are grouped, exactly one button, history grouped under
-Aujourd'hui. Then the clutter check, a mock payment of the whole batch
-surviving a restart of both apps, the manual reference reading "en attente de
-vérification", the duplicate-reference refusal, and the empty and all-clear
-states.
-
-## 12. Known limitations
-
-- **The phone does not yet submit evidence.** The server can verify it and
-  refuses everything else, but the Android client still stores obligations
-  locally and has no code path that builds and signs an evidence submission.
-  Server and phone are ready for each other; the wire between them is the next
-  piece of work. Nothing is claimed to be reconciled server-side today.
-- **No real Mobile Money integration.** Unchanged. MTN and Airtel remain
-  interface only, with no credentials, and refuse to initiate.
-- **No webhook signing secret ships**, so no webhook can confirm anything yet.
-- **Allocations are computed on the phone** and sent; the server validates them
-  against what each obligation still owes, but a phone could propose a silly
-  split. It would be refused, not accepted.
-- A buyer that vanishes before the closing ack still pays only what was signed.
-  Unchanged and inherent.
-- The credit limit is still per-phone local state; a reinstall starts clean.
-- `Wallet.startOfDay` still assumes UTC+1.
-- TESTING 55 to 60 and 62 have still never been run.
+- **This is a visual and structural change only.** No protocol, pricing,
+  shutdown or settlement code was touched, which is why the 379 existing tests
+  passed unmodified throughout.
+- The Réglages pane is an expanding section rather than a proper bottom sheet.
+  It is honest and simple; a real sheet would feel better and needs a component
+  this project does not have without AndroidX.
+- The hero has no animation. The sphere on Home sets the bar and Gagner does not
+  meet it yet; a state transition there would be the next visual step.
+- The account section is compact but still a stack of cards. Home, Internet and
+  Map were not touched in this pass.
+- Everything from the v0.15.1 report still stands, including the largest gap:
+  the phone does not yet submit signed settlement evidence to the server.
