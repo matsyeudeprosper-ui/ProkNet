@@ -169,16 +169,17 @@ class Settlements:
         actor = derived["actor"]
         row = self.get(sid)
         if row is None:
-            self.db.execute(
-                "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
-                " gross, seller_net, prok_fee, status, created_at, expires_at, buyer_reported, seller_reported)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (sid, derived["session_id"], derived["buyer_id"], derived["seller_id"],
-                 derived["checkpoint_hash"], derived["gross"], derived["seller_net"], derived["prok_fee"],
-                 PENDING, now, int(derived["expires_at"]),
-                 1 if actor == "buyer" else 0, 1 if actor == "seller" else 0))
-            self._audit(sid, now, actor, "-", PENDING, "verified evidence")
-            self.db.commit()
+            # the obligation and the audit line that explains it are one change or neither
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
+                    " gross, seller_net, prok_fee, status, created_at, expires_at, buyer_reported, seller_reported)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (sid, derived["session_id"], derived["buyer_id"], derived["seller_id"],
+                     derived["checkpoint_hash"], derived["gross"], derived["seller_net"], derived["prok_fee"],
+                     PENDING, now, int(derived["expires_at"]),
+                     1 if actor == "buyer" else 0, 1 if actor == "seller" else 0))
+                self._audit(sid, now, actor, "-", PENDING, "verified evidence")
             return {"ok": True, "settlement_id": sid, "status": PENDING, "agreed": False,
                     "gross": derived["gross"], "seller_net": derived["seller_net"], "prok_fee": derived["prok_fee"]}
 
@@ -186,15 +187,15 @@ class Settlements:
             return {"ok": True, "settlement_id": sid, "status": row["status"], "agreed": False}
         if int(row["gross"]) != derived["gross"] or row["checkpoint_hash"] != derived["checkpoint_hash"]:
             # two verified derivations cannot differ unless the evidence differs
-            self.db.execute("UPDATE settlements SET status=?, note=? WHERE settlement_id=?",
-                            (DISPUTED, "verified %d and %d" % (int(row["gross"]), derived["gross"]), sid))
-            self._audit(sid, now, actor, row["status"], DISPUTED, "conflicting verified evidence")
-            self.db.commit()
+            with self.db:
+                self.db.execute("UPDATE settlements SET status=?, note=? WHERE settlement_id=?",
+                                (DISPUTED, "verified %d and %d" % (int(row["gross"]), derived["gross"]), sid))
+                self._audit(sid, now, actor, row["status"], DISPUTED, "conflicting verified evidence")
             return {"ok": True, "settlement_id": sid, "status": DISPUTED, "agreed": False}
 
         col = "buyer_reported" if actor == "buyer" else "seller_reported"
-        self.db.execute("UPDATE settlements SET %s=1 WHERE settlement_id=?" % col, (sid,))
-        self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE settlements SET %s=1 WHERE settlement_id=?" % col, (sid,))
         row = self.get(sid)
         return {"ok": True, "settlement_id": sid, "status": row["status"],
                 "agreed": bool(row["buyer_reported"]) and bool(row["seller_reported"]),
@@ -221,31 +222,31 @@ class Settlements:
 
         row = self.get(sid)
         if row is None:
-            self.db.execute(
-                "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
-                " gross, seller_net, prok_fee, status, created_at, expires_at, buyer_reported, seller_reported)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (sid, claim["session_id"], claim["buyer_id"], claim["seller_id"], claim["checkpoint_hash"],
-                 gross, net, fee, PENDING, now, int(claim["expires_at"]),
-                 1 if actor == "buyer" else 0, 1 if actor == "seller" else 0))
-            self._audit(sid, now, actor, "-", PENDING, "first report")
-            self.db.commit()
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO settlements(settlement_id, session_id, buyer_id, seller_id, checkpoint_hash,"
+                    " gross, seller_net, prok_fee, status, created_at, expires_at, buyer_reported, seller_reported)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (sid, claim["session_id"], claim["buyer_id"], claim["seller_id"], claim["checkpoint_hash"],
+                     gross, net, fee, PENDING, now, int(claim["expires_at"]),
+                     1 if actor == "buyer" else 0, 1 if actor == "seller" else 0))
+                self._audit(sid, now, actor, "-", PENDING, "first report")
             return {"ok": True, "settlement_id": sid, "status": PENDING, "agreed": False}
 
         # already known: this is the reconciliation, not a second obligation
         if row["status"] == DISPUTED:
             return {"ok": True, "settlement_id": sid, "status": DISPUTED, "agreed": False}
         if int(row["gross"]) != gross or row["checkpoint_hash"] != claim["checkpoint_hash"]:
-            self.db.execute("UPDATE settlements SET status=?, note=? WHERE settlement_id=?",
-                            (DISPUTED, "reported %d and %d" % (int(row["gross"]), gross), sid))
-            self._audit(sid, now, actor, row["status"], DISPUTED, "amounts differ")
-            self.db.commit()
+            with self.db:
+                self.db.execute("UPDATE settlements SET status=?, note=? WHERE settlement_id=?",
+                                (DISPUTED, "reported %d and %d" % (int(row["gross"]), gross), sid))
+                self._audit(sid, now, actor, row["status"], DISPUTED, "amounts differ")
             # the larger figure is NOT adopted; the stored one stands until a human decides
             return {"ok": True, "settlement_id": sid, "status": DISPUTED, "agreed": False}
 
         col = "buyer_reported" if actor == "buyer" else "seller_reported"
-        self.db.execute("UPDATE settlements SET %s=1 WHERE settlement_id=?" % col, (sid,))
-        self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE settlements SET %s=1 WHERE settlement_id=?" % col, (sid,))
         row = self.get(sid)
         agreed = bool(row["buyer_reported"]) and bool(row["seller_reported"])
         return {"ok": True, "settlement_id": sid, "status": row["status"], "agreed": agreed}
@@ -266,12 +267,13 @@ class Settlements:
         if row["status"] == DISPUTED:
             return {"ok": False, "error": "disputed"}
         if now >= int(row["expires_at"]):
-            self._set(sid, EXPIRED, now, "server", row["status"], "expired before payment")
+            with self.db:
+                self._set(sid, EXPIRED, now, "server", row["status"], "expired before payment")
             return {"ok": False, "error": "expired"}
-        self.db.execute("UPDATE settlements SET status=?, rail=?, payment_ref=? WHERE settlement_id=?",
-                        (PAYMENT_INITIATED, rail, reference, sid))
-        self._audit(sid, now, "buyer", row["status"], PAYMENT_INITIATED, rail)
-        self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE settlements SET status=?, rail=?, payment_ref=? WHERE settlement_id=?",
+                            (PAYMENT_INITIATED, rail, reference, sid))
+            self._audit(sid, now, "buyer", row["status"], PAYMENT_INITIATED, rail)
         return {"ok": True, "status": PAYMENT_INITIATED}
 
     def webhook(self, event: dict, now: int, verified: bool) -> dict:
@@ -294,30 +296,32 @@ class Settlements:
             row = self.get(sid)
             return {"ok": True, "duplicate": True, "status": row["status"] if row else PENDING}
 
-        self.db.execute(
-            "INSERT INTO payment_events(event_key, settlement_id, rail, reference, status, amount, received_at, source)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            (key, sid, rail, reference, status, amount, now, "verified" if verified else "unverified"))
-
+        # recording the event and whatever it changes is one transaction: an event row
+        # without its consequence would look like a webhook that was already handled
         row = self.get(sid)
-        if row is None:
-            self.db.commit()
-            return {"ok": False, "error": "unknown settlement"}
-        if not verified:
-            self._audit(sid, now, "webhook", row["status"], row["status"], "signature not verified: ignored")
-            self.db.commit()
-            return {"ok": False, "error": "signature not verified"}
-        if row["status"] == CONFIRMED:
-            self.db.commit()
-            return {"ok": True, "duplicate": True, "status": CONFIRMED}
-        if status == CONFIRMED and amount != int(row["gross"]):
-            self._set(sid, DISPUTED, now, "webhook", row["status"], "paid %d, owed %d" % (amount, int(row["gross"])))
-            return {"ok": False, "error": "amount does not match", "status": DISPUTED}
-        self._set(sid, status, now, "webhook", row["status"], reference)
-        if status == CONFIRMED:
-            self.db.execute("UPDATE settlements SET rail=?, payment_ref=? WHERE settlement_id=?", (rail, reference, sid))
-            self.db.commit()
-        return {"ok": True, "status": status}
+        with self.db:
+            self.db.execute(
+                "INSERT INTO payment_events(event_key, settlement_id, rail, reference, status, amount, received_at, source)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (key, sid, rail, reference, status, amount, now, "verified" if verified else "unverified"))
+            if row is None:
+                out = {"ok": False, "error": "unknown settlement"}
+            elif not verified:
+                self._audit(sid, now, "webhook", row["status"], row["status"], "signature not verified: ignored")
+                out = {"ok": False, "error": "signature not verified"}
+            elif row["status"] == CONFIRMED:
+                out = {"ok": True, "duplicate": True, "status": CONFIRMED}
+            elif status == CONFIRMED and amount != int(row["gross"]):
+                self._set(sid, DISPUTED, now, "webhook", row["status"],
+                          "paid %d, owed %d" % (amount, int(row["gross"])))
+                out = {"ok": False, "error": "amount does not match", "status": DISPUTED}
+            else:
+                self._set(sid, status, now, "webhook", row["status"], reference)
+                if status == CONFIRMED:
+                    self.db.execute("UPDATE settlements SET rail=?, payment_ref=? WHERE settlement_id=?",
+                                    (rail, reference, sid))
+                out = {"ok": True, "status": status}
+        return out
 
     def note_unverified_webhook(self, event: dict, now: int):
         """v0.16.2: record it and change nothing.
@@ -344,8 +348,9 @@ class Settlements:
         rows = self.db.execute(
             "SELECT settlement_id, status FROM settlements WHERE expires_at<=? AND status IN (?,?,?)",
             (now, PENDING, PAYMENT_INITIATED, PAYMENT_SEEN)).fetchall()
-        for r in rows:
-            self._set(r["settlement_id"], EXPIRED, now, "server", r["status"], "window closed")
+        with self.db:
+            for r in rows:
+                self._set(r["settlement_id"], EXPIRED, now, "server", r["status"], "window closed")
         return len(rows)
 
     # ---- wallet ----------------------------------------------------------------------
@@ -435,28 +440,33 @@ class Settlements:
             if int(centimes) > self.remaining(sid):
                 return {"ok": False, "error": "an allocation exceeds what that session still owes"}
 
-        self.db.execute(
-            "INSERT INTO payment_transactions(payment_id, rail, operator_ref, buyer_id, seller_id,"
-            " destination, gross_paid, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (pid, rail, operator_ref, buyer_id, seller_id, destination, amount, PAYMENT_INITIATED, now))
-        for sid, centimes in allocations:
+        # The transaction row, every allocation and every obligation it moves are ONE
+        # change. Half of this committed is worse than none of it: a payment row with
+        # only some of its allocations reads as a real transfer that settles less than it
+        # paid for, and nothing later can tell that the rest was lost rather than never
+        # intended.
+        with self.db:
             self.db.execute(
-                "INSERT INTO payment_allocations(payment_id, settlement_id, allocated) VALUES(?,?,?)",
-                (pid, sid, int(centimes)))
-            row = self.get(sid)
-            self._set(sid, PAYMENT_INITIATED, now, "buyer", row["status"], "payment %s" % pid[:12])
-        self.db.commit()
+                "INSERT INTO payment_transactions(payment_id, rail, operator_ref, buyer_id, seller_id,"
+                " destination, gross_paid, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (pid, rail, operator_ref, buyer_id, seller_id, destination, amount, PAYMENT_INITIATED, now))
+            for sid, centimes in allocations:
+                self.db.execute(
+                    "INSERT INTO payment_allocations(payment_id, settlement_id, allocated) VALUES(?,?,?)",
+                    (pid, sid, int(centimes)))
+                row = self.get(sid)
+                self._set(sid, PAYMENT_INITIATED, now, "buyer", row["status"], "payment %s" % pid[:12])
         return {"ok": True, "payment_id": pid, "status": PAYMENT_INITIATED, "allocated": total}
 
     # ---- where a seller is paid ------------------------------------------------------
 
     def set_destination(self, seller_id: str, rail: str, destination: str, now: int):
         """Recorded once, then used to check later payments against it."""
-        self.db.execute(
-            "INSERT INTO payment_destinations(seller_id, rail, destination, updated_at) VALUES(?,?,?,?)"
-            " ON CONFLICT(seller_id, rail) DO UPDATE SET destination=excluded.destination, updated_at=excluded.updated_at",
-            (seller_id, rail, destination, now))
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO payment_destinations(seller_id, rail, destination, updated_at) VALUES(?,?,?,?)"
+                " ON CONFLICT(seller_id, rail) DO UPDATE SET destination=excluded.destination, updated_at=excluded.updated_at",
+                (seller_id, rail, destination, now))
 
     def destination_for(self, seller_id: str, rail: str):
         r = self.db.execute("SELECT destination FROM payment_destinations WHERE seller_id=? AND rail=?",
@@ -502,35 +512,44 @@ class Settlements:
             self._flag_payment(pid, now, "allocations exceed the verified amount")
             return {"ok": False, "error": "allocations exceed the verified amount", "status": SECURITY_REVIEW}
 
-        self.db.execute("UPDATE payment_transactions SET status=?, verified_at=? WHERE payment_id=?",
-                        (CONFIRMED, now, pid))
+        # One verified transfer settles every obligation it covers, or none of them. A
+        # partial commit here would leave a CONFIRMED payment beside obligations that
+        # still read as owing, and the buyer would be asked to pay twice.
         settled = []
-        for a in allocs:
-            sid = a["settlement_id"]
-            row = self.get(sid)
-            if row is None or row["status"] == CONFIRMED:
-                continue
-            # a partial allocation leaves the obligation owing the rest
-            still = self.remaining(sid)
-            if still <= 0:
-                self.db.execute("UPDATE settlements SET rail=?, payment_ref=? WHERE settlement_id=?",
-                                (p["rail"], p["operator_ref"], sid))
-                self._set(sid, CONFIRMED, now, "payment", row["status"], "paid by %s" % pid[:12])
-                settled.append(sid)
-            else:
-                self._set(sid, PAYMENT_SEEN, now, "payment", row["status"],
-                          "partly paid, %d still owed" % still)
-        self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE payment_transactions SET status=?, verified_at=? WHERE payment_id=?",
+                            (CONFIRMED, now, pid))
+            for a in allocs:
+                sid = a["settlement_id"]
+                row = self.get(sid)
+                if row is None or row["status"] == CONFIRMED:
+                    continue
+                # a partial allocation leaves the obligation owing the rest
+                still = self.remaining(sid)
+                if still <= 0:
+                    self.db.execute("UPDATE settlements SET rail=?, payment_ref=? WHERE settlement_id=?",
+                                    (p["rail"], p["operator_ref"], sid))
+                    self._set(sid, CONFIRMED, now, "payment", row["status"], "paid by %s" % pid[:12])
+                    settled.append(sid)
+                else:
+                    self._set(sid, PAYMENT_SEEN, now, "payment", row["status"],
+                              "partly paid, %d still owed" % still)
         return {"ok": True, "status": CONFIRMED, "settled": settled}
 
     def _flag_payment(self, pid: str, now: int, why: str):
-        self.db.execute("UPDATE payment_transactions SET status=?, note=? WHERE payment_id=?",
-                        (SECURITY_REVIEW, why, pid))
-        for a in self.allocations(pid):
-            row = self.get(a["settlement_id"])
-            if row is not None and row["status"] != CONFIRMED:
-                self._set(a["settlement_id"], SECURITY_REVIEW, now, "server", row["status"], why)
-        self.db.commit()
+        """Send a payment and everything it touches for review, together.
+
+        Only ever called at a return point, never inside another transaction, so it owns
+        this one. Flagging the payment without flagging its obligations would leave them
+        payable while the transfer behind them is under suspicion.
+        """
+        with self.db:
+            self.db.execute("UPDATE payment_transactions SET status=?, note=? WHERE payment_id=?",
+                            (SECURITY_REVIEW, why, pid))
+            for a in self.allocations(pid):
+                row = self.get(a["settlement_id"])
+                if row is not None and row["status"] != CONFIRMED:
+                    self._set(a["settlement_id"], SECURITY_REVIEW, now, "server", row["status"], why)
 
     def audit(self, sid: str):
         return [dict(r) for r in self.db.execute(
@@ -539,9 +558,16 @@ class Settlements:
     # ---- internals -------------------------------------------------------------------
 
     def _set(self, sid: str, status: str, now: int, actor: str, was: str, detail: str):
+        """Change one obligation and record why. **Does not commit.**
+
+        v0.16.3: it used to. That meant a payment touching three obligations committed
+        three times on the way through, so a failure in the middle left a transaction row
+        with some of its obligations moved and the rest not - money half-settled, and no
+        way to tell from the audit trail which half was real. The caller now owns the
+        transaction and this only ever participates in it.
+        """
         self.db.execute("UPDATE settlements SET status=? WHERE settlement_id=?", (status, sid))
         self._audit(sid, now, actor, was, status, detail)
-        self.db.commit()
 
     def _audit(self, sid: str, now: int, actor: str, was: str, now_status: str, detail: str = ""):
         self.db.execute(
