@@ -895,6 +895,87 @@ session, lastIssued, lastSigned, buyerShort — is cleared until settlement may
 complete. The buyer treats SESSION_END as an ending rather than a fault: it
 closes the VPN and says "Le fournisseur a arrêté le partage."
 
+## The phones now prove it (v0.15.3)
+
+v0.15.1 made the server stop believing amounts: it re-derives the money from
+the signed contract and the signed closing checkpoint. But nothing on the
+phone built or sent that package, so the verifier had nothing to verify. The
+two halves were ready for each other with no wire between them. This is the
+wire.
+
+**Almost nothing had to be stored that was not already stored.** The
+`sessions` table keeps the contract bytes with both signatures; the
+`checkpoints` table keeps each checkpoint body with the seller signature and
+the buyer countersignature. Every byte the server needs was already durable.
+The only new table is the queue state.
+
+**Evidence, not results.** `core/Evidence.kt` assembles the package **from the
+database**, never from a live object, so a settlement survives a restart, a
+flat battery and a week offline. The claimed settlement id and amount travel
+too, but only as a cross-check the server may refuse us on.
+
+It returns a reason rather than throwing, because most reasons are ordinary: a
+free session owes nothing, a session whose closing checkpoint was never
+countersigned has nothing anybody may be billed for, and a v1 session is out
+of scope for real money. **There is no fallback that asks the server to trust a
+local number.** No verifiable evidence, no server settlement.
+
+**The signature covers the bytes that are sent.** `core/SignedApi.kt` is the
+phone half of `signed_request.py`: identity, timestamp, nonce, and a signature
+over `ProkNet-api-1|ts|nonce|sha256(body)`. The body is built once and the
+same array is signed and written. Re-serialising JSON after signing — a
+different key order, one different space — is the classic way to break this,
+so the code makes it impossible rather than merely avoiding it.
+
+**Patience, not a loop.** `node/SettlementSync.kt` queues on settlement and
+drains when the server is reachable, with doubling backoff from 30 seconds to
+6 hours and a maximum attempt count. A failed submission never touches the
+local obligation. A retry is a new timestamp, a new nonce and a new signature
+over the **same deterministic settlement**, so it is a fresh request and not a
+replay. A duplicate answer is success: the id is derived from signed facts, so
+"already reported" is exactly what we wanted. HTTP 400 and 403 stop the
+retries because the evidence itself is wrong; 401, 5xx and timeouts do not.
+
+**Offline-first is preserved.** The server is a witness, not a participant.
+Two phones still find each other, agree a price, share Internet and settle
+with nobody else involved. Both phones queue independently, and the server
+reconciles the two reports; neither waits for the other.
+
+## A signed request proves who sent it (v0.15.3)
+
+`/v1/payments/initiate` verified the request signature and then trusted
+`buyer_id` from the JSON body. Any valid Prok identity could therefore start a
+payment in somebody else's name. The signed request already proves who sent
+it; that identity must be **compared** with the parties, not ignored.
+
+- the authenticated submitter must be the buyer named in the payment, or 403,
+  and the stored buyer is taken from the verified identity rather than the body;
+- a payment must name its seller, and every allocation must belong to that same
+  buyer and seller, so one transfer cannot pay one seller for another's work;
+- `payment_destinations` records where a seller is paid per rail, and a payment
+  naming a different destination for a seller already on record is refused as a
+  security review rather than sent somewhere new on a phone's say-so.
+
+Request replay and payment idempotency stay separate concerns, as they must: a
+fresh nonce satisfies the request layer, while the same rail and operator
+reference is still recognised as the same real transfer.
+
+## Compte belongs to Activité (v0.15.3)
+
+A layout mistake in v0.15.2: the Compte section closed **outside** both
+`activityPane` and `walletPane`, so switching to Wallet left the account,
+network and developer cards showing underneath the money screen — exactly the
+separation the Wallet redesign existed to create. The whole section moved
+inside `activityPane`.
+
+The summary card also led with nothing when both figures were zero, leaving
+three equal zeros. It now leads with whatever needs action, and falls back to
+the informational figure when nothing does: to pay, then to receive, then
+earned today, then nothing at all for a new wallet.
+
+Server verification state appears in the transaction detail under "Détails
+techniques" and nowhere else.
+
 ## Gagner asks one question (v0.15.2)
 
 The Gagner screen had grown seven cards of equal weight: a source line, a price

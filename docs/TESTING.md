@@ -2549,3 +2549,82 @@ account settings, Developer. Everything that worked in v0.15.1 must still work.
 - A red "stop" block, or a subtitle running to two sentences.
 - The word "clients" anywhere a person can see.
 
+## 65. v0.15.3 settlement reaches the server, and survives not reaching it
+
+The point of this release is that a session settles correctly whether or not
+anything else in the world is available. Test the offline path first: it is
+the one that matters.
+
+### 65a. A normal session, unchanged
+
+Run a short paid session and stop it. Everything from sections 61 to 63 must
+behave exactly as before: both phones agree the figure, the Wallet shows the
+obligation, the Internet path is untouched.
+
+### 65b. Settlement with no server at all
+
+Leave the Brain URL empty, or point it at something unreachable.
+
+Run another paid session. Stop it.
+
+Expected:
+
+- the session works normally;
+- the Wallet shows the obligation;
+- **no error reaches the user** — not a toast, not a red line, nothing.
+
+COPY NETWORK may show `server verification: not configured (local mode)` or a
+pending count. That is the only place any of this may appear.
+
+This is the critical case. ProkNet is offline-first: two phones settling
+between themselves must never depend on a third party.
+
+### 65c. The server catches up
+
+Set a reachable Brain URL. Wait for the next sync, or trigger one.
+
+Expected: the stored evidence uploads and the server verifies it. Open the
+transaction in the Wallet, then **Détails techniques**: "Vérification serveur"
+must read **Vérifié**.
+
+Nothing on the consumer cards may change. They said the truth before and they
+say the truth now.
+
+### 65d. Restart before sync
+
+Finish a session with the server unreachable. **Force-stop both apps.** Make
+the server reachable again and reopen them.
+
+Expected: the saved evidence uploads without the session being re-run. The
+evidence was read back from the database, not from memory.
+
+### 65e. Both phones report
+
+After a session both phones have reported, the server must hold **one**
+settlement with both parties recorded. Check the server, not the phones:
+
+```
+GET /v1/settlements/<id>
+```
+
+The two reports must agree, and there must not be two rows.
+
+### 65f. Wallet organisation
+
+Open **Activité**. Expected: history, then **Compte**.
+
+Switch to **Wallet**. Expected: the summary, one action, the receiving method
+and the history — and **no Compte, no network card, no Developer button
+underneath**. Scroll to the bottom to be sure.
+
+Switch back. Compte must reappear under Activité.
+
+### What would make this a FAIL
+
+- Any consumer-visible error when the server is unreachable.
+- A session that will not settle locally without a server.
+- Evidence lost across a restart.
+- Two settlement rows for one session.
+- Account, network or Developer cards visible under the Wallet.
+- Any regression in sections 59 to 64.
+
