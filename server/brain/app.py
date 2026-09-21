@@ -193,12 +193,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if self.path == "/v1/payments/initiate":
+                # v0.15.3: the signed request proves who sent it. Believing buyer_id from
+                # the JSON body would let any valid Prok identity start a payment in
+                # somebody else's name, so the two must be the same person.
+                claimed_buyer = body.get("buyer_id", "")
+                if claimed_buyer != submitter:
+                    self._json(403, {"error": "a payment may only be initiated by its own buyer"})
+                    return
                 # one real operator transfer, allocated across the obligations it settles
                 allocations = [(a.get("settlement_id", ""), int(a.get("allocated", 0)))
                                for a in body.get("allocations", [])]
                 self._json(200, STATE.settlements.open_payment(
                     body.get("rail", "NONE"), body.get("operator_ref", ""),
-                    body.get("buyer_id", ""), body.get("seller_id", ""),
+                    submitter, body.get("seller_id", ""),
                     int(body.get("amount", 0)), allocations, now, body.get("destination", "")))
                 return
 

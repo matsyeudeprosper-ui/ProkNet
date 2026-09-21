@@ -118,6 +118,17 @@ CREATE TABLE IF NOT EXISTS payment_events(
     source       TEXT NOT NULL
 );
 
+-- v0.15.3: where a seller says it wants to be paid, per rail. A payment naming a
+-- different destination for a seller we already know is refused rather than sent
+-- somewhere new on a phone's say-so.
+CREATE TABLE IF NOT EXISTS payment_destinations(
+    seller_id   TEXT NOT NULL,
+    rail        TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY(seller_id, rail)
+);
+
 -- Append-only. Nothing here is ever updated or deleted; it is what an auditor reads.
 CREATE TABLE IF NOT EXISTS settlement_audit(
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,6 +389,16 @@ class Settlements:
             return {"ok": False, "error": "nothing allocated"}
         if total > amount:
             return {"ok": False, "error": "allocations exceed the amount paid"}
+        if not seller_id:
+            return {"ok": False, "error": "a payment must name its seller"}
+        # v0.15.3: one real transfer goes to ONE destination, so it may only settle
+        # obligations owed to that seller. A batch spanning two sellers would pay one of
+        # them for the other's work.
+        if destination:
+            known = self.destination_for(seller_id, rail)
+            if known and known != destination:
+                return {"ok": False, "error": "destination does not match the seller on record",
+                        "status": SECURITY_REVIEW}
 
         for sid, centimes in allocations:
             row = self.get(sid)
@@ -406,6 +427,21 @@ class Settlements:
             self._set(sid, PAYMENT_INITIATED, now, "buyer", row["status"], "payment %s" % pid[:12])
         self.db.commit()
         return {"ok": True, "payment_id": pid, "status": PAYMENT_INITIATED, "allocated": total}
+
+    # ---- where a seller is paid ------------------------------------------------------
+
+    def set_destination(self, seller_id: str, rail: str, destination: str, now: int):
+        """Recorded once, then used to check later payments against it."""
+        self.db.execute(
+            "INSERT INTO payment_destinations(seller_id, rail, destination, updated_at) VALUES(?,?,?,?)"
+            " ON CONFLICT(seller_id, rail) DO UPDATE SET destination=excluded.destination, updated_at=excluded.updated_at",
+            (seller_id, rail, destination, now))
+        self.db.commit()
+
+    def destination_for(self, seller_id: str, rail: str):
+        r = self.db.execute("SELECT destination FROM payment_destinations WHERE seller_id=? AND rail=?",
+                            (seller_id, rail)).fetchone()
+        return r["destination"] if r else None
 
     def payment(self, pid: str):
         return self.db.execute("SELECT * FROM payment_transactions WHERE payment_id=?", (pid,)).fetchone()
