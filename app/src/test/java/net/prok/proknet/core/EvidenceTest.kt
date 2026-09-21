@@ -188,8 +188,13 @@ class EvidenceTest {
         assertFalse(Evidence.mayTry(1, now, now))
         assertFalse(Evidence.mayTry(1, now, now + Evidence.FIRST_BACKOFF_MS - 1))
         assertTrue(Evidence.mayTry(1, now, now + Evidence.FIRST_BACKOFF_MS))
-        // and it gives up rather than retrying for ever
-        assertFalse(Evidence.mayTry(Evidence.MAX_ATTEMPTS, 0, now))
+        // v0.16.0: it NEVER gives up. A signed proof of a session that really happened is
+        // just as valid in three months, and stranding it would lose somebody real money.
+        assertTrue("a proof must never be abandoned", Evidence.mayTry(500, 0, now))
+        assertTrue(Evidence.mayTry(500, now, now + Evidence.MAX_BACKOFF_MS))
+        assertFalse("but still never in a tight loop", Evidence.mayTry(500, now, now + 1000))
+        assertTrue("it is worth saying it has been a while", Evidence.longPending(12))
+        assertFalse(Evidence.longPending(3))
     }
 
     @Test

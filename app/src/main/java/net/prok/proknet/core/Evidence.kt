@@ -157,12 +157,18 @@ object Evidence {
 
     const val FIRST_BACKOFF_MS = 30_000L
     const val MAX_BACKOFF_MS = 6L * 3600 * 1000
-    /** After this many failures we stop retrying and leave it for a person to look at. */
-    const val MAX_ATTEMPTS = 12
 
     /**
-     * Doubling, bounded, from the number of attempts already made. No tight loop, and a
-     * phone that has been offline for a day does not hammer the server when it returns.
+     * v0.16.0: there is no attempt limit, on purpose.
+     *
+     * v0.15.3 gave up after twelve failures, which meant a phone whose server was down
+     * for a long weekend could strand a real financial proof for ever. The evidence does
+     * not rot: it is signed bytes describing a session that genuinely happened, and it is
+     * just as valid in three months. So it retries indefinitely, slowly, and a settlement
+     * may sit pending for months without anybody losing anything.
+     *
+     * Doubling, bounded at six hours. No tight loop, and a phone back from a week offline
+     * does not hammer the server when it returns.
      */
     fun backoffMs(attempts: Int): Long {
         if (attempts <= 0) return 0
@@ -177,7 +183,13 @@ object Evidence {
     fun dueAt(attempts: Int, lastAttempt: Long): Long = lastAttempt + backoffMs(attempts)
 
     fun mayTry(attempts: Int, lastAttempt: Long, now: Long): Boolean =
-        attempts < MAX_ATTEMPTS && now >= dueAt(attempts, lastAttempt)
+        now >= dueAt(attempts, lastAttempt)
+
+    /**
+     * A settlement that has been trying for a long time is worth mentioning in the
+     * diagnostic, but it is not an error and it is never abandoned.
+     */
+    fun longPending(attempts: Int): Boolean = attempts >= 12
 
     /**
      * What the server said. A duplicate is a success: the settlement is deterministic, so

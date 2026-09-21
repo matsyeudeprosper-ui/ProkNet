@@ -337,6 +337,9 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     init {
         // v0.15.3: the node owns the settlement queue; NetworkNode owns the server address
         node.brainUrlProvider = { brainUrl }
+        // v0.16.0: anything booked before the queue existed, or abandoned by the old
+        // twelve-attempt limit, is picked up again on every start
+        try { node.settlementSync.backfill() } catch (e: Exception) { DiagLog.w(tag, "backfill: " + e.message) }
     }
 
     /**
@@ -488,6 +491,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 .append(", budget ").append(Market.cfa(c.buyerBudgetCentimes)).append(", rate ").append(Market.cfa(c.rateCentimesPerMb.toLong()))
                 .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
         }
+        sb.append(node.payments.describe()).append("\n")
         sb.append(node.settlementSync.describe()).append("\n")
         sb.append("session shutdown:\n")
             .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")

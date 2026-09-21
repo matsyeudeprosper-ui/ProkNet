@@ -43,6 +43,26 @@ class SettlementSync(
     val configured: Boolean get() = brainUrl().isNotEmpty()
 
     /**
+     * v0.16.0: everything eligible that is not already queued.
+     *
+     * Obligations booked before the queue existed, or while it was failing, would
+     * otherwise be abandoned for ever. Enqueueing is keyed on the settlement id, so this
+     * is safe to run on every start.
+     */
+    fun backfill(): Int {
+        var added = 0
+        for (o in store.settlements(500)) {
+            if (store.syncRow(o.settlementId) != null) continue
+            // only what the server could actually verify
+            if (packageFor(o.sessionHex) == null) continue
+            store.enqueueSync(o.settlementId, o.sessionHex)
+            added++
+        }
+        if (added > 0) DiagLog.i(tag, "backfilled " + added + " older settlement(s) into the queue")
+        return added
+    }
+
+    /**
      * Queue a finished session. Called right after the obligation is booked, whether or
      * not anything is reachable.
      */
@@ -165,8 +185,10 @@ class SettlementSync(
     /** One line for the technical details. Never for a consumer card. */
     fun describe(): String {
         val (pending, reported, disputed) = store.syncCounts()
+        val stale = store.pendingSync().count { Evidence.longPending(it.attempts) }
         return "  server verification: " + (if (!configured) "not configured (local mode)" else
             reported.toString() + " verified, " + pending + " pending, " + disputed + " disputed") +
+            (if (stale > 0) " (" + stale + " waiting a long time, still queued)" else "") +
             (if (lastError.isEmpty()) "" else "\n  last error: " + lastError)
     }
 }
