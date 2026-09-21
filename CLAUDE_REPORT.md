@@ -1,151 +1,180 @@
-# CLAUDE_REPORT - ProkNet v0.15.2 "Gagner and Activité, redesigned"
+# CLAUDE_REPORT - ProkNet v0.15.3 "end-to-end settlement trust"
 
-Date: 2026-09-20
+Date: 2026-09-21
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 396/396 Android tests and 55/55 server tests pass, released
-as build 60. A UI release: no new capability, no protocol change, nothing
-removed. Hardware acceptance is TESTING 64.**
-
-Commit `e1730d5`.
-
-## 1. What was actually wrong
-
-**Gagner** had grown to seven cards of equal visual weight, stacked around the
-button that does the work:
+Status: **built, 408/408 Android tests and 70/70 server tests pass, released
+as build 61. Three gaps closed, no new features. Hardware acceptance is
+TESTING 65.**
 
 | | |
 |---|---|
-| 1 | source line + warning |
-| 2 | auto-price text + estimate + three price chips + fee note |
-| 3 | "Mon forfait" toggle hiding two number fields and a save button |
-| 4 | the start button |
-| 5 | three stat boxes, then a customer line, then a stop button |
-| 6 | total earned + receivable + a heavy Wallet button |
-| 7 | notifications switch, coverage switch, relay panel |
+| `ed69f52` | android: persist and submit signed settlement evidence |
+| `f8a1ba6` | server: enforce settlement and payment submitter authorization |
+| `c9bd13c` | ui: Compte belongs to Activité only |
 
-Nothing told the eye what mattered. A first-time user meets a price policy and
-a form before they meet the offer, so the screen reads as paperwork.
+All three gaps you named were real. I checked each in the code before
+changing anything.
 
-**Activité** had a different problem. When the Wallet arrived in v0.15.1 the old
-money widgets stayed behind, so the screen still carried three money boxes, a
-custody note, a payment card and a receiving-method card — all of them one tap
-away in the Wallet — and the account settings were buried under them. Two
-screens were doing one job.
+---
 
-## 2. Gagner: one question, three cards
+## 1. Android evidence persistence
 
-The screen asks one thing: *do you want to share your Internet right now?*
+**Almost nothing had to be stored that was not already stored**, which is the
+best possible answer to your second point. The `sessions` table already keeps
+the contract bytes with both signatures; the `checkpoints` table already keeps
+each checkpoint body with the seller signature and the buyer countersignature.
+Every byte the server's verifier needs was durable from the moment the session
+ended.
 
-1. **The hero.** One state, one title, one sentence, **one button**. The
-   button's meaning comes from the state, so the two panes and two buttons
-   (`netShareSetup`/`netShareActive`, `btnStartSharing`/`btnStopSharing`)
-   collapsed into `btnEarnAction`. While sharing, the three live figures sit
-   *inside* the hero instead of competing with it as three cards. A dot carries
-   the state: grey, amber when visible, green when someone is connected.
-2. **Money.** One big figure, what is owed underneath, and a quiet text link to
-   the Wallet instead of a heavy button.
-3. **Réglages du partage.** One row, a summary line, a chevron. Everything
-   expert-level lives behind it.
+The only new table is `settlement_sync`: the queue state, not the evidence.
+Schema version 6 to 7, migrating by creating the new table.
 
-Four states, all tested: no source, ready, waiting, serving.
+`core/Evidence.kt` assembles the package **from the database**, never from a
+live object. That is what makes a settlement survive a restart: the session
+ended days ago and every byte it signed is still on disk. Public keys come from
+`identity.pubBytes` and the `peer_keys` row learned during the handshake.
 
-## 3. Nothing was removed, only moved
+It sends evidence, not results. The claimed settlement id and gross travel as
+optional cross-checks the server may refuse us on, exactly as you specified.
 
-Behind the Réglages row: the three price choices, the bundle form, the fee
-note, notifications, coverage sharing, relay, and the diagnostic source detail.
-The summary line ("Équilibré · Alertes activées") shows the state without
-opening it.
+**No unsigned fallback.** `Evidence.build` returns a `Missing` reason rather
+than throwing, and there is deliberately no branch that asks the server to
+trust a local amount. The reasons are ordinary: a free session owes nothing, a
+session whose closing checkpoint was never countersigned has nothing anybody
+may be billed for, a v1 session is out of scope. In each case no submission is
+ever attempted, and the phone still shows the local obligation honestly.
 
-I verified this mechanically rather than by eye: every `R.id` referenced in
-`MainActivity` is checked against the layouts, and none is missing. The four
-ids that disappeared were deliberately replaced by the single hero button.
+## 2. Signed request
 
-## 4. Two wording rules the tests enforce
+`core/SignedApi.kt` is the phone half of `signed_request.py`: identity,
+timestamp, nonce, and a signature over
+`ProkNet-api-1|ts|nonce|sha256(body)`.
 
-- **No subtitle is ever two sentences.** This caught a real one: the sharing
-  state read "Votre téléphone est visible. Vous serez payé dès que quelqu'un se
-  connecte." The first half is already implied by the title "Vous partagez", so
-  it is gone.
-- **Nothing says "clients".** A person counts people, so the live figure is
-  "Personne connectée", not "Clients".
+**The body is built once and the same array is signed and written.** Your
+warning about re-serialising was the right one to give: a different key order
+or one extra space changes the hash. The code makes it structurally impossible
+rather than merely avoiding it, and a test flips one byte of the body to prove
+the verification fails.
 
-Each price choice now explains itself in one line, so the three words are not a
-riddle: cheaper means more people connect, earn more means more per person.
+I also ported the verifier to Kotlin so the two halves can be checked against
+each other on this side of the wire, rather than discovering a mismatch on the
+phones.
 
-**Stopping is calm.** It was a red `DangerButton`. Stopping sharing is
-completely reversible, so it is now a secondary button, and the filled one is
-reserved for the action we actually want. (My first attempt set the text colour
-to the danger red *on* the danger background, which would have been invisible.
-Caught before building.)
+## 3. Sync queue, retry and offline behaviour
 
-## 5. Activité: a history, and only that
+`node/SettlementSync.kt`. Queued on settlement by both phones independently;
+drained on the existing brain-sync timer and immediately after a session, on a
+background executor.
 
-The duplicated widgets were **deleted**, not hidden: three money boxes, the
-custody note, the payment card, the receiving-method card, and the two render
-functions that fed them. Everything they did is reachable in the Wallet pane.
+- Doubling backoff from 30 seconds to a 6 hour ceiling, capped at 12 attempts.
+  No tight loop, and a phone back from a week offline does not hammer the
+  server.
+- **A failed submission never touches the local obligation.** The queue row
+  carries the failure; the money is untouched.
+- A retry is a new timestamp, a new nonce and a new signature over the **same
+  deterministic settlement**, so it is a fresh request rather than a replay.
+- **A duplicate is success.** The id is derived from signed facts, so "already
+  reported" is exactly the outcome we wanted.
+- 400 and 403 stop the retries, because the evidence itself is wrong and
+  resending the same bytes cannot help. 401 (clock skew, reused nonce), 5xx and
+  timeouts stay retryable.
 
-Activité is now sessions grouped by day, each row showing what it was, who with,
-the amount and its state. The account moved out from underneath into its own
-**Compte** section.
+**Offline-first is preserved.** The server is a witness, not a participant. Two
+phones still find each other, agree a price, share Internet and settle with
+nobody else involved. Both phones report independently and the server
+reconciles; neither waits for the other.
 
-`core/ActivityUi.kt` deliberately reuses `WalletUi.dayLabel`,
-`WalletUi.shortName` and the Wallet's status words, so the two histories cannot
-drift apart visually or disagree about the same fact. A test asserts that.
+## 4. Server: payment initiation authorization
 
-A free session reads **Gratuit**, not "0 CFA" — a zero reads like something went
-wrong.
+Your reading was exact. `/v1/payments/initiate` verified the request signature
+and then trusted `buyer_id` from the JSON body, so any valid Prok identity
+could start a payment in somebody else's name.
 
-## 6. Design rules applied
+- the authenticated submitter must **be** the buyer named in the payment, or
+  403, and the stored buyer is now taken from the verified identity rather than
+  the body;
+- a payment must name its seller, and every allocation must belong to that same
+  buyer and seller, so one transfer cannot pay one seller for another's work;
+- `payment_destinations` records where a seller is paid per rail; a payment
+  naming a different destination for a seller already on record is refused as a
+  security review rather than sent somewhere new on a phone's say-so.
 
-One card radius and one card background across both screens. Spacing on a
-4-point rhythm, 26dp inside the important cards and 20dp elsewhere. One filled
-button per screen. Status colour carried by three tones rather than a palette.
-Section headings instead of a flat stack. Amounts in the strong weight, labels
-muted and small. No uppercase, no monospace, no dense paragraphs.
+Request replay and payment idempotency stay separate, as you insisted: a fresh
+nonce satisfies the request layer, while the same rail and operator reference
+is still recognised as the same real transfer. A test asserts both at once.
 
-## 7. Tests
+## 5. Activity / Wallet / Compte
 
-396 Android JVM tests (+17) and 55 server tests, all previous ones unmodified.
+You were right, and I confirmed it in the layout before touching it: the Compte
+section closed **outside** both `activityPane` and `walletPane`, so switching to
+Wallet left the account, network and developer cards under the money screen.
 
-- `EarnUiTest` (10): the four states, the no-source explanation, the resting
-  offer, sharing and serving, one button per state, the live figures, the
-  earnings block, the settings summary, the policy hints, the demand prompt,
-  and a sweep for enums, protocol words, "clients" and shouting.
-- `ActivityUiTest` (7): row content, free sessions, wording shared with the
-  Wallet, day grouping, the empty state, and a sweep for raw identities,
-  megabytes, enums and session ids.
+The whole section moved inside `activityPane`. Selecting Wallet now hides it
+with the history.
 
-Two failures during the work were my own assertions, not the code: a naive
-"shouting" check flagged "11 CFA" because CFA is an acronym and digits are not
-letters, and a megabyte check had earlier flagged "MTN **Mo**bile Money".
+Two smaller things while I was there. The summary card led with nothing when
+both figures were zero, leaving three equal zeros; it now leads with whatever
+needs action and falls back to the informational figure. And server
+verification state appears in the transaction detail under "Détails
+techniques" and nowhere else — a consumer card never mentions a server, and an
+obligation that has not reached one is not shown as wrong.
 
-## 8. Version / build / commit / hash
+## 6. Tests
 
-Build 60, versionName 0.15.2, verified with `aapt2 dump badging`.
-SHA256 `a392664d23935500b69822073470cd0739585723d375c7d27a7a171afe2ba055`.
-Commit `e1730d5` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.2
+408 Android JVM tests (+12) and 70 server tests (+15).
 
-## 9. Hardware test
+- `EvidenceTest` (10): the package shape against the server's required fields,
+  both roles, the cross-check, every `Missing` case, signature over exact bytes
+  with a tampered-byte check, skew, retry freshness, bounded backoff, and how
+  each HTTP answer is read.
+- `WalletUiTest` (+2): the leading figure, and server state confined to the
+  advanced sheet.
+- `tests/test_api.py` (15): **driven over a real socket against the real
+  handler**, so the wiring is under test and not just the pieces. Valid
+  evidence accepted; both phones reporting one settlement; retry with a new
+  nonce idempotent; reused nonce 401; body modified after signing 401; stranger
+  400; signing identity not matching the evidence submitter 401; unsigned 401;
+  and the five payment authorization cases including the impostor, the foreign
+  obligation, the two-seller batch and the contradicting destination.
 
-**TESTING 64.** Count the buttons on Gagner before opening Réglages: there must
-be one. Open Réglages and confirm every control still works — price choice,
-bundle, all three switches. Start sharing, connect the OnePlus, watch the hero
-change state, stop. Then check Activité shows only history plus Compte, and
-that no money figure appears on both Activité and Wallet.
+All 396 previous Android tests and all 55 previous server tests pass
+unmodified.
 
-## 10. Known limitations
+## 7. Version / build / commit / hash
 
-- **This is a visual and structural change only.** No protocol, pricing,
-  shutdown or settlement code was touched, which is why the 379 existing tests
-  passed unmodified throughout.
-- The Réglages pane is an expanding section rather than a proper bottom sheet.
-  It is honest and simple; a real sheet would feel better and needs a component
-  this project does not have without AndroidX.
-- The hero has no animation. The sphere on Home sets the bar and Gagner does not
-  meet it yet; a state transition there would be the next visual step.
-- The account section is compact but still a stack of cards. Home, Internet and
-  Map were not touched in this pass.
-- Everything from the v0.15.1 report still stands, including the largest gap:
-  the phone does not yet submit signed settlement evidence to the server.
+Build 61, versionName 0.15.3, verified with `aapt2 dump badging`.
+SHA256 `375facae6f54054d090e609797fbaafde6f76b263267ef19abd7b3e7b1623862`.
+Commits `ed69f52`, `f8a1ba6`, `c9bd13c` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.3
+
+## 8. Hardware test
+
+**TESTING 65**, and 65b is the one that matters: run a paid session with the
+server unreachable and confirm the session, the settlement and the Wallet all
+work with **no error reaching the user**. Then make the server reachable and
+confirm the evidence uploads and the detail sheet reads "Vérifié". Then repeat
+with a force-stop before the sync. Finally check that no account, network or
+Developer card appears under the Wallet.
+
+## 9. Known limitations
+
+- **Still no real Mobile Money.** MTN and Airtel remain unavailable and refuse
+  to initiate, exactly as before. This release is trust wiring, not operator
+  integration.
+- **No webhook signing secret ships**, so nothing can be confirmed by webhook.
+- **The server accepts a phone's proposed allocations** after validating them
+  against what each obligation still owes and who the parties are. A phone can
+  propose a silly split; it will be refused, not accepted.
+- **The destination check only bites once a seller is on record.** The first
+  payment to a new seller establishes the destination. Until operator
+  integration exists there is no independent source to check the first one
+  against, and I would rather say that than pretend otherwise.
+- The sync queue drains on the brain timer and after a session. There is no
+  connectivity-change trigger, so a phone that regains signal may wait for the
+  next tick.
+- `Evidence.interpret` reads the server's verdict by substring on the JSON. It
+  is adequate for two known response shapes and should become a real parse if
+  the response grows.
+- Everything from v0.15.2 still stands, including that the Gagner hero has no
+  animation.
