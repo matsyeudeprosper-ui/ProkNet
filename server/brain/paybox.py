@@ -34,6 +34,9 @@ T_RECEIPT = "pay1.receipt"
 T_END = "pay1.expend"
 
 D_DESTINATION_CLAIM = "ProkNet-destination-claim-1"
+#: v0.16.5. The same claim with its created_at inside the signature, because that
+#: timestamp decides when a new destination becomes active.
+D_DESTINATION_CLAIM_V2 = "ProkNet-destination-claim-2"
 D_EXPECTATION = "ProkNet-payment-expectation-1"
 D_DEVICE_RECEIPT = "ProkNet-device-receipt-1"
 
@@ -77,12 +80,32 @@ def destination_hash(rail: str, msisdn: str) -> str:
 # ---- parsing and verification --------------------------------------------------------------------
 
 class Destination:
-    """`dest1|sellerId|rail|msisdn|version|createdAt|sig`, wrapped in the PayWire envelope."""
+    """`destN|sellerId|rail|msisdn|version|createdAt|sig`, wrapped in the PayWire envelope.
+
+    Two formats, and the prefix says which:
+
+    - `dest1` (v0.16.0) signs seller, rail, number and version. **Not** created_at.
+    - `dest2` (v0.16.5) signs created_at as well.
+
+    v0.16.4 made created_at decide when a new destination becomes active, here and on the
+    phone, while it was still outside the signature. Anything carrying a claim could have
+    moved the cooling window: earlier, and a buyer is sent to a number the seller is not
+    watching yet; later, and the seller keeps being paid on a number it has abandoned.
+
+    `dest1` is still read, because claims signed that way are already on phones and in
+    this database, and refusing them would make sellers re-enter a number they never
+    changed. Nothing ever creates one again, and `time_is_signed` says which kind this is.
+    """
+
+    FORMAT_LEGACY = 1
+    FORMAT_SIGNED_TIME = 2
+    WIRE = {"dest1": FORMAT_LEGACY, "dest2": FORMAT_SIGNED_TIME}
 
     def __init__(self, line: str):
         p = line.split("|")
-        if len(p) != 8 or p[0] != T_DESTINATION or p[1] != "dest1":
+        if len(p) != 8 or p[0] != T_DESTINATION or p[1] not in self.WIRE:
             raise PayError("malformed destination claim")
+        self.format = self.WIRE[p[1]]
         self.line = line
         self.seller_id, self.rail, self.msisdn = p[2], p[3], p[4]
         try:
@@ -95,9 +118,27 @@ class Destination:
         if not 6 <= len(normalize_msisdn(self.msisdn)) <= 15:
             raise PayError("invalid destination number")
 
+    @property
+    def time_is_signed(self) -> bool:
+        """Whether this claim's cooling timestamp is a signed fact. False for `dest1`."""
+        return self.format == self.FORMAT_SIGNED_TIME
+
     def sign_data(self) -> bytes:
+        """The bytes this claim's own format says were signed.
+
+        Chosen by the prefix, never guessed, so a legacy claim cannot be relabelled
+        `dest2` and have its unsigned timestamp treated as authenticated.
+        """
+        if self.format == self.FORMAT_SIGNED_TIME:
+            return self.sign_data_v2()
         return ("%s|%s|%s|%s|%d" % (D_DESTINATION_CLAIM, self.seller_id, self.rail,
                                     normalize_msisdn(self.msisdn), self.version)).encode("utf-8")
+
+    def sign_data_v2(self) -> bytes:
+        """`DestinationClaim.signDataV2` on the phone builds the same string."""
+        return ("%s|%s|%s|%s|%d|%d" % (D_DESTINATION_CLAIM_V2, self.seller_id, self.rail,
+                                       normalize_msisdn(self.msisdn), self.version,
+                                       self.created_at)).encode("utf-8")
 
     def hash(self) -> str:
         return destination_hash(self.rail, self.msisdn)
@@ -329,6 +370,42 @@ class PayBox:
             "line": row["line"], "version": int(row["version"]), "hash": row["dest_hash"],
             "rail": row["rail"], "seller_pub": row["seller_pub"]}
 
+    def acceptable_destinations(self, seller_id: str, now: int, asked_at: int, cooling_ms: int):
+        """The destination hashes an expectation created at `asked_at` may name.
+
+        v0.16.5. This used to be a single hash, worked out from the moment the expectation
+        happened to reach this server. That is the wrong clock. Consider:
+
+            09:59  the buyer creates a signed expectation; MTN is still active
+            10:00  the cooling window closes and Airtel becomes active
+            10:01  the buyer finally gets online and uploads the expectation
+
+        Checked against 10:01 the expectation names MTN while Airtel is active, and the
+        Brain refused a payment the seller itself had asked for a minute earlier. The
+        arrival time is the one thing here that is not a signed fact - it depends on when
+        a phone found signal.
+
+        So: what was active when the buyer asked, and what is active now. Two, only while
+        a change is in flight; normally one.
+
+        `DestinationClaim.acceptableHashes` on the phone returns the same set, and the
+        shared fixture pins them together - the seller's own decision and this one must
+        not be able to differ.
+
+        Returned as (rail, hash) pairs. The rail is part of it because the expectation
+        carries a rail field of its own beside the hash, and a payment named on one rail
+        to a number on another does not arrive.
+        """
+        out = []
+        for at in (now, asked_at):
+            row = self.active_destination(seller_id, at, cooling_ms)
+            if row is None:
+                continue
+            pair = (row["rail"], row["dest_hash"])
+            if pair not in out:
+                out.append(pair)
+        return out
+
     def destinations_for_buyer(self, seller_id: str, now: int, cooling_ms: int):
         """Where this seller may be paid, as a list, without the buyer naming a rail.
 
@@ -370,12 +447,14 @@ class PayBox:
         if e.amount <= 0 or not e.settlement_ids:
             raise PayError("expectation covers nothing")
 
-        dest = self.active_destination(e.seller_id, now, cooling_ms)
-        if dest is not None and dest["rail"] != e.rail:
-            raise PayError("the destination is not on that rail")
-        if dest is None:
+        # v0.16.5: judged by the destination that was active when the BUYER created this,
+        # not by whatever is active at the moment it reaches us. `created_at` is inside the
+        # buyer's signature, so it cannot be backdated to reach an older destination.
+        if self.active_destination(e.seller_id, e.created_at, cooling_ms) is None \
+                and self.active_destination(e.seller_id, now, cooling_ms) is None:
             raise PayError("this seller has no destination on record")
-        if e.destination_hash != dest["dest_hash"]:
+        acceptable = self.acceptable_destinations(e.seller_id, now, e.created_at, cooling_ms)
+        if (e.rail, e.destination_hash) not in acceptable:
             raise PayError("expectation names a destination this seller is not using")
 
         # where the server knows the settlements, the amount must agree; where it does not,
