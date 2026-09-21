@@ -1,0 +1,41 @@
+{
+  "note": "v0.16.3 cross-language fixture. TEST KEYS ONLY - these private keys are in the repository on purpose and must never be used for anything real. Python writes this file; the Kotlin tests read it and must agree byte for byte. kotlin_signature fields are captured from a Kotlin test run so the Python side can verify a signature Android actually produced.",
+  "request": {
+    "body": "7b227061796d656e745f6964223a227031222c227265706c79223a224143434550544544227d",
+    "body_hash": "60d270e749ec374afb1aa2fd5343dcd43a2faaa4c1f096d13d0ec86c69711739",
+    "canonical_target": "/v1/pay/reply?payment=p1&seller=bb11",
+    "kotlin_signature": "3045022100f9c45a5e965df22c0069c05520027de23dc72dc90093640d1b8e8476df92c853022004790d958fb5df3a7e1651717c3a57faab86c22b7d24565bcb97b7a10e905694",
+    "method": "POST",
+    "nonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "private_pkcs8": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420b85a5f768aaccaec1fa042ddc5e5b3b663d21e6be43a6f8302e34baf56f27322a14403420004cfa1a53a1296345e9fb6aeb9c0365a2d5d71509c2e2887bf440278d7ffc2affdbd6c738e5fa889994399916050136b2248714049f9bfe05319d4cb91469baa4d",
+    "public": "cfa1a53a1296345e9fb6aeb9c0365a2d5d71509c2e2887bf440278d7ffc2affdbd6c738e5fa889994399916050136b2248714049f9bfe05319d4cb91469baa4d",
+    "python_signature": "3046022100b71ac366ca93002c38fe38e724b6752715228fa690dd0605eac709ab3174cd90022100d8f57b8a0f11ccb92acc5de58af90a597fd348d08249355386e974e0dc9aeb75",
+    "request_target": "/v1/pay/reply?seller=bb11&payment=p1",
+    "signing_line": "ProkNet-api-1|1700000000000|0f1e2d3c4b5a69788796a5b4c3d2e1f0|60d270e749ec374afb1aa2fd5343dcd43a2faaa4c1f096d13d0ec86c69711739|POST|/v1/pay/reply?payment=p1&seller=bb11",
+    "ts": 1700000000000
+  },
+  "rules": {
+    "canonical": "ProkNet-receipt-rules-1|{\"terms\":{\"balance\":[],\"credit\":[\"fonds arrives\",\"vous avez recu\"],\"currency\":[\"XAF\",\"FCFA\"],\"debit\":[],\"reject\":[],\"senders\":[]},\"validFrom\":1758400000000,\"version\":2}",
+    "kotlin_signature": "3045022100df578720436884f4a83a8104a6377a4fa9da383f2724d6ac7be4985c968aee9a02206f1471433d205509b5a0eb28d8bbbb673b281465021e26ee5f5113a85448aaee",
+    "private_pkcs8": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420af4d8359b51aba30a732c5fde5b4db5a72684aa20e1bf5602f9b645921488dfaa144034200041cd803660dcc14a9aa64d358841510f7707912161d249b3446e784c752267e6d005aaa88857a1dd261e23800c9664270bac23608fabbbe3d2e5f4e779060fac4",
+    "public": "1cd803660dcc14a9aa64d358841510f7707912161d249b3446e784c752267e6d005aaa88857a1dd261e23800c9664270bac23608fabbbe3d2e5f4e779060fac4",
+    "python_signature": "3044022048c4b7d553ab8e7a4979d0fb749688d92642a2087630180c43d6f36ee80eb84202201687ad8fb54359841b0be3a4c8e8ed10a28d8d65bd76f4df8de1dc89b9998073",
+    "server_response": "{\"rules\": {\"signature\": \"3044022048c4b7d553ab8e7a4979d0fb749688d92642a2087630180c43d6f36ee80eb84202201687ad8fb54359841b0be3a4c8e8ed10a28d8d65bd76f4df8de1dc89b9998073\", \"terms\": {\"balance\": [], \"credit\": [\"fonds arrives\", \"vous avez recu\"], \"currency\": [\"XAF\", \"FCFA\"], \"debit\": [], \"reject\": [], \"senders\": []}, \"validFrom\": 1758400000000, \"version\": 2}}",
+    "terms": {
+      "balance": [],
+      "credit": [
+        "fonds arrives",
+        "vous avez recu"
+      ],
+      "currency": [
+        "XAF",
+        "FCFA"
+      ],
+      "debit": [],
+      "reject": [],
+      "senders": []
+    },
+    "validFrom": 1758400000000,
+    "version": 2
+  }
+}
