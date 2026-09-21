@@ -45,9 +45,16 @@ object PayWire {
 
     // ---- 1. where the seller is paid ------------------------------------------------------------------
 
-    /** Reuses [DestinationClaim]'s own signed encoding; this only adds the envelope. */
-    fun destinationClaim(c: DestinationClaim.Claim, sig: ByteArray): String =
-        T_DESTINATION_CLAIM + SEP + DestinationClaim.encode(c, sig)
+    /**
+     * Reuses [DestinationClaim]'s own signed encoding; this only adds the envelope.
+     *
+     * [format] must be the format the signature was actually made in. A legacy claim
+     * re-sent as v2 would not verify, and a legacy claim relabelled as v2 must not: its
+     * timestamp was never signed.
+     */
+    fun destinationClaim(c: DestinationClaim.Claim, sig: ByteArray,
+                         format: Int = DestinationClaim.FORMAT_SIGNED_TIME): String =
+        T_DESTINATION_CLAIM + SEP + DestinationClaim.encode(c, sig, format)
 
     fun parseDestinationClaim(line: String): DestinationClaim.Decoded? {
         if (typeOf(line) != T_DESTINATION_CLAIM) return null

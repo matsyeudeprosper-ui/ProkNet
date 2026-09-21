@@ -4,6 +4,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 import net.prok.proknet.core.BrainPayload
+import net.prok.proknet.core.DestinationClaim
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.MessageStore
@@ -100,8 +101,11 @@ class PaymentSync(
             val key = "dest:" + c.version
             if (store.paySyncDone(key)) continue
             val sig = store.destinationSig(identity.idHex, c.version) ?: continue
+            // the format the signature was actually made in; see sendDestinationTo
+            val format = DestinationClaim.formatOf(c, identity.pubBytes, sig)
+            if (format == 0) continue
             val body = json(
-                "line" to PayWire.destinationClaim(c, sig),
+                "line" to PayWire.destinationClaim(c, sig, format),
                 "seller_pub" to identity.pubBytes.toHex())
             if (post("/v1/pay/destination", body).first in 200..299) {
                 store.markPaySynced(key)

@@ -15,7 +15,33 @@ package net.prok.proknet.core
  */
 object DestinationClaim {
 
+    /**
+     * v0.16.0's signed bytes. `createdAt` is **not** in them.
+     *
+     * Kept only so claims already on phones and in Brain databases keep verifying. No
+     * build after 66 ever creates one.
+     */
     const val DOMAIN = "ProkNet-destination-claim-1"
+
+    /**
+     * v0.16.5: the same claim with its `createdAt` inside the signature.
+     *
+     * v0.16.4 made that timestamp decide when a new destination becomes active, on both
+     * the phone and the Brain - while it was still unsigned. Anything carrying the claim
+     * could have moved the cooling window: ten minutes earlier and a buyer is sent to a
+     * number the seller is not watching yet; ten minutes later and the seller keeps being
+     * paid on a number it has abandoned. A field that decides where money goes has to be
+     * a signed fact.
+     */
+    const val DOMAIN_V2 = "ProkNet-destination-claim-2"
+
+    /** Wire prefixes. The prefix says which bytes were signed, so it cannot be guessed. */
+    const val WIRE_V1 = "dest1"
+    const val WIRE_V2 = "dest2"
+
+    /** Signature formats, as small integers. 0 means "did not verify at all". */
+    const val FORMAT_LEGACY = 1
+    const val FORMAT_SIGNED_TIME = 2
 
     class Claim(
         val sellerId: String,
@@ -35,16 +61,71 @@ object DestinationClaim {
 
         fun hash(): String = PaymentExpectation.destinationHash(rail, msisdn)
 
-        /** What the seller signs. The version is inside, so a downgrade is not signable. */
+        /**
+         * v0.16.0's signed bytes, without `createdAt`. Legacy: verified, never produced.
+         */
         fun signData(): ByteArray =
             (DOMAIN + "|" + sellerId + "|" + rail.name + "|" + normalized + "|" + version).toByteArray(Charsets.UTF_8)
+
+        /**
+         * What a seller signs from v0.16.5 on:
+         *
+         *     ProkNet-destination-claim-2|<sellerId>|<RAIL>|<normalised msisdn>|<version>|<createdAt>
+         *
+         * `Destination.sign_data_v2` on the server builds the same string, and a fixture
+         * pins the two together byte for byte.
+         */
+        fun signDataV2(): ByteArray =
+            (DOMAIN_V2 + "|" + sellerId + "|" + rail.name + "|" + normalized + "|" + version +
+                "|" + createdAt).toByteArray(Charsets.UTF_8)
 
         /** Safe to show: enough to read at a kiosk, not enough to publish. */
         fun masked(): String = PaymentExpectation.maskedNumber(msisdn)
     }
 
-    fun verify(c: Claim, sellerPub: ByteArray, sig: ByteArray): Boolean =
-        c.valid && Crypto.deriveId(sellerPub).toHex() == c.sellerId && Crypto.verify(sellerPub, c.signData(), sig)
+    /** What a seller signs now. Always the v2 bytes. */
+    fun sign(c: Claim, signer: Signer): ByteArray = signer.sign(c.signDataV2())
+
+    /**
+     * Verify [c] in exactly one format.
+     *
+     * Strict on purpose: a claim that arrived as `dest2` must verify as v2, so a carrier
+     * cannot relabel a legacy claim and have its unsigned timestamp treated as signed.
+     */
+    fun verify(c: Claim, sellerPub: ByteArray, sig: ByteArray,
+               format: Int = FORMAT_SIGNED_TIME): Boolean {
+        if (!c.valid) return false
+        if (Crypto.deriveId(sellerPub).toHex() != c.sellerId) return false
+        val data = when (format) {
+            FORMAT_SIGNED_TIME -> c.signDataV2()
+            FORMAT_LEGACY -> c.signData()
+            else -> return false
+        }
+        return Crypto.verify(sellerPub, data, sig)
+    }
+
+    /**
+     * Which format a stored claim was signed in, or 0 if neither verifies.
+     *
+     * The database keeps the fields and the signature, not the wire line, so this is how a
+     * claim is re-encoded for the wire without another schema migration: try the format we
+     * produce now, fall back to the one we used to.
+     */
+    fun formatOf(c: Claim, sellerPub: ByteArray, sig: ByteArray): Int = when {
+        verify(c, sellerPub, sig, FORMAT_SIGNED_TIME) -> FORMAT_SIGNED_TIME
+        verify(c, sellerPub, sig, FORMAT_LEGACY) -> FORMAT_LEGACY
+        else -> 0
+    }
+
+    /**
+     * v0.16.5: is this claim's cooling timestamp a signed fact?
+     *
+     * False for a legacy claim. Its timestamp is still used - refusing would break every
+     * phone that has one, and would make a seller re-enter a number they never changed -
+     * but nothing may describe it as authenticated, and the moment that seller changes
+     * anything the replacement is v2.
+     */
+    fun timeIsSigned(format: Int): Boolean = format == FORMAT_SIGNED_TIME
 
     /**
      * May [next] replace [current]?
@@ -131,18 +212,34 @@ object DestinationClaim {
 
     // ---- the wire ----------------------------------------------------------------------------------
 
-    /** One line, so it can travel over the tunnel, the brain, or carried by another phone. */
-    fun encode(c: Claim, sig: ByteArray): String =
-        listOf("dest1", c.sellerId, c.rail.name, c.normalized, c.version.toString(),
+    /**
+     * One line, so it can travel over the tunnel, the brain, or carried by another phone.
+     *
+     * The prefix names the signature format. The line already carried `createdAt`; from
+     * v0.16.5 that field is also inside the signature, so altering it in transit breaks
+     * the claim instead of silently moving the cooling window.
+     */
+    fun encode(c: Claim, sig: ByteArray, format: Int = FORMAT_SIGNED_TIME): String =
+        listOf(if (format == FORMAT_LEGACY) WIRE_V1 else WIRE_V2,
+            c.sellerId, c.rail.name, c.normalized, c.version.toString(),
             c.createdAt.toString(), sig.toHex()).joinToString("|")
 
-    class Decoded(val claim: Claim, val sig: ByteArray)
+    class Decoded(val claim: Claim, val sig: ByteArray, val format: Int = FORMAT_SIGNED_TIME) {
+        /** True only when the timestamp cooling depends on was actually signed. */
+        val timeIsSigned: Boolean get() = timeIsSigned(format)
+    }
 
     fun decode(line: String): Decoded? {
         val p = line.split("|")
-        if (p.size != 7 || p[0] != "dest1") return null
+        if (p.size != 7) return null
+        val format = when (p[0]) {
+            WIRE_V2 -> FORMAT_SIGNED_TIME
+            WIRE_V1 -> FORMAT_LEGACY
+            else -> return null
+        }
         return try {
-            Decoded(Claim(p[1], Settlement.Rail.valueOf(p[2]), p[3], p[4].toInt(), p[5].toLong()), p[6].hexToBytes())
+            Decoded(Claim(p[1], Settlement.Rail.valueOf(p[2]), p[3], p[4].toInt(), p[5].toLong()),
+                p[6].hexToBytes(), format)
         } catch (e: Exception) { null }
     }
 }

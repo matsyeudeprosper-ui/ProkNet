@@ -88,7 +88,8 @@ class PaymentEngine(
             DestinationClaim.nextVersion(current), now)
         if (!claim.valid) return null
         if (!DestinationClaim.mayReplace(current, claim)) return null
-        val sig = identity.sign(claim.signData())
+        // v0.16.5: always the v2 bytes, so the timestamp cooling depends on is signed
+        val sig = DestinationClaim.sign(claim, identity)
         store.saveDestinationClaim(claim, sig)
         DiagLog.i(tag, "payment destination v" + claim.version + " claimed for " + rail +
             " (" + claim.masked() + ")" + (if (current != null) ", usable in a few minutes" else ""))
@@ -263,7 +264,7 @@ class PaymentEngine(
     fun onDestinationClaim(line: String, sellerPub: ByteArray?): Boolean {
         val d = net.prok.proknet.core.PayWire.parseDestinationClaim(line) ?: return false
         if (sellerPub == null) return false
-        if (!DestinationClaim.verify(d.claim, sellerPub, d.sig)) {
+        if (!DestinationClaim.verify(d.claim, sellerPub, d.sig, d.format)) {
             DiagLog.w(tag, "a payment destination did not verify; ignored")
             return false
         }
@@ -311,7 +312,13 @@ class PaymentEngine(
     fun sendDestinationTo(buyerId: String, now: Long = System.currentTimeMillis()): Boolean {
         val c = activeDestination(now) ?: return false
         val sig = store.destinationSig(identity.idHex, c.version) ?: return false
-        return send?.invoke(buyerId, net.prok.proknet.core.PayWire.destinationClaim(c, sig)) ?: false
+        // v0.16.5: a claim made before build 67 was signed without its timestamp, so it
+        // has to go back out labelled as what it is. Derived from the signature itself,
+        // which is why this needed no second database migration.
+        val format = DestinationClaim.formatOf(c, identity.pubBytes, sig)
+        if (format == 0) return false
+        return send?.invoke(buyerId,
+            net.prok.proknet.core.PayWire.destinationClaim(c, sig, format)) ?: false
     }
 
     /**
