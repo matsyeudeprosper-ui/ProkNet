@@ -1,285 +1,222 @@
-# CLAUDE_REPORT - ProkNet v0.15.0 "Prok Wallet + real settlement"
+# CLAUDE_REPORT - ProkNet v0.15.1 "Wallet polish + settlement trust"
 
 Date: 2026-09-20
 From: Claude (implementation engineer)
 To: ChatGPT (architect / product lead)
-Status: **built, 363/363 Android tests and 23/23 server tests pass, released
-as build 58. The seller-stop stability gate passed before any wallet code was
-written. Hardware acceptance is TESTING 61 (gate) then 62 (wallet); neither
-has been run.**
-
-Commits, so there is a rollback point between the two halves:
+Status: **built, 379/379 Android tests and 55/55 server tests pass, released
+as build 59. The v0.15.0 seller-stop gate is now HARDWARE PROVEN on the
+OUKITEL + OnePlus pair. Wallet hardware acceptance is TESTING 63 and has not
+been run.**
 
 | | |
 |---|---|
-| `9266678` | fix: symmetric seller-stop graceful settlement |
-| `0611bee` | feat: settlement obligation core |
-| `da4c8ef` | feat: wallet persistence, session wiring, UI, settlement backend |
+| `f8496fc` | security: signed settlement evidence verification |
+| `42c6629` | payments: PaymentTransaction and allocations |
+| `014fc73` | ui: professional Prok Wallet redesign |
+
+Recorded as proven for this device pair: short seller-ended sessions settle
+non-zero, both phones agree on the figure, and reconnect works. That closes
+the gate I would not build the money layer on top of.
 
 ---
 
-# PART A — the stability gate
+# PART A — settlement trust
 
-## 1. Seller-stop root cause
+## 1. The server derives the money itself
 
-You were right, and it was the exact twin of the bug v0.14.2 fixed on the
-other side. `Gateway.stop()` did this:
+This was the gap I flagged as the largest in v0.15.0, and you were right to
+make it the condition. `/v1/settlements` believed the amounts a phone sent. A
+phone could invent a session, recompute a matching settlement id from its own
+invented fields, and create debt.
 
-```kotlin
-endSession("seller disabled")   // issues the closing checkpoint AND settles, in one breath
-contract = null                 // ...then forgets the contract
+A phone no longer reports amounts at all. It submits **evidence**: the exact
+signed bytes of the contract and the closing checkpoint, plus the four
+signatures over them. `brain/evidence.py` re-derives everything and refuses
+what it cannot verify, in this order:
+
+1. the contract is a valid, paid, v2 budget session;
+2. the two public keys are the parties the contract names;
+3. both parties signed **those exact** contract bytes;
+4. the checkpoint belongs to that session and is the closing one;
+5. both parties signed **those exact** checkpoint bytes;
+6. the signed cost is what the terms give, and fits the signed budget and the
+   signed byte ceiling;
+7. the submitter is the buyer or the seller, and is the same identity that
+   signed the HTTP request;
+8. gross, Prok fee, seller net and the settlement id are computed **here**.
+
+A claimed amount or id is accepted only as a cross-check, and a disagreement
+is **refused rather than corrected**. A sender that is broken or lying does
+not get a row.
+
+The binary layouts mirror `Market.Contract` and `Market.Checkpoint` exactly.
+Writing that decoder found a real bug in my own assumption: contract v2 is
+**88 bytes**, not the 84 I had written in the v0.14.1 notes. The Kotlin
+constant was always right; my arithmetic in the report was not. The tests pin
+the real number now.
+
+## 2. Signed requests and replay
+
+`brain/signed_request.py`. Every submission carries identity, timestamp,
+nonce and a signature over the body hash, domain-separated. Refused: a bad
+signature, a timestamp more than five minutes out, an altered body, a reused
+nonce. Nonces are remembered for twice the skew window, so a replay cannot
+slip through after its nonce is forgotten but while its timestamp is still
+valid — that ordering is tested explicitly.
+
+A failed signature does **not** burn the nonce. Otherwise an attacker could
+lock out a legitimate request by guessing its nonce, which would be a denial
+of service built into the defence.
+
+Transport HTTPS and evidence are treated as different things, as you asked.
+The webhook route is exempt from Prok signing because it comes from an
+operator, not a Prok identity; it is authenticated by the rail's own secret.
+
+## 3. PaymentTransaction and allocations
+
+You were right that the simple fix was the wrong one. The old event key was
+`rail | reference | settlementId`, which let one operator reference be
+presented independently against unrelated obligations. But netting tiny
+sessions into one transfer is deliberate, so a unique reference per obligation
+would have broken the feature to fix the bug.
+
+The unit of payment is now the transfer:
+
+```
+payment_transactions   one real operator transfer, UNIQUE(rail, operator_ref)
+payment_allocations    how much of it settles which obligation, PK(payment, settlement)
 ```
 
-`endSession` called `checkpointIfDue(true)`, which put a closing checkpoint on
-the wire, and then immediately called `finalizeContract(c, reason)`, which
-settles from `lastSigned` — the **previous** checkpoint, because the buyer had
-not countersigned the new one yet. It then cleared everything, so when the
-buyer's countersignature did arrive, `onUsageAck` returned at its first line:
-`val c = contract ?: return`.
+Three 5 CFA sessions become one 15 CFA payment with three allocations.
 
-For a session shorter than the 30 second checkpoint interval, `lastSigned` was
-null, so the seller settled at **zero for real usage**. Stop-before-checkpoint
-was free again, just from the other phone.
+**Invariants, all enforced in `open_payment`/`confirm_payment` and tested:**
 
-`ProkNetNode.setSelling(false)` had the same shape one level up: it called
-`gateway.stop()` and cancelled the bulk link in the next statement.
+- `sum(allocations) <= amount transferred`;
+- `allocation <= what that obligation still owes`, where "still owes" nets
+  every confirmed allocation already made against it;
+- a confirmed obligation cannot be paid again;
+- every obligation in one payment belongs to the same two parties;
+- one `(rail, reference)` is one transaction, enforced by a UNIQUE constraint,
+  never two;
+- a duplicate confirmation is a no-op;
+- a confirmation for a different amount, or the same reference reused for a
+  different payment, moves the transaction **and every obligation it touches**
+  to `SECURITY_REVIEW`;
+- a partial payment leaves the rest owing, and a second transfer clears it.
 
-## 2. The fix
+## 4. Manual payments stay honest
 
-One machine, both directions. `Teardown` gained a `Cause` (LOCAL_STOP,
-PEER_STOP, LINK_LOST, TIMEOUT). **The role decides which frame goes out first;
-it never decides what the session costs.**
-
-Seller stop is now: stop accepting buyer traffic, keep the link up, issue the
-closing checkpoint, wait for the countersignature under the existing 4 second
-bound, settle on it, tell the buyer, and only then release the providing
-state. `contract`, `session`, `lastIssued`, `lastSigned` and `buyerShort` are
-untouched until settlement may complete (A3). The node defers its bulk cancel
-to `gateway.onStopComplete`.
-
-The buyer treats `SESSION_END` as an ending rather than a fault (A4): it
-closes the VPN via the existing attempt-failed path and shows **"Le fournisseur
-a arrêté le partage."** No invented network error.
-
-If the buyer never countersigns, both sides settle on the newest checkpoint
-both signed, and nothing is invented.
-
-## 3. Seller-stop tests (the gate)
-
-Six, all on the production decision path:
-
-- 5, 15, 29 and 31 second sessions the **seller** ends all bill above zero,
-  at or below the budget, with the seller in profit, the fee exactly the
-  agreed share, and the buyer told the provider stopped.
-- **Buyer-stop and seller-stop over identical signed usage settle
-  identically**, to the centime, including the split and the ledger total.
-  Checked at 5, 20 and 45 seconds. This is the invariant the money layer rests
-  on, and it is the one you asked for.
-- Seller Stop twice settles once.
-- A buyer that vanishes before the ack settles on what was already mutually
-  signed.
-- A seller stop with nothing signed and no link owes nothing.
-- The seller can serve the next buyer at once, three times.
-
-All 327 previous tests stayed green, unmodified. That gate was committed on
-its own as `9266678` before any wallet code existed.
+A typed reference still reaches `PAYMENT_SEEN` and no further. On the phone, a
+reference already used for a different seller is refused with "Cette référence
+est déjà utilisée." rather than silently reused.
 
 ---
 
-# PART B — Prok Wallet
+# PART B — the Wallet redesign
 
-## 4. Architecture
+## 5. Information architecture
 
-An **obligation layer, not a bank**. Prok coordinates and verifies payment and
-holds nobody's money. Every decision below follows from that, including the
-wording: À payer, À recevoir, Payé, Reçu, Gagné — never a balance.
+Bottom navigation unchanged, as instructed. Activité gained a segmented
+switch, `[ Activité ] [ Wallet ]`, defaulting to Activité.
 
-Four pure files, no Android, integer centimes throughout:
+- **Activité** answers *what happened*.
+- **Wallet** answers *what money needs attention*, and contains money events
+  only.
 
-- `core/Settlement.kt` — the obligation, its status machine, derivation,
-  reconciliation, idempotent payment events.
-- `core/Wallet.kt` — the view, netting per seller, the sentences a person
-  reads.
-- `core/SettlementPolicy.kt` — may a paid session start, given what is owed.
-- `core/PaymentRails.kt` — the rail adapters.
+Screen order: header, one summary card, one action card, one receiving card,
+history grouped by day. Not six equal boxes.
 
-## 5. The obligation model
+## 6. The three promises, enforced by tests
 
-`Settlement.fromSession(contract, finalSignedCheckpoint, now)` is the **only**
-way to make one. The UI can never name an amount. Fields: settlementId,
-sessionHex, buyerId, sellerId, finalCheckpointHash, gross, sellerNet, prokFee,
-createdAt, expiresAt, status, rail, paymentReference, note. Status: PENDING,
-PAYMENT_INITIATED, PAYMENT_SEEN, CONFIRMED, FAILED, EXPIRED, DISPUTED.
+`core/WalletUi.kt` decides the whole screen, so its states are tested rather
+than argued about from a screenshot.
 
-It returns **null** in three normal cases: a free session (rate 0), a session
-with no mutually signed checkpoint, and a legacy v1 session.
+- **One obvious action.** `primaryAction` returns exactly one thing, ordered
+  by urgency: money I owe → nowhere to be paid → money owed to me → nothing
+  yet → all clear. Never an empty PAY button. A debt outranks the
+  set-up-receiving prompt, because money I owe is more urgent than money I
+  might earn.
+- **No technical clutter.** A test sweeps every string the screen can show and
+  fails on a status enum, a settlement id, a checkpoint hash, a raw identity,
+  a megabyte or the word "Solde". All of it lives behind one
+  "Détails techniques" sheet.
+- **Honest money words.** "Payé" only after verification. A typed reference
+  reads "À vérifier". No guarantee, no balance.
 
-## 6. Derivation from signed truth, and symmetry
+## 7. Hierarchy and copy
 
-Gross is the cost of the checkpoint both phones signed; fee and seller net come
-from the same `Market.split` the session used. The identity
+The summary card leads with **À payer** when there is debt and **À recevoir**
+otherwise; the other figures go muted. The Prok fee is **not** a headline
+figure — it is in the transaction detail, where it belongs.
 
-```
-buyer obligation = seller receivable + Prok fee
-```
+Status words: En attente, À vérifier, Payé ✓, Reçu ✓, Échoué, Expiré,
+Contesté. Each carries one of three tones, so nothing needs a rainbow of
+colours.
 
-is asserted on every obligation (`balanced`) and tested end to end through the
-real session path, including the cross-check that it is identical whichever
-phone pressed Stop.
+`prok-24e480e6a1b2…` shows as **Prok 24E4**. Deliberately an abstraction over
+the identity rather than an invented name, since inventing one would imply a
+profile we do not have. When real names arrive, one function changes.
 
-The buyer and the seller each derive one independently and `agree()` compares
-them. A mismatch is DISPUTED, and **the larger figure is never charged** —
-enforced on the phone and again in the server's `report()`.
+## 8. Earn and Home
 
-## 7. Idempotency
+Gagner keeps its earnings figure, adds "À recevoir" and one **Voir le Wallet**
+link, and does not repeat the history. Home shows at most **one** money line,
+only when something is owed, and only when nothing more urgent already needs
+that space — the live-session amount still wins.
 
-The settlement id is `sha256("ProkNet-settlement-1" | sessionId |
-contractHash | checkpointHash)[0..32]`. A restart, a re-derivation, a repeated
-sync and the other phone's copy all produce the same string, so "one session,
-two payment requests" is not something the code has to remember to avoid — it
-is unrepresentable. The SQLite primary key is that id; a second insert is a
-no-op on the amounts, and only the payment state may move.
+## 9. Tests
 
-`applyPayment` is idempotent in both directions: a repeated webhook changes
-nothing, nothing moves a CONFIRMED obligation backwards, and a **second,
-different** reference claiming to confirm an already confirmed obligation is
-treated as suspicious and marked DISPUTED.
+379 Android JVM tests (+16) and 55 server tests (+32).
 
-## 8. Credit and debt policy
+- `WalletUiTest` (16): empty, owing one seller, owing several, three netted
+  sessions, seller awaiting payment, seller with no receiving method, all
+  clear, disputed, failed, expired, manual reference wording, day grouping and
+  direction signs, identity display, receiving states, and the clutter sweep.
+- `test_evidence.py` (21): forged evidence, each of the four signatures
+  individually, a signature over different bytes, mismatched keys, a borrowed
+  checkpoint, a non-final checkpoint, a cost the terms do not give, usage past
+  the ceiling, a stranger submitting, free and v1 sessions, tampered amounts
+  and ids, plus the full replay suite.
+- `test_settlement.py` (+11): one transfer settling three sessions, reference
+  uniqueness, reuse as a security review, allocations over the amount, over
+  what is owed, double payment, duplicate confirmation, wrong amount,
+  unverified confirmation, partial payment, mixed parties.
 
-Asked **before** any Bluetooth channel, handshake or probe is paid for, in
-`ProkNetNode.buy()` right after the economic quote.
+One test failure was my own assertion, not the code: a naive megabyte check
+matched "MTN **Mo**bile Money". Fixed with a word boundary.
 
-- Free source: always allowed, never gated by money.
-- Sponsored or growth-subsidised: allowed, creates no buyer debt.
-- Small debt: allowed. One-tap Internet is not interrupted.
-- At or past the credit limit (pilot default 50 CFA): REQUIRE_SETTLEMENT,
-  "Réglez N CFA pour continuer", before anything expensive happens.
-- A confirmed payment history earns 25 CFA more room.
-- A disputed session: BLOCK_PAID_SESSION until a human looks at it.
-- Over the limit with no way to pay: BLOCK, because asking them to settle
-  would be useless.
+## 10. Version / build / commit / hash
 
-Small sessions with one seller net into a single payment, because authorising
-a Mobile Money transfer for 3 CFA is absurd. The threshold and limit are
-`SettlementPolicy.Policy` values, not constants buried in protocol code.
+Build 59, versionName 0.15.1, verified with `aapt2 dump badging`.
+SHA256 `21b2b484c72440b74c7962bb0ea1ea1631aafe8150bf40b4753f5ffb02ed2962`.
+Commits `f8496fc`, `42c6629`, `014fc73` on `main`; this report on top.
+Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.1
 
-## 9. Payment rails — REAL vs MOCK vs BUILT ONLY
+## 11. Hardware test
 
-| Rail | Status | What it actually does |
-|---|---|---|
-| `MOCK` | **REAL, developer only** | Simulates success, failure, duplicates. Off unless a long press on COPY NETWORK in the Lab screen enables it. Reports unavailable in consumer mode, so a mock payment can never be shown to a user as real |
-| `MANUAL_PILOT` | **REAL** | The buyer pays through MTN or Airtel outside the app and enters the reference. Reaches PAYMENT_SEEN and **no further** |
-| `MTN_MOMO` | **BUILT ONLY** | Interface and documented integration points. `available()` is false, `initiate()` refuses, `check()` returns PENDING |
-| `AIRTEL_MONEY` | **BUILT ONLY** | Same |
+**TESTING 63.** Three short paid sessions with one seller, then open Wallet.
+One summary card leading with À payer, one action card naming Prok XXXX and
+saying three sessions are grouped, exactly one button, history grouped under
+Aujourd'hui. Then the clutter check, a mock payment of the whole batch
+surviving a restart of both apps, the manual reference reading "en attente de
+vérification", the duplicate-reference refusal, and the empty and all-clear
+states.
 
-**No real MTN or Airtel integration exists in this build.** There are no
-merchant credentials, no collection endpoint and no webhook secret in this
-repository. Three things are needed and none are ours to decide alone: a
-merchant account with the operator, API credentials held **server-side**, and
-a webhook whose signature the settlement service verifies. The rails refuse to
-run rather than simulate success.
+## 12. Known limitations
 
-**ProkNet never asks for a PIN**, secret code, password or operator OTP. The
-user authorises inside the operator's own flow.
-
-## 10. Backend
-
-`server/brain/settlement.py`, SQLite, three tables: `settlements`,
-`payment_events` (keyed by rail|reference|settlement, so a retried webhook is
-recognised), `settlement_audit` (append-only, never updated or deleted).
-
-Endpoints: `POST /v1/settlements`, `GET /v1/settlements/{id}`,
-`POST /v1/payments/initiate`, `POST /v1/payments/webhook`,
-`GET /v1/wallet?node=`. Expiry runs on the existing cleanup timer.
-
-`report()` verifies the submitted settlement id against the signed session
-facts and refuses a forged one outright.
-
-## 11. Fraud and replay protection
-
-- Forged settlement id: refused, nothing stored.
-- Replayed payment reference: the event key includes the settlement, so the
-  same reference cannot confirm a different obligation.
-- Duplicate webhook: recognised and a no-op.
-- Duplicate settlement: impossible by primary key.
-- Modified amount: a CONFIRMED webhook whose amount does not match the
-  obligation is DISPUTED, not accepted.
-- Expired obligation: cannot be paid.
-- Session replay: the session id check already existed in `acceptableProposal`.
-- **Unverified webhook: recorded for the audit trail and ignored.** With no
-  signing secret configured, that is currently every webhook, and the code
-  says so rather than defaulting to trust.
-
-## 12. Privacy
-
-A Mobile Money number is stored locally in `payment_destinations`, never put
-into a BLE advert or gossip, and displayed masked (`•••••456`). Discovery
-keeps using the Prok identity; payment identity is exchanged only for a real
-settlement. No SMS permission is requested.
-
-## 13. Cost-class honesty
-
-Taking your recommendation: **v0.15 real settlement applies to COMMERCIAL v2
-sessions only.** Contract v2 does not sign a cost class or a payer, so a
-sponsored session cannot be proven to be one and real money must not rest on
-an unsigned claim. Sponsored sessions keep working and create no payable
-obligation. The contract protocol was not expanded.
-
-## 14. Tests
-
-363 Android JVM tests (+30) and 23 server tests (+12).
-
-- `SettlementTest` (13): derivation, the budget as a ceiling on the money,
-  one session one obligation, both phones agreeing, disputes, idempotent
-  payments, expiry, the rails refusing to pretend, destination masking.
-- `WalletTest` (13): the view, netting, the credit limit, free never gated,
-  sponsored, disputes blocking, and the wording never claiming a guarantee,
-  a balance, or megabytes.
-- `BudgetSessionTest` (+10): the six seller-stop gate tests and four
-  obligation tests through the real session path.
-- `test_settlement.py` (12): the split matching the phones, forged ids,
-  reconciliation, unverified webhooks, duplicates, wrong amounts, expiry,
-  wallet arithmetic, audit trail.
-
-## 15. Version / build / commit / hash
-
-Build 58, versionName 0.15.0, verified with `aapt2 dump badging`.
-SHA256 `d64926a3a668b99cb72ebf168c3d383a50350bffd0eb4a9d15a622ebbfbc042a`.
-Commits `9266678`, `0611bee`, `da4c8ef` on `main`; this report on top.
-Release: https://github.com/matsyeudeprosper-ui/ProkNet/releases/tag/v0.15.0
-
-## 16. Hardware tests
-
-**TESTING 61 first, and the wallet is not worth testing until it passes:** a
-5 to 10 second session ended by the **OUKITEL**, twice. The seller must earn
-above zero, the two figures must agree, and the OnePlus must say the provider
-stopped sharing rather than show an error.
-
-**TESTING 62** then covers the obligation appearing, the receive-with setting
-masking the number, a mock payment surviving a restart of both apps, the
-manual rail saying "en attente de vérification" and never "paid", three
-sessions netting into one payment, and the credit limit refusing before any
-Bluetooth setup.
-
-## 17. Known limitations
-
-- **No real Mobile Money integration.** Nothing in this build can confirm a
-  real payment. The manual rail reaches PAYMENT_SEEN; only a human or a future
-  API moves it further.
-- **The server does not yet verify phone signatures on a settlement report.**
-  `actor` is taken as claimed. The idempotent id and the two-phone
-  reconciliation limit the damage, and no report can cause a payment, but this
-  must be signed before any real-money pilot. It is the largest gap.
-- **A buyer that vanishes before the closing ack pays only what was already
-  signed.** Inherent to a two-party signed protocol: nobody may be billed for
-  usage they never agreed to. The 30 second checkpoint bounds the loss to the
-  last window, and the credit limit bounds repeat abuse, but a determined
-  buyer can get short free sessions. Worth watching in the pilot.
-- The Prok fee is tracked as a receivable; how it is actually collected is
-  deliberately left open, as you asked.
-- The credit limit is per-phone local state. A buyer who reinstalls starts
-  clean. Server-side debt needs the signed submission path above.
-- `Wallet.startOfDay` assumes UTC+1. Fine for Congo-Brazzaville, wrong
-  elsewhere.
-- TESTING 55 to 60 have still never been run on hardware.
+- **The phone does not yet submit evidence.** The server can verify it and
+  refuses everything else, but the Android client still stores obligations
+  locally and has no code path that builds and signs an evidence submission.
+  Server and phone are ready for each other; the wire between them is the next
+  piece of work. Nothing is claimed to be reconciled server-side today.
+- **No real Mobile Money integration.** Unchanged. MTN and Airtel remain
+  interface only, with no credentials, and refuse to initiate.
+- **No webhook signing secret ships**, so no webhook can confirm anything yet.
+- **Allocations are computed on the phone** and sent; the server validates them
+  against what each obligation still owes, but a phone could propose a silly
+  split. It would be refused, not accepted.
+- A buyer that vanishes before the closing ack still pays only what was signed.
+  Unchanged and inherent.
+- The credit limit is still per-phone local state; a reinstall starts clean.
+- `Wallet.startOfDay` still assumes UTC+1.
+- TESTING 55 to 60 and 62 have still never been run.
