@@ -3030,3 +3030,51 @@ number.
 - The seller refusing a payment it was itself asked for.
 - The old number still being handed out after the cooling window.
 - Any regression in sections 59 to 69.
+
+## 71. v0.16.5 changing your number, after an upgrade
+
+Section 70 still applies. This adds what v0.16.5 changed, and it matters most on a
+phone that has **not** been wiped.
+
+### 71a. An old claim still works
+
+Install build 67 over an existing install where the Mobile Money number was set on
+build 62-66. Do not re-enter the number.
+
+Expected: Gagner still shows the number, still says **Activée ✓**, and a buyer that
+owes money can still be given it and still pay. Nothing asks you to set it again.
+
+**FAIL** if the seller suddenly has no destination, or if payment is refused.
+
+### 71b. The first change after upgrading
+
+Change the number once. Wait for the cooling window as in 70c.
+
+Expected: exactly the behaviour of 70c - old number for ten minutes, new one after.
+From this point the timestamp that controls that window is signed, though nothing on
+screen says so.
+
+### 71c. A slow buyer with the Brain
+
+Needs the Brain. With a debt outstanding and the phones apart:
+
+1. On the OnePlus, tap PAYER and **J'AI COMPRIS** while the OLD number is still
+   active. Note the number shown.
+2. Turn the OnePlus fully offline (aeroplane mode).
+3. Wait until the cooling window has closed, plus a few minutes.
+4. Bring the OnePlus back online.
+
+Expected: the payment window is still accepted. The expectation was created while the
+old number was active and must not be refused because it arrived late.
+
+**FAIL** if the OnePlus reports the payment window refused or has to start again.
+
+### 71d. Nothing else changed
+
+Re-run 70c and 70e.
+
+### What would make this a FAIL
+
+- Being asked to re-enter a number that was never changed.
+- A payment window refused only because it was uploaded late.
+- Any regression in sections 59 to 70.

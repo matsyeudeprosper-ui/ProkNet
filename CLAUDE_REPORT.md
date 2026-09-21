@@ -1,3 +1,157 @@
+# CLAUDE_REPORT - ProkNet v0.16.5 "the cooling timestamp is signed"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.16.5, build 67. **583 Android tests, 210 server tests, all passing.**
+
+Both bugs were real. Confirmed in the code before touching anything.
+
+## 1. Destination v2 canonical bytes
+
+```
+ProkNet-destination-claim-2|<sellerId>|<RAIL>|<normalised msisdn>|<version>|<createdAt>
+```
+
+One implementation each in `DestinationClaim.signDataV2` and `Destination.sign_data_v2`,
+pinned together by a fixture rather than by two people reading the same sentence.
+
+Wire: `pay1.dest|dest2|sellerId|rail|msisdn|version|createdAt|sig`. The line already
+carried `createdAt`; now the signature covers it, so moving it in transit breaks the claim
+instead of quietly moving the cooling window. Tested in both directions - plus ten minutes
+and minus ten minutes - on both sides.
+
+## 2. Legacy v1 compatibility
+
+`dest1` claims are still read and still verify against `ProkNet-destination-claim-1`.
+Nothing after build 66 creates one. A seller who has not changed their number is never
+asked to re-enter it.
+
+The prefix decides which bytes were signed and is never inferred: a `dest1` claim
+relabelled `dest2` does **not** verify, and neither does the reverse. Otherwise a carrier
+could have an unsigned timestamp treated as authenticated.
+
+`timeIsSigned` / `time_is_signed` say which kind a claim is, so nothing in the system
+describes a legacy timestamp as authenticated.
+
+**No second database migration** (your item 20). The table keeps fields and a signature,
+not the wire line, so the format is derived when a stored claim is re-encoded:
+`DestinationClaim.formatOf` tries the format we produce now and falls back to the one we
+used to. The Brain stores the whole line, so its prefix is already there, and no historical
+signed bytes are rewritten.
+
+## 3. v1 to v2 version transition
+
+The signature format and the claim version are separate. A legacy claim at version 3 is
+followed by a v2 claim at version **4**. Versions stay seller-global and monotonic, so an
+old claim can never come back, and a legacy claim cannot overwrite a newer v2 one - tested
+at both equal and lower versions.
+
+## 4. Cross-language signature fixture
+
+`server/tests/fixtures/crosslang.json` gains a `destination_v2` section: canonical bytes,
+a Python signature, a signature captured from a real Kotlin run, and a wire line with only
+the timestamp moved.
+
+- Python signs -> Kotlin verifies, through `PayWire.parseDestinationClaim` and the real
+  `DestinationClaim.verify`.
+- Kotlin signs -> Python verifies, through the real `Destination.verify`.
+- The tampered line is refused by both, and a test asserts only the timestamp differs
+  between the two lines - otherwise it would be proving something else.
+
+The timeline cases now carry each claim's format and include a mixed legacy/v2 history
+before, at and after the cooling boundary. 14 cases, both sides.
+
+## 5. createdAt tamper test
+
+Six places: Kotlin `moving_the_timestamp_invalidates_the_claim` (both directions),
+`the_wire_line_carries_the_timestamp_and_it_is_checked` (edits the wire field, keeps the
+signature), Python `test_moving_the_timestamp_forward_breaks_the_claim` and
+`..._backward_...`, `test_the_server_refuses_a_tampered_claim_outright` (nothing is
+stored), and the cross-language `tampered_wire`.
+
+## 6. Brain expectation-time validation
+
+`put_expectation` used `active_destination(seller, now, cooling)` where `now` is arrival.
+It now uses `acceptable_destinations(seller, now, e.created_at, cooling)` - what was active
+when the buyer asked, and what is active now, as (rail, hash) pairs.
+
+`DestinationClaim.acceptableHashes` on the phone returns the same set, so the seller's own
+decision and the Brain's cannot differ. I kept "and what is active now" on both sides
+deliberately: a single-value rule would have made the two disagree for an expectation
+created before a change and naming the seller's current number.
+
+Arrival time now decides only whether the expectation has expired.
+
+I also kept the rail check that was there - the hash covers the rail, but the expectation
+carries a rail field of its own beside it, so the pair is compared rather than the hash
+alone. Removing it would have been a silent regression.
+
+## 7. Cooling-boundary tests
+
+With v1 MTN at T0, v2 Airtel at T1, cooling 10m, boundary = T1 + 10m:
+
+| case | createdAt | uploaded | result |
+|---|---|---|---|
+| A | boundary - 1ms | after boundary | MTN **accepted** |
+| B | boundary | after boundary | MTN refused, Airtel accepted |
+| C | boundary + 1ms | after boundary | MTN refused, Airtel accepted |
+
+Checked that these bite: reverting `put_expectation` to use `now` fails two of them.
+
+## 8. Delayed-upload test
+
+An expectation created 1s into the cooling window and uploaded 15 minutes later - long
+after the switch - is accepted. One created the same way and uploaded after 21 minutes is
+refused, because it has genuinely expired.
+
+A buyer cannot backdate to reach an old destination: `createdAt` is inside the buyer's own
+signed expectation, so editing it on the wire breaks the expectation.
+
+## 9. Totals, version, artefacts
+
+| | |
+|---|---|
+| Android tests | **583** (was 568) |
+| Server tests | **210** (was 185) |
+| Version / build | **0.16.5 / 67** |
+| Database version | **10, unchanged** - no migration needed |
+| APK SHA256 | `fabdd875301dd3976158d9a7c946024770d8e0f9535ed89150b686eb36c23c2b` |
+
+## 10. Hardware status - unchanged
+
+- **Hardware-proven:** Bluetooth/L2CAP Internet, VPN browsing, provider activation and
+  recovery, pricing and contracts, buyer/seller graceful stops, the signed final
+  checkpoint.
+- **Software-proven only:** automatic Mobile Money receipt detection, the payment
+  expectation flow, seller-signed receipts, the Brain payment path, anti-reinstall risk,
+  signed parser updates, and everything in v0.16.4 and v0.16.5.
+- Real MTN/Airtel message parsing stays unproven until you make an actual Mobile Money
+  payment.
+
+## 11. Remaining limitations
+
+- A legacy claim's timestamp is still the one cooling uses. It is not signed and cannot
+  retroactively be. The exposure lasts until that seller next changes their number, and
+  nothing claims otherwise.
+- The migration still has not run on a real upgraded phone (TESTING 70a), and 71a now
+  depends on the same thing: a phone not wiped since an earlier v0.16 build.
+- The parser has still never seen a real MTN or Airtel message.
+- A seller has one active receiving destination.
+- `PAYMENT_OPERATOR_VERIFIED` is produced by nothing; no operator webhook secret.
+- A buyer learns a new destination on the sync cadence, not sooner.
+
+## 12. Definition of done
+
+The timestamp that controls destination cooling is cryptographically bound to the seller's
+claim, and the Brain validates an expectation against the destination that was active when
+that expectation was created rather than when it arrived.
+
+Payment architecture work stops here unless hardware testing finds a real defect.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.16.4 "migration + destination rotation"
 
 Date: 2026-09-21

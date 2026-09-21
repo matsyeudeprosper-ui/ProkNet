@@ -3740,3 +3740,78 @@ that seller's current Mobile Money number, for ever.
 money is still owed - PENDING, PAYMENT_INITIATED, PAYMENT_SEEN - rather than a copy
 that can drift. CONFIRMED is paid, EXPIRED is closed, and DISPUTED and SECURITY_REVIEW
 are for a human, not a reason to hand out a number.
+
+## v0.16.5 the cooling timestamp becomes a signed fact
+
+### Destination claim v2
+
+v0.16.4 made a destination claim's `createdAt` decide when a new number goes live, on
+the phone and on the Brain. It was still outside the signature. Anything carrying a
+claim could therefore move the cooling window: ten minutes earlier and a buyer is sent
+to a number the seller is not watching yet; ten minutes later and the seller keeps
+being paid on a number it has abandoned.
+
+A field that decides where money goes has to be a signed fact, so there is a new
+domain rather than a quiet change to the bytes under the old one:
+
+```
+ProkNet-destination-claim-2|<sellerId>|<RAIL>|<normalised msisdn>|<version>|<createdAt>
+```
+
+The wire prefix says which bytes were signed - `dest2` for the above, `dest1` for
+v0.16.0's, which omitted `createdAt`. The prefix is never guessed and never inferred:
+a legacy claim relabelled `dest2` does not verify, and neither does the reverse.
+Otherwise a carrier could have an unsigned timestamp treated as authenticated.
+
+`Destination.time_is_signed` and `DestinationClaim.timeIsSigned` say which kind a
+claim is, so nothing describes a legacy timestamp as authenticated.
+
+### Legacy claims, read-only
+
+Claims signed the old way are already on phones and in Brain databases. They keep
+verifying, keep working, and a seller who has not changed their number is never asked
+to re-enter it. No build after 66 creates one. The moment that seller does change
+anything, the replacement is v2 and cooling runs on a signed timestamp from then on.
+
+The signature format and the claim version are separate things: a legacy claim at
+version 3 is followed by a v2 claim at version **4**, not 1. Versions stay
+seller-global and monotonic, so an old claim can never come back.
+
+**No second database migration.** The table keeps fields and a signature, not the wire
+line, so the format is derived when a stored claim is re-encoded: try the format we
+produce now, fall back to the one we used to (`DestinationClaim.formatOf`). The Brain
+stores the whole line, so its prefix is already there, and no historical signed bytes
+are rewritten.
+
+### An expectation is judged by the destination it was given
+
+`put_expectation` measured the active destination from the moment the expectation
+reached the server:
+
+```
+09:59  the buyer creates a signed expectation; MTN is still active
+10:00  the cooling window closes and Airtel becomes active
+10:01  the buyer finally gets online and uploads it
+```
+
+Checked against 10:01 the expectation named MTN while Airtel was active, and the Brain
+refused a payment the seller itself had asked for a minute earlier. Arrival time
+depends on when a phone found signal - it is the one thing in this decision that is
+not a signed fact.
+
+`PayBox.acceptable_destinations(seller, now, asked_at, cooling)` returns what was
+active when the buyer asked **and** what is active now, as (rail, hash) pairs.
+`DestinationClaim.acceptableHashes` on the phone returns the same set, so the seller's
+own decision and the Brain's cannot differ. Arrival time now decides only whether the
+expectation has expired.
+
+The buyer cannot reach backwards for an older destination: `createdAt` is inside the
+buyer's own signed expectation, so backdating it breaks the expectation instead.
+
+### The fixture grew
+
+`server/tests/fixtures/crosslang.json` gains a `destination_v2` section - canonical
+bytes, a Python signature, a signature captured from a real Kotlin run, and a wire line
+with only the timestamp moved, which both sides must refuse. The timeline cases now
+carry each claim's format and include a mixed legacy/v2 history at, before and after
+the cooling boundary.
