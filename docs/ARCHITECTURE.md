@@ -3560,3 +3560,97 @@ accepted, so v0.16.1 phones keep working.
 Nonces are now stored in SQLite with a unique constraint. In memory they
 vanished on restart, which meant restarting the server was a way to undo replay
 protection.
+
+## v0.16.3 the last four holds in the payment milestone
+
+### Signed parser rules are switched on
+
+A dedicated P-256 keypair now exists, key id `9410c707`. The public half is pinned
+in `ReceiptRules.PINNED_CONFIG_KEY` and held by `brain/app.py`; the private half
+lives only on the admin machine and is used only by `brain/publish_rules.py`.
+`docs/OPERATIONS.md` says where it is kept and how to publish.
+
+The running Brain never holds the private key. It is the part of the system most
+likely to be compromised - reachable from the Internet, parsing what strangers send
+it - and if it could sign rules, whoever took it could rewrite how every phone
+decides whether money arrived. Holding only the public half means a compromised
+Brain can withhold or delay a configuration, which phones survive, but never forge
+one.
+
+**A bug this uncovered.** `ReceiptRules.canonical` emitted its categories in
+declaration order; `ruleconfig.canonical` sorts them. Both sides were
+self-consistent, both suites passed, and every configuration the server signed would
+have been refused by every phone. The feature would have looked finished and could
+not have worked once. `server/tests/fixtures/crosslang.json` now pins the two
+spellings against each other, in both directions, with signatures captured from real
+runs of each language.
+
+### Both operators work through the Brain
+
+The phone used to fetch `/v1/pay/destination?seller=…&rail=MTN_MOMO`. An Airtel
+seller was therefore unreachable through the Brain: the buyer owed money and was told
+the provider had not said where to be paid, with nothing on screen to suggest the
+question had been asked wrongly.
+
+`GET /v1/pay/destinations?seller=` returns what the seller signed, on whatever rail.
+Nothing in the retrieval path names an operator.
+
+A seller has ONE place it is paid, and which operator that is can change. Versions
+therefore count **per seller**, not per (seller, rail) - which is how
+`DestinationClaim.nextVersion` has always numbered them on the phone. The server had
+a separate counter per rail, so a seller moving to Airtel would have left a stale MTN
+claim looking current for ever. `DestinationClaim.mayReplace` also used to refuse any
+claim on a different rail, which meant a seller's own phone rejected the claim it had
+just made.
+
+Cooling still holds across a rail change: a seller who moves from MTN to Airtel keeps
+receiving on MTN until the window closes, so a transfer already on its way still
+lands somewhere valid.
+
+### Private settlement data is authorised
+
+`GET /v1/settlements/{id}` required nothing. A settlement id is not a secret - it is
+derived from signed session bytes and both phones hold it - so knowing one revealed
+the amount, both parties, the payment state and the whole audit trail.
+
+It now needs a signed request, and answers only the buyer or the seller. 401
+unsigned, 403 for anybody else, 404 for an unknown id said the same way to everybody
+so the route cannot be used to discover which ids exist.
+
+### Money endpoints refuse legacy signatures
+
+`signed_request.verify` accepted either a method/path-bound signature or v0.16.1's
+body-only one. That kept the cross-endpoint replay surface alive on exactly the
+routes that move money. `require_bound=True` is the default now, and every route
+under `/v1/settlements`, `/v1/wallet`, `/v1/pay/`, `/v1/payments/` and `/v1/device/`
+uses it. Asking for a bound check without supplying a target raises rather than
+silently accepting everything.
+
+The signed line is:
+
+```
+ProkNet-api-1|<ts>|<nonce>|<sha256 body>|<METHOD>|<canonical request target>
+```
+
+**The canonical request target includes the query.** `?payment=A` and `?payment=B`
+ask about two different people's money. The rule is deliberately dull, because a
+clever one is what two languages eventually disagree about: keep the path exactly as
+sent, drop an empty query, otherwise sort the raw `k=v` pieces and rejoin with `&`.
+Nothing is decoded - `%2F` must not quietly become `/` on one side only.
+`signed_request.canonical_target` and `SignedApi.canonicalTarget` are pinned together
+by the same fixture.
+
+### Financial database changes are atomic
+
+`_set` used to commit. A payment touching three obligations committed three times on
+the way through, so a failure in the middle left a real transaction row beside
+obligations that had not moved - money half-settled, with nothing in the audit trail
+to say which half was true.
+
+`_set` and `_audit` now never commit; the caller owns the transaction. `record`,
+`report`, `initiate`, `webhook`, `expire`, `open_payment`, `confirm_payment` and
+`_flag_payment` each wrap their whole change in one `with self.db:`.
+
+`server/tests/test_atomicity.py` injects a failure in the middle of each one and
+compares a full snapshot of every money table before and against after. Six of those
+tests fail if `_set` starts committing again.

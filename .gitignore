@@ -13,3 +13,13 @@ captures/
 # Keep dist/ tracked only via the README; APKs are published as GitHub releases
 dist/*
 !dist/.gitkeep
+
+# v0.16.3: signing keys. The receipt-rule configuration key lives OUTSIDE this
+# repository (see docs/OPERATIONS.md). These patterns are a second line of defence,
+# not the mechanism - the mechanism is that the key is never in this tree at all.
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+keys/

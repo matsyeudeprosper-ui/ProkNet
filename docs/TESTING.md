@@ -2883,3 +2883,73 @@ must still show no candidate. Nothing about the Brain changed what is read.
 - "Réglez 0 F" after a reinstall in 68c.
 - Any regression in section 67 when the Brain is off.
 - The Brain being able to show one phone another phone's payments or wallet.
+
+## 69. v0.16.3 the four holds
+
+Sections 67 and 68 still apply unchanged. This one covers only what v0.16.3 added.
+
+### 69a. An Airtel seller can be paid from far away
+
+On the OUKITEL, set the receiving number to an **Airtel** number under Gagner ->
+Réglages du partage. Run a short paid session from the OnePlus, stop it, and take
+the OnePlus out of Bluetooth range.
+
+On the OnePlus, open the Wallet and tap PAYER.
+
+Expected: it shows **Airtel** and the masked Airtel number. Before v0.16.3 this said
+the provider had not indicated where to be paid, however long you waited.
+
+Repeat with an MTN number to confirm nothing regressed.
+
+### 69b. Changing operator does not strand a payment
+
+With a payment outstanding, change the receiving number on the OUKITEL from MTN to
+Airtel (or back).
+
+Expected, within the next ten minutes: the buyer is still shown the OLD number. A
+transfer already on its way must still land somewhere valid. After ten minutes the
+new one appears, and the old one never comes back.
+
+### 69c. New wording without a new APK
+
+This needs the Brain and the admin key. On the VPS:
+
+```powershell
+$env:PROK_CONFIG_PRIVATE_KEY_FILE = "C:\ProkNetKeys\receipt_rules_config_key.pem"
+python -m brain.publish_rules rules.json --db C:\ProkNetBrain\brain.db
+```
+
+with a `rules.json` adding whatever wording you want to test to `credit`.
+
+Then, on the OUKITEL, COPY NETWORK and wait for a sync.
+
+Expected: nothing visible changes and nothing breaks. Send yourself a message using
+the new wording while a payment is outstanding; it must now be recognised. The old
+wording must keep working.
+
+**FAIL** if a payment stops being recognised after a configuration is published.
+Adding words must never take any away.
+
+### 69d. Nothing readable by a stranger
+
+This one is for the VPS, not the phones. With the Brain running:
+
+```
+curl https://<brain>/v1/settlements/<any id from COPY NETWORK>
+```
+
+Expected: `401`. Not the amount, not the two parties, not the audit trail.
+
+### 69e. No regression with the Brain off
+
+Clear the brain URL on both phones and re-run section 67 end to end.
+
+Expected: identical behaviour. The local path never waits for a server.
+
+### What would make this a FAIL
+
+- An Airtel seller still unreachable in 69a.
+- The new number being used immediately in 69b.
+- Published wording breaking wording that already worked in 69c.
+- Anything but 401 in 69d.
+- Any regression in sections 59 to 68.

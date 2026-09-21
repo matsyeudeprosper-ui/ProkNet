@@ -1,3 +1,205 @@
+# CLAUDE_REPORT - ProkNet v0.16.3 "final payment hardening"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.16.3, build 65. **536 Android tests, 174 server tests, all passing.**
+
+## 1. Config public key handling
+
+A real dedicated P-256 keypair now exists. Key id `9410c707`.
+
+Public half, committed in exactly two places and identical in both:
+
+- `ReceiptRules.PINNED_CONFIG_KEY` (the APK)
+- `CONFIG_PUBLIC_KEY` in `brain/app.py` (overridable by `PROK_CONFIG_PUBLIC_KEY`)
+
+It is **not** the Brain's transport identity and **not** any user identity. That
+separation is the whole argument: whoever takes the public server can withhold or
+delay a configuration - phones survive that, the built-in rules keep working - but
+can never forge one.
+
+A test asserts the server's key is 128 hex characters, parses, and is not the test
+fixture key. Another walks the entire repository looking for private-key markers and
+fails if one is ever committed.
+
+## 2. Private key storage and publishing workflow
+
+Private key: `C:\ProkNetKeys\receipt_rules_config_key.pem` on the VPS. Outside the
+repository. `.gitignore` refuses `*.pem` and friends as a second line of defence.
+Full instructions, including what to do if it is ever exposed, are in the new
+`docs/OPERATIONS.md`.
+
+`brain/publish_rules.py` is the only thing in the project that touches it:
+
+```powershell
+$env:PROK_CONFIG_PRIVATE_KEY_FILE = "C:\ProkNetKeys\receipt_rules_config_key.pem"
+python -m brain.publish_rules rules.json --db C:\ProkNetBrain\brain.db
+```
+
+Never an argument, so it cannot reach shell history or a process listing.
+`PROK_CONFIG_PRIVATE_KEY` (the PEM itself) also works. `--dry-run` signs and prints.
+`--url` posts to a running Brain instead.
+
+The running Brain never holds the private key; a test reads `app.py` and asserts it.
+
+**One thing I got wrong and fixed.** My first version of the tool built its rule
+store from *its own* public key, so any key could write into the Brain's database and
+the operator would be told it worked - while every phone silently refused the result.
+It now resolves what the deployment pins and refuses before signing anything.
+
+## 3. Cross-language config verification
+
+`server/tests/fixtures/crosslang.json` is written by Python, committed, and read by
+`CrossLanguageFixtureTest`. Both directions, with signatures captured from real runs
+of each language:
+
+- Python signs a configuration -> Kotlin accepts and activates it
+- Kotlin signs one -> Python accepts it, and `RuleStore.publish` stores it
+- the canonical bytes are compared as strings, not re-derived
+- the exact server response shape the phone parses is pinned
+
+**This caught a bug that would have shipped.** `ReceiptRules.canonical` emitted its
+categories in declaration order; `ruleconfig.canonical` sorts them. Both sides were
+self-consistent, both suites were green, and every configuration the server published
+would have been refused by every phone. A finished-looking feature that could not have
+worked once. Terms may no longer contain a quote or a backslash, because escaping is
+where two independent canonicalisations drift apart.
+
+## 4. Airtel through the Brain
+
+`GET /v1/pay/destinations?seller=` returns what the seller signed, on whatever rail.
+Nothing in the Brain retrieval path names an operator. The old named-rail route now
+refuses to guess: no rail is a 400, never a default.
+
+A seller has ONE place it is paid, and which operator that is can change. So versions
+count **per seller**, matching `DestinationClaim.nextVersion` on the phone. Two real
+bugs fell out of aligning them:
+
+- the server counted versions per (seller, rail), so a seller moving to Airtel would
+  have left a stale MTN claim looking current for ever;
+- `DestinationClaim.mayReplace` refused any claim on a different rail, so a seller's
+  own phone rejected the claim it had just made. A seller could not change operator.
+
+Cooling holds across a rail change: MTN keeps receiving until the window closes, so a
+transfer already on its way still lands. Tests cover MTN-only, Airtel-only, the
+switch, the cooling window, an unknown rail name, a stale republish, and a stranger.
+
+## 5. Settlement GET authorization
+
+`GET /v1/settlements/{id}` required nothing at all. A settlement id is derived from
+signed session bytes and both phones hold it, so it is not a secret - and knowing one
+returned the amount, both parties, the payment state and the whole audit trail.
+
+Now: **401** unsigned, **403** for anybody who is not the buyer or the seller, **404**
+for an unknown id, said identically to a party and to a stranger so the route cannot
+be used to enumerate ids. A test asserts the 403 body leaks neither amount nor either
+party id.
+
+## 6. Transaction rollback tests
+
+`_set` and `_audit` no longer commit; the caller owns the transaction. Every money
+operation wraps its whole change in one `with self.db:`.
+
+`server/tests/test_atomicity.py` injects a failure in the middle and compares a full
+snapshot of `settlements`, `settlement_audit`, `payment_transactions`,
+`payment_allocations` and `payment_events` before against after:
+
+- two allocations, failure before the second -> no transaction row, no allocation
+  row, no settlement moved, no audit row, and the reference is not burned so the
+  buyer can retry;
+- a confirmation over two obligations, failure halfway -> payment still
+  PAYMENT_INITIATED, both obligations still PAYMENT_INITIATED, and a retry succeeds;
+- the same for `_flag_payment`, `record`, `expire` and `webhook`.
+
+Each has a positive control beside it. I checked these actually bite: putting the
+commit back into `_set` fails six of the eleven.
+
+## 7. Legacy-signature rejection
+
+`require_bound=True` is the default. Every route under `/v1/settlements`,
+`/v1/wallet`, `/v1/pay/`, `/v1/payments/` and `/v1/device/` refuses a body-only
+signature with 401. Asking for a bound check without supplying a target raises
+`ValueError` rather than silently accepting everything - a route that forgot to pass
+its target would otherwise have looked like it was checking one.
+
+Tests: bound -> 200, body-only -> 401 on three different money routes, a signature
+for one endpoint replayed at another -> 401, a GET signature tied to its query, a
+reused nonce -> 401. A legacy signature is also shown to be *valid* - it is refused
+for what it covers, not because it is malformed.
+
+## 8. Canonical request target
+
+```
+ProkNet-api-1|<ts>|<nonce>|<sha256 body>|<METHOD>|<canonical target>
+```
+
+The target includes the query, because `?payment=A` and `?payment=B` ask about two
+different people's money. The rule: keep the path exactly as sent, drop an empty
+query, otherwise sort the raw `k=v` pieces and rejoin with `&`. **Nothing is
+decoded** - `%2F` must not quietly become `/` on one side only.
+
+One implementation each in `signed_request.canonical_target` and
+`SignedApi.canonicalTarget`, pinned together by the fixture.
+
+## 9. Cross-language signed-request fixture
+
+Same file. A deliberately out-of-order target, a fixed timestamp and nonce, real body
+bytes, the exact signing line, and signatures from both languages. Python verifies a
+signature Android produced, through the real `signed_request.verify`; Kotlin verifies
+Python's through the real `SignedApi.verify`. Both then check the same signature is
+refused at another endpoint and with another query. Test keys only.
+
+## 10. Totals, version, artefacts
+
+| | |
+|---|---|
+| Android tests | **536** (was 514) |
+| Server tests | **174** (was 112) |
+| Version / build | **0.16.3 / 65** |
+| APK SHA256 | `7a579ad9ca6596fb6b0ab83d0421901dfc9cd3dd134f779c3f3353c841103a53` |
+
+## 11. Hardware status - unchanged and honest
+
+- **Hardware-proven:** the Internet / Bluetooth L2CAP path; pricing, contracts and
+  stops.
+- **Software-proven only:** automatic Mobile Money payment, the Brain payment path,
+  and everything in v0.16.3.
+- **Nothing in the v0.16 payment work has been hardware-tested at any point.** My
+  v0.16.2 report said section 67 was the last hardware-tested payment path. That was
+  wrong - section 67 is written but you have not reported running it. Corrected in
+  `CLAUDE_REPORT.md`.
+
+## 12. Remaining limitations
+
+- The parser has still never seen a real MTN or Airtel message. The corpus is
+  synthetic. This is the largest remaining unknown in the payment milestone and no
+  amount of code closes it.
+- `PAYMENT_OPERATOR_VERIFIED` is still produced by nothing. Only a real MTN/Airtel
+  API may, and there is none.
+- No operator webhook secret, so no webhook can be verified and none may confirm a
+  payment.
+- A seller has one active receiving destination. If a real seller needs MTN and
+  Airtel simultaneously, that is a product change, not a bug fix - the route already
+  returns a list so it would not need a protocol change.
+- Key rotation is manual and needs a new APK: the pinned key *is* the trust and there
+  is no revocation list. That is the cost of not letting a server rewrite how phones
+  recognise money.
+- `/v1/sync` still uses its own signing path (`protocol.parse_upload`), untouched by
+  any of this. It is not a money route.
+
+## 13. Definition of done
+
+No known architectural hold-up remains in the payment/trust milestone. Parser updates
+are genuinely usable without an APK release, both operators work through the Brain,
+private settlement data is authorised, financial database changes are atomic, and
+every money endpoint requires a method/path-bound replay-resistant signature.
+
+Payment work stops here. Next is v0.17 when you say so.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.16.2 "the payment loop, through the Brain"
 
 Date: 2026-09-21
@@ -61,8 +263,9 @@ rules until there is a real key ceremony.
 - **Software-proven:** everything above, by 514 Android and 112 server tests,
   including the whole Brain loop end to end and the endpoint authorisation over
   real HTTP.
-- **Hardware-proven:** nothing in v0.16.2 yet. Section 67 (v0.16.1, two phones,
-  local) is the last hardware-tested payment path.
+- **Hardware-proven:** nothing in the v0.16 payment work, at any point. Section 67
+  is written but Mike has not reported running it, so v0.16.1 is not hardware-tested
+  either. (Corrected in v0.16.3: an earlier version of this line said it was.)
 - **Not built, deliberately:** `PAYMENT_OPERATOR_VERIFIED`. No code produces it.
   Only an MTN/Airtel API may, and there is none.
 - **Needs a decision from you:** the parser-rule signing key. Until there is a
