@@ -3478,3 +3478,85 @@ the box after a build, and refuses to build with under 1 GB free disk.
 Multi-hop routing (more than one relay, route choice, flooding), Internet
 tunnelling over the Wi-Fi link (next), wallet or payments. Relayed messages
 are encrypted; relayed CHUNKS are not supported yet (direct only).
+
+## v0.16.2 the Brain as a carrier for payments
+
+The payment objects of v0.16.1 (destination claim, expectation, reply, receipt)
+are signed by phones and verified by phones. v0.16.2 lets the Brain hold them
+in between, for the case the product is built around: a buyer uses somebody's
+Internet, walks away, and pays an hour later from the other side of town.
+
+**The server is a carrier and a validator, never an author.** It stores what
+phones signed, refuses what does not verify, and can never move money, redirect
+a payment or invent a debt. Every object a phone downloads is the other phone's
+own signed bytes, checked locally by the same code the Bluetooth path uses.
+
+| Route | Who may | Carries |
+|---|---|---|
+| `POST /v1/pay/destination` | the seller named in the claim | signed claim + seller key |
+| `GET /v1/pay/destination?seller=&rail=` | somebody who owes that seller, or the seller | active claim + seller key |
+| `POST /v1/pay/expectation` | the buyer named in it | signed expectation + buyer key |
+| `GET /v1/pay/expectations` | the seller, its own inbox only | pending expectations + buyer keys |
+| `POST /v1/pay/reply` | the seller the expectation names | ACCEPTED / BUSY / ... |
+| `GET /v1/pay/reply?payment=` | the buyer or the seller of that payment | the seller's answer |
+| `POST /v1/pay/receipt` | the seller that observed the money | signed receipt + seller key |
+| `GET /v1/pay/receipts` | the buyer, its own only | unacknowledged receipts |
+| `POST /v1/pay/receipt/ack` | the buyer the receipt names | - |
+| `POST /v1/pay/end` | the buyer | closes a window early |
+| `GET /v1/pay/rules` | any signed identity | the signed parser configuration |
+| `POST /v1/device/risk` | any signed identity | what THIS PHONE still owes |
+
+### Why the public key travels with the object
+
+A buyer that has never met a seller cannot check that seller's signature, so
+without the key the Brain path is fail-closed and useless. Sending the key is
+safe because **a node id is the hash of the key**: the receiving phone
+re-derives the id and refuses a key that does not produce the id in the
+message. A Brain that substituted its own key would be offering a key for a
+different identity. That check is `BrainPayload.pubFor`, and a key learned in
+person always wins over one the server offered.
+
+### One object, one payment
+
+Every object has a deterministic id. The phone keeps a small `pay_sync` ledger
+of what it has already pushed, and the engine's own dedup decides what it has
+already applied. An object that arrives twice, once directly and once through
+the Brain, is one logical object, one settlement and one trust increment.
+
+### Device risk is the server's answer, not the phone's
+
+The phone sends a domain-separated pseudonym. It does **not** send whether it
+believes it owes anything, because a freshly reinstalled phone would say no.
+The server derives the amount from its own verified settlement records across
+every identity seen on that pseudonym. No IMEI, no serial, no advertising id:
+only `ProkNet-device-v1` hashed over the Android id ever leaves the phone.
+
+### Signed parser rules
+
+MTN and Airtel will reword a message one day. `ReceiptRules` lets the word
+lists be replaced without a release, under three rules the phone enforces
+itself: a **pinned, dedicated key** (not the Brain's transport identity), **data
+only** (word lists, no regex or expressions from the server), and **hard
+bounds** on count, length, characters and total size.
+
+`PINNED_CONFIG_KEY` is **empty in this build**, which means no remote
+configuration is accepted at all and the built-in rules are the only rules.
+That is deliberate: publishing a key before a key ceremony would look like a
+security control while being none. Detection never waits for a configuration
+and never depends on one.
+
+### Signed requests are bound to their endpoint
+
+`signing_line` now covers the method and the path as well as the body:
+
+```
+ProkNet-api-1|<ts>|<nonce>|<sha256 body>|<METHOD>|<path>
+```
+
+Without that, a captured request to one payment endpoint could be replayed at
+another that accepts the same JSON. Requests signed the old way are still
+accepted, so v0.16.1 phones keep working.
+
+Nonces are now stored in SQLite with a unique constraint. In memory they
+vanished on restart, which meant restarting the server was a way to undo replay
+protection.

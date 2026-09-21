@@ -1,3 +1,82 @@
+# CLAUDE_REPORT - ProkNet v0.16.2 "the payment loop, through the Brain"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.16.2, build 64. 514 Android tests, 112 server tests, all passing.
+APK SHA256 in the release notes.
+
+## What was asked, and what is now true
+
+**1. The payment path works through the Brain.** The four signed payment
+objects now also travel through the server when the phones are apart. A buyer
+can learn where to pay, leave an expectation, get an answer, and receive the
+receipt without ever meeting the seller again. New: `server/brain/paybox.py`,
+`app/.../node/PaymentSync.kt`, `app/.../core/BrainPayload.kt`.
+
+**2. Reinstall debt is server-backed.** `POST /v1/device/risk` takes a
+domain-separated pseudonym and returns what that PHONE owes, derived from the
+server's own verified settlements across every identity it has seen on that
+phone. The phone never asserts its own innocence. The admission gate in
+`ProkNetNode` now reads that number instead of a local flag, and the local flag
+is gone.
+
+**3. Parser wording can be updated as signed data.** `core/ReceiptRules.kt` and
+`server/brain/ruleconfig.py`: a pinned dedicated key, word lists only, hard
+bounds, and a downgrade check. `PINNED_CONFIG_KEY` is empty in this build, so
+**no remote configuration is accepted yet** - the built-in rules are the only
+rules until there is a real key ceremony.
+
+## Security items
+
+- **Durable nonces.** `Nonces` is SQLite-backed with a unique constraint.
+  Restarting the server used to undo replay protection for every request in the
+  skew window.
+- **Signatures bound to method and path.** `ProkNet-api-1|ts|nonce|hash|METHOD|path`.
+  Old-style signatures still verify, so v0.16.1 phones keep working.
+- **Private endpoints authorised.** `/v1/wallet` needs a signed request and
+  returns only your own. `/v1/pay/*` needs a signed request; a seller sees only
+  its own inbox, a buyer only its own receipts, and the seller's Mobile Money
+  number is readable only by somebody who actually owes that seller.
+- **Webhook DoS fixed.** An unverified webhook used to push a payment and every
+  obligation it touched into SECURITY_REVIEW, so anybody who could reach the
+  endpoint could freeze a real seller's money. It is now audited and ignored.
+- **Atomic writes.** Storing a receipt and closing its window are one
+  transaction or neither.
+
+## Two things I found while checking my own work
+
+- The far phone could not verify anything the Brain carried: it had no way to
+  get the other phone's public key. Fixed by carrying the key with the object,
+  which is safe only because a node id IS the hash of the key - the phone
+  re-derives it and refuses a key that does not match (`BrainPayload.pubFor`).
+  Without this the whole Brain path was fail-closed and useless.
+- A reinstalled phone blocked by server-backed debt would have been told
+  "Réglez 0 F pour continuer", because its LOCAL debt is zero. The refusal now
+  shows the larger of the two.
+
+## What is proven and what is not
+
+- **Software-proven:** everything above, by 514 Android and 112 server tests,
+  including the whole Brain loop end to end and the endpoint authorisation over
+  real HTTP.
+- **Hardware-proven:** nothing in v0.16.2 yet. Section 67 (v0.16.1, two phones,
+  local) is the last hardware-tested payment path.
+- **Not built, deliberately:** `PAYMENT_OPERATOR_VERIFIED`. No code produces it.
+  Only an MTN/Airtel API may, and there is none.
+- **Needs a decision from you:** the parser-rule signing key. Until there is a
+  key ceremony, remote rules are off and the feature is inert by design.
+
+## To test on hardware
+
+`docs/TESTING.md` section 68. It needs the Brain actually running and reachable
+from both phones; 68d re-runs section 67 with the Brain OFF to prove the local
+path did not regress.
+
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.16.1 "the payment loop, wired"
 
 Date: 2026-09-21

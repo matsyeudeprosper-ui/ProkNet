@@ -2804,3 +2804,82 @@ COPY NETWORK must show no candidate at all: the message was never read.
 - A notification being examined with no payment outstanding.
 - Any regression in sections 59 to 66.
 
+## 68. v0.16.2 the same payment, through the Brain
+
+Section 67 proved the loop when the two phones can see each other. This proves
+it when they cannot, and proves that a reinstall does not erase a debt.
+
+**Prerequisite:** a reachable Brain. Start `server/brain/app.py` on the VPS and
+put its URL into both phones: COPY NETWORK -> the brain URL box (empty = off).
+Both phones must show `server: <url>` in COPY NETWORK. Without a Brain this
+section cannot run; the phones are then in local-only mode and section 67 is
+the test that applies.
+
+### 68a. The buyer never meets the seller again
+
+Run a short paid session, stop it, and take the OnePlus **out of Bluetooth
+range and keep it there** for the whole of 68a.
+
+On the OnePlus, open the Wallet and tap **PAYER**.
+
+Expected: it shows the seller's operator and a masked number, even though the
+seller is nowhere near. The destination came from the Brain as the seller's own
+signed claim.
+
+Tap **J'AI COMPRIS**. Within a sync cycle or two the OnePlus must reach **La
+vérification automatique est prête.** The OUKITEL collected the expectation
+from the Brain and answered it, with the phones still apart.
+
+Pay the amount the ordinary way. Press nothing.
+
+Expected on the OUKITEL: the payment is recognised, the obligation reads
+**Reçu ✓**. Expected on the OnePlus, still out of range: **Payé ✓** and À payer
+back to zero.
+
+That is the section. If the OnePlus needs to meet the seller again, it failed.
+
+### 68b. Nothing happens twice
+
+Bring the phones back together and leave them a minute.
+
+Expected: nothing changes. À payer stays at zero, the payment count does not go
+up, and no second obligation appears. The same signed object arriving twice —
+once from the Brain, once over Bluetooth — is one payment.
+
+COPY NETWORK on either phone shows a `payment sync:` line with its last run.
+
+### 68c. A debt survives a reinstall
+
+Run a paid session from the OnePlus and stop it, so it owes money. Do **not**
+pay.
+
+Uninstall ProkNet from the OnePlus. Install it again. It now has a brand new
+identity and an empty database.
+
+Tap GET INTERNET and try to buy.
+
+Expected: refused, with **Réglez <the real amount> pour continuer** — the true
+amount, not 0 F. The Brain recognised the phone and told it what it still owes.
+The old identity's debt followed the phone, not the install.
+
+Now pay that debt from the new install and buy again: it must work.
+
+### 68d. Without the Brain, nothing got worse
+
+Clear the brain URL on both phones (empty = off). Re-run section 67 end to end.
+
+Expected: identical behaviour to v0.16.1. The local path never waits for a
+server and never needed one.
+
+### 68e. Privacy did not change
+
+With no payment outstanding, send an ordinary SMS to the seller. COPY NETWORK
+must still show no candidate. Nothing about the Brain changed what is read.
+
+### What would make this a FAIL
+
+- Needing the phones to meet to finish a payment in 68a.
+- A debt paid once being counted twice in 68b.
+- "Réglez 0 F" after a reinstall in 68c.
+- Any regression in section 67 when the Brain is off.
+- The Brain being able to show one phone another phone's payments or wallet.

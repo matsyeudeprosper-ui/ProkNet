@@ -13,6 +13,7 @@ The two rules being pinned:
 """
 import json
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -20,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from brain import app, evidence, settlement, signed_request
 from tests.test_evidence import checkpoint_bytes, contract_bytes, keypair, node_id, pub_hex, sign
+from tests.test_paybox import dest_line, exp_line
 
 MB = 1024 * 1024
 
@@ -244,3 +246,217 @@ class ApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PayApiTest(unittest.TestCase):
+    """v0.16.2: the payment endpoints over real HTTP.
+
+    The Brain now holds signed payment objects on behalf of phones that are not near each
+    other. That makes it a place where somebody could try to read other people's money, or
+    to act in their name, so these drive the real handler and check who is allowed to do
+    what -- not just that the happy path returns 200.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        app.STATE = app.State(":memory:")
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        self.buyer = keypair()
+        self.seller = keypair()
+        self.stranger = keypair()
+        self.now = int(time.time() * 1000)
+        # a real obligation, so the buyer genuinely owes this seller
+        self.session = bytes([len(app.STATE.settlements.db.execute(
+            "SELECT 1 FROM settlements").fetchall()) + 1]) * 8
+        contract = contract_bytes(self.session, bytes.fromhex(node_id(self.buyer)),
+                                  bytes.fromhex(node_id(self.seller)))
+        c = evidence.Contract(contract)
+        used = 3 * MB
+        cp = checkpoint_bytes(self.session, 1, used // 2, used - used // 2, c.cost_for(used))
+        body = json.dumps({
+            "contract": contract.hex(),
+            "buyer_contract_sig": sign(self.buyer, evidence.CONTRACT_DOMAIN + contract),
+            "seller_contract_sig": sign(self.seller, evidence.CONTRACT_DOMAIN + contract),
+            "checkpoint": cp.hex(),
+            "seller_checkpoint_sig": sign(self.seller, evidence.CHECKPOINT_DOMAIN + cp),
+            "buyer_checkpoint_sig": sign(self.buyer, evidence.CHECKPOINT_DOMAIN + cp),
+            "buyer_pub": pub_hex(self.buyer),
+            "seller_pub": pub_hex(self.seller),
+            "submitter_pub": pub_hex(self.buyer),
+        }).encode("utf-8")
+        code, out = self.call("POST", "/v1/settlements", self.buyer, body)
+        self.assertEqual(200, code)
+        self.settlement_id = out["settlement_id"]
+        self.amount = out["gross"]
+
+    # ---- helpers ---------------------------------------------------------------------
+
+    def url(self, path):
+        return "http://127.0.0.1:%d%s" % (self.port, path)
+
+    def call(self, method, path, signer, raw=b"", sign_path=None, sign_method=None,
+             headers=None, nonce=None):
+        """Sign the method and the path as well, exactly as PaymentSync does."""
+        ts = int(time.time() * 1000)
+        nonce = nonce or ("n%d%d" % (id(path), ts))
+        digest = signed_request.body_hash(raw)
+        line = signed_request.signing_line(
+            ts, nonce, digest,
+            method=sign_method if sign_method is not None else method,
+            path=sign_path if sign_path is not None else path.split("?")[0])
+        h = {
+            "Content-Type": "application/json",
+            "X-Prok-Identity": pub_hex(signer),
+            "X-Prok-Timestamp": str(ts),
+            "X-Prok-Nonce": nonce,
+            "X-Prok-Signature": sign(signer, line),
+        }
+        if headers is not None:
+            h = headers
+        req = Request(self.url(path), data=(raw if method == "POST" else None),
+                      headers=h, method=method)
+        try:
+            with urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode("utf-8") or "{}")
+        except HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8") or "{}")
+
+    def publish_destination(self):
+        raw = json.dumps({"line": dest_line(self.seller), "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        return self.call("POST", "/v1/pay/destination", self.seller, raw)
+
+    # ---- who may read what -------------------------------------------------------------
+
+    def test_an_unsigned_request_reads_nothing(self):
+        req = Request(self.url("/v1/pay/expectations"), headers={}, method="GET")
+        try:
+            with urlopen(req, timeout=10) as r:
+                self.fail("an unsigned read returned %d" % r.status)
+        except HTTPError as e:
+            self.assertEqual(401, e.code)
+
+    def test_only_somebody_who_owes_a_seller_may_read_where_it_is_paid(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        path = "/v1/pay/destination?seller=%s&rail=MTN_MOMO" % node_id(self.seller)
+        code, out = self.call("GET", path, self.buyer)
+        self.assertEqual(200, code)
+        self.assertIsNotNone(out["destination"])
+        self.assertEqual(pub_hex(self.seller), out["destination"]["seller_pub"],
+                         "the key must travel or the buyer cannot verify the claim")
+        # somebody with no obligation has no business knowing the seller's number
+        self.assertEqual(403, self.call("GET", path, self.stranger)[0])
+        # the seller may always read its own
+        self.assertEqual(200, self.call("GET", path, self.seller)[0])
+
+    def test_an_inbox_only_ever_shows_its_owner_its_own_items(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        raw = json.dumps({
+            "line": exp_line(self.buyer, self.seller, amount=self.amount,
+                             ids=(self.settlement_id,), payment_id="pa-" + self.settlement_id[:6],
+                             created=self.now),
+            "buyer_pub": pub_hex(self.buyer),
+            "settlement_ids": [self.settlement_id],
+        }).encode("utf-8")
+        self.assertEqual(200, self.call("POST", "/v1/pay/expectation", self.buyer, raw)[0])
+
+        mine = self.call("GET", "/v1/pay/expectations", self.seller)[1]["expectations"]
+        self.assertEqual(1, len(mine))
+        self.assertEqual(pub_hex(self.buyer), mine[0]["buyer_pub"])
+        self.assertEqual([], self.call("GET", "/v1/pay/expectations", self.stranger)[1]["expectations"])
+        self.assertEqual([], self.call("GET", "/v1/pay/expectations", self.buyer)[1]["expectations"])
+
+    def test_a_wallet_is_readable_only_by_its_owner(self):
+        code, out = self.call("GET", "/v1/wallet?node=" + node_id(self.buyer), self.buyer)
+        self.assertEqual(200, code)
+        self.assertEqual(403, self.call("GET", "/v1/wallet?node=" + node_id(self.buyer), self.stranger)[0],
+                         "a node id is not a secret, so it cannot be the key to somebody's money")
+        req = Request(self.url("/v1/wallet?node=" + node_id(self.buyer)), headers={}, method="GET")
+        try:
+            with urlopen(req, timeout=10) as r:
+                self.fail("an unsigned wallet read returned %d" % r.status)
+        except HTTPError as e:
+            self.assertEqual(401, e.code)
+
+    # ---- who may act in whose name ------------------------------------------------------
+
+    def test_only_the_seller_may_publish_its_own_destination(self):
+        raw = json.dumps({"line": dest_line(self.seller), "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        code, out = self.call("POST", "/v1/pay/destination", self.stranger, raw)
+        self.assertEqual(400, code)
+        self.assertIn("seller", out["error"])
+
+    def test_only_the_buyer_may_leave_its_own_expectation(self):
+        self.assertEqual(200, self.publish_destination()[0])
+        raw = json.dumps({
+            "line": exp_line(self.buyer, self.seller, amount=self.amount,
+                             ids=(self.settlement_id,), payment_id="pb-" + self.settlement_id[:6],
+                             created=self.now),
+            "buyer_pub": pub_hex(self.buyer),
+            "settlement_ids": [self.settlement_id],
+        }).encode("utf-8")
+        self.assertEqual(400, self.call("POST", "/v1/pay/expectation", self.stranger, raw)[0])
+
+    # ---- a signature is for one endpoint -------------------------------------------------
+
+    def test_a_signature_made_for_one_endpoint_is_refused_at_another(self):
+        raw = json.dumps({"line": dest_line(self.seller), "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        code, out = self.call("POST", "/v1/pay/destination", self.seller, raw,
+                              sign_path="/v1/pay/receipt")
+        self.assertEqual(401, code)
+
+    def test_a_signature_made_for_a_get_is_refused_on_a_post(self):
+        raw = json.dumps({"line": dest_line(self.seller), "seller_pub": pub_hex(self.seller)}).encode("utf-8")
+        self.assertEqual(401, self.call("POST", "/v1/pay/destination", self.seller, raw,
+                                        sign_method="GET")[0])
+
+    def test_a_nonce_is_good_once(self):
+        raw = json.dumps({"pseudonym": "a" * 64}).encode("utf-8")
+        nonce = "reused-nonce-1234"
+        self.assertEqual(200, self.call("POST", "/v1/device/risk", self.buyer, raw, nonce=nonce)[0])
+        self.assertEqual(401, self.call("POST", "/v1/device/risk", self.buyer, raw, nonce=nonce)[0],
+                         "a captured request must not be replayable")
+
+    # ---- device risk ---------------------------------------------------------------------
+
+    def test_the_server_decides_what_a_device_owes_not_the_phone(self):
+        raw = json.dumps({"pseudonym": "b" * 64, "unresolvedCentimes": 0}).encode("utf-8")
+        code, out = self.call("POST", "/v1/device/risk", self.buyer, raw)
+        self.assertEqual(200, code)
+        self.assertEqual(self.amount, out["unresolvedCentimes"],
+                         "the phone said zero; the server knows better")
+        # a NEW identity on the SAME phone inherits the debt the old identity left
+        reborn = keypair()
+        raw2 = json.dumps({"pseudonym": "b" * 64}).encode("utf-8")
+        out2 = self.call("POST", "/v1/device/risk", reborn, raw2)[1]
+        self.assertEqual(self.amount, out2["unresolvedCentimes"],
+                         "reinstalling must not clear a debt")
+        self.assertGreaterEqual(out2["priorIdentityCount"], 1)
+
+    def test_a_different_phone_inherits_nothing(self):
+        clean = keypair()
+        raw = json.dumps({"pseudonym": "c" * 64}).encode("utf-8")
+        out = self.call("POST", "/v1/device/risk", clean, raw)[1]
+        self.assertEqual(0, out["unresolvedCentimes"])
+
+    # ---- the webhook cannot be used as a weapon --------------------------------------------
+
+    def test_an_unverified_webhook_changes_nothing(self):
+        before = app.STATE.settlements.get(self.settlement_id)["status"]
+        req = Request(self.url("/v1/payments/webhook"),
+                      data=json.dumps({"payment_id": "whatever", "amount": 999999}).encode("utf-8"),
+                      headers={"Content-Type": "application/json"}, method="POST")
+        with urlopen(req, timeout=10) as r:
+            self.assertEqual(202, r.status)
+            self.assertFalse(json.loads(r.read().decode("utf-8"))["ok"])
+        self.assertEqual(before, app.STATE.settlements.get(self.settlement_id)["status"],
+                         "anybody who can reach this endpoint must not be able to freeze real money")

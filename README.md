@@ -308,6 +308,8 @@ app/                      Android app (Kotlin, no AndroidX, plain Activity)
     core/                 Identity, Packet, MessageStore, Crypto, Routing, Tunnel, Market, ProductState (engine -> user words), DiagLog
                           Coverage (v0.9 pure planner), Relay (v0.9 sealed relay frames)
     node/                 TunnelClient (buyer), Gateway (seller), RelayNode + RelayProbe (v0.9), TransferEngine
+                          PaymentEngine (v0.16.0), SettlementSync, PaymentSync (v0.16.2 Brain carrier)
+    (core, cont.)         PayWire, ReceiptParser, ReceiptRules (v0.16.2 signed rules), BrainPayload, Trust, Wallet
     ble/                  Advertiser, GATT server, Scanner, Sender, DeliveryQueue, ProkNetNode
     service/              ProkNetService (foreground service owning the node)
     ui/                   MainActivity (v0.8 consumer screen), LabActivity (developer / diagnostics), RelayLabActivity (v0.9 relay experiment)
@@ -316,6 +318,8 @@ build.ps1                 The build command
 dist/                     Predictable APK output location (APK itself not committed)
 docs/ARCHITECTURE.md      Design and technology choices
 docs/TESTING.md           Step-by-step phone test procedure
+server/brain/             Network Brain (Python): sync, settlements, paybox (v0.16.2), ruleconfig (v0.16.2)
+server/tests/             Server tests (python -m unittest discover -s tests)
 CLAUDE_REPORT.md          Milestone report for the architect (ChatGPT)
 ```
 
