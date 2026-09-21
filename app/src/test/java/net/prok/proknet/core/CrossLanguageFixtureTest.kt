@@ -50,7 +50,7 @@ class CrossLanguageFixtureTest {
     private fun load(): Map<String, String> {
         val text = fixtureFile().readText(Charsets.UTF_8)
         val out = HashMap<String, String>()
-        for (section in listOf("request", "rules")) {
+        for (section in listOf("request", "rules", "destination_v2")) {
             val at = text.indexOf("\"" + section + "\"")
             require(at >= 0) { "fixture has no $section section" }
             val open = text.indexOf('{', at)
@@ -179,33 +179,46 @@ class CrossLanguageFixtureTest {
         require(at >= 0) { "fixture has no active_destination section" }
         val section = text.substring(at)
         val out = ArrayList<Triple<String, List<DestinationClaim.Claim>, Pair<Long, Int>>>()
-        for (m in Regex("\\{\\s*\"claims\"[\\s\\S]*?\"name\"\\s*:\\s*\"([^\"]*)\"[\\s\\S]*?\"now\"\\s*:\\s*(\\d+)")
-                .findAll(section)) {
-            // each case object, taken whole so the claims inside belong to it
-            val start = m.range.first
-            var depth = 0; var i = start
-            while (i < section.length) {
-                if (section[i] == '{') depth++
-                if (section[i] == '}') { depth--; if (depth == 0) break }
-                i++
+        var i = section.indexOf("\"cases\"")
+        require(i >= 0) { "fixture has no cases" }
+        // walk the array, taking each case object whole so the claims inside belong to it
+        while (true) {
+            val open = section.indexOf('{', i)
+            if (open < 0) break
+            var depth = 0
+            var j = open
+            while (j < section.length) {
+                if (section[j] == '{') depth++
+                if (section[j] == '}') { depth--; if (depth == 0) break }
+                j++
             }
-            val body = section.substring(start, i + 1)
-            val claims = Regex(
-                "\"created_at\"\\s*:\\s*(\\d+),\\s*\"msisdn\"\\s*:\\s*\"([^\"]*)\",\\s*\"rail\"\\s*:\\s*\"([^\"]*)\",\\s*\"version\"\\s*:\\s*(\\d+)")
-                .findAll(body).map {
-                    DestinationClaim.Claim("ee".repeat(16),
-                        Settlement.Rail.valueOf(it.groupValues[3]), it.groupValues[2],
-                        it.groupValues[4].toInt(), it.groupValues[1].toLong())
-                }.toList()
-            val expected = Regex("\"expected_version\"\\s*:\\s*(\\d+)").find(body)!!.groupValues[1].toInt()
-            out.add(Triple(m.groupValues[1], claims, m.groupValues[2].toLong() to expected))
+            if (j >= section.length) break
+            val caseBody = section.substring(open, j + 1)
+            if (!caseBody.contains("\"expected_version\"")) break
+            val claims = Regex("\\{[^{}]*\\}").findAll(caseBody)
+                    .filter { it.value.contains("\"version\"") && it.value.contains("\"msisdn\"") }
+                    .map { m ->
+                        fun num(k: String) = Regex("\"" + k + "\"\\s*:\\s*(\\d+)")
+                            .find(m.value)!!.groupValues[1]
+                        fun str(k: String) = Regex("\"" + k + "\"\\s*:\\s*\"([^\"]*)\"")
+                            .find(m.value)!!.groupValues[1]
+                        DestinationClaim.Claim("ee".repeat(16),
+                            Settlement.Rail.valueOf(str("rail")), str("msisdn"),
+                            num("version").toInt(), num("created_at").toLong())
+                    }.toList()
+            val name = Regex("\"name\"\\s*:\\s*\"([^\"]*)\"").find(caseBody)!!.groupValues[1]
+            val now = Regex("\"now\"\\s*:\\s*(\\d+)").find(caseBody)!!.groupValues[1].toLong()
+            val expected = Regex("\"expected_version\"\\s*:\\s*(\\d+)")
+                .find(caseBody)!!.groupValues[1].toInt()
+            out.add(Triple(name, claims, now to expected))
+            i = j + 1
         }
         return out
     }
 
     @Test fun the_fixture_really_contains_the_cases_it_claims_to() {
         val cases = activeCases()
-        assertEquals("the fixture must hold every case the spec lists", 10, cases.size)
+        assertEquals("the fixture must hold every case the spec lists", 14, cases.size)
         assertTrue(cases.all { it.second.isNotEmpty() })
     }
 
@@ -223,6 +236,60 @@ class CrossLanguageFixtureTest {
         val ms = Regex("\"cooling_ms\"\\s*:\\s*(\\d+)").find(text)!!.groupValues[1].toLong()
         assertEquals("a different window on each side is a payment sent to the wrong number",
             DestinationClaim.CHANGE_COOLING_MS, ms)
+    }
+
+    // ================= the destination claim's signed timestamp =================
+
+    /**
+     * v0.16.5. `createdAt` decides when a new destination goes live, on both sides, and
+     * until this release it was outside the signature. Anything carrying a claim could
+     * have moved the cooling window: earlier, and a buyer is sent to a number the seller
+     * is not watching yet; later, and the seller keeps being paid on a number it has
+     * abandoned.
+     */
+    @Test fun the_canonical_destination_bytes_are_the_ones_python_built() {
+        val c = DestinationClaim.Claim(
+            get("destination_v2.seller_id"),
+            Settlement.Rail.valueOf(get("destination_v2.rail")),
+            get("destination_v2.msisdn"),
+            get("destination_v2.version").toInt(),
+            get("destination_v2.created_at").toLong())
+        assertEquals(get("destination_v2.canonical"), String(c.signDataV2(), Charsets.UTF_8))
+        assertTrue("the timestamp must be inside the signed bytes",
+            String(c.signDataV2(), Charsets.UTF_8).endsWith("|" + get("destination_v2.created_at")))
+    }
+
+    @Test fun a_destination_python_signed_verifies_here() {
+        val d = PayWire.parseDestinationClaim(get("destination_v2.wire"))
+        assertNotNull(d)
+        assertEquals(DestinationClaim.FORMAT_SIGNED_TIME, d!!.format)
+        assertTrue(d.timeIsSigned)
+        assertTrue(DestinationClaim.verify(d.claim, get("destination_v2.public").hexToBytes(),
+            d.sig, d.format))
+    }
+
+    @Test fun the_same_claim_with_a_moved_timestamp_is_refused() {
+        val d = PayWire.parseDestinationClaim(get("destination_v2.tampered_wire"))
+        assertNotNull(d)
+        assertEquals("only the timestamp differs",
+            get("destination_v2.version").toInt(), d!!.claim.version)
+        assertTrue(d.claim.createdAt != get("destination_v2.created_at").toLong())
+        assertTrue("a moved cooling window must break the claim",
+            !DestinationClaim.verify(d.claim, get("destination_v2.public").hexToBytes(),
+                d.sig, d.format))
+    }
+
+    @Test fun a_destination_this_phone_signs_verifies_against_the_fixture_key() {
+        val priv = Crypto.privateKeyFrom(get("destination_v2.private_pkcs8").hexToBytes())
+        val c = DestinationClaim.Claim(
+            get("destination_v2.seller_id"),
+            Settlement.Rail.valueOf(get("destination_v2.rail")),
+            get("destination_v2.msisdn"),
+            get("destination_v2.version").toInt(),
+            get("destination_v2.created_at").toLong())
+        val sig = Crypto.sign(priv, c.signDataV2())
+        assertTrue(DestinationClaim.verify(c, get("destination_v2.public").hexToBytes(), sig))
+        println("KOTLIN_DESTINATION_SIGNATURE=" + sig.toHex())
     }
 
     // ================= the pinned key is the deployed one =================

@@ -171,6 +171,118 @@ class DestinationRotationTest {
         }
     }
 
+    // ================= v0.16.5: the timestamp is signed =================
+
+    /**
+     * v0.16.4 made `createdAt` decide when a new destination goes live, on both the phone
+     * and the Brain - while it was still outside the signature. Anything carrying a claim
+     * could have moved the cooling window: ten minutes earlier and a buyer is sent to a
+     * number the seller is not watching yet; ten minutes later and the seller keeps being
+     * paid on a number it has abandoned.
+     */
+    @Test fun the_signed_bytes_contain_the_timestamp() {
+        val signed = String(v1.signDataV2(), Charsets.UTF_8)
+        assertTrue(signed.startsWith(DestinationClaim.DOMAIN_V2 + "|"))
+        assertTrue("the field cooling depends on must be signed", signed.endsWith("|" + t0))
+        // and the old bytes did not
+        assertTrue(!String(v1.signData(), Charsets.UTF_8).endsWith("|" + t0))
+    }
+
+    @Test fun moving_the_timestamp_invalidates_the_claim() {
+        val sig = seller.sign(v1.signDataV2())
+        assertTrue(DestinationClaim.verify(v1, seller.pub, sig))
+        for (shift in listOf(600_000L, -600_000L)) {
+            val moved = claim(1, v1.rail, v1.msisdn, t0 + shift)
+            assertTrue("a moved cooling window must break the claim",
+                !DestinationClaim.verify(moved, seller.pub, sig))
+        }
+    }
+
+    @Test fun the_wire_line_carries_the_timestamp_and_it_is_checked() {
+        val sig = seller.sign(v1.signDataV2())
+        val line = PayWire.destinationClaim(v1, sig)
+        val back = PayWire.parseDestinationClaim(line)!!
+        assertEquals(DestinationClaim.FORMAT_SIGNED_TIME, back.format)
+        assertTrue(back.timeIsSigned)
+        assertEquals(t0, back.claim.createdAt)
+        assertTrue(DestinationClaim.verify(back.claim, seller.pub, back.sig, back.format))
+
+        // edit only the timestamp on the wire, keep the signature
+        val parts = line.split("|").toMutableList()
+        assertEquals(t0.toString(), parts[6])
+        parts[6] = (t0 + 600_000).toString()
+        val tampered = PayWire.parseDestinationClaim(parts.joinToString("|"))!!
+        assertTrue(!DestinationClaim.verify(tampered.claim, seller.pub, tampered.sig, tampered.format))
+    }
+
+    // ================= legacy claims, read-only =================
+
+    @Test fun a_claim_signed_before_build_67_still_verifies() {
+        // a seller who has not changed their number must not be asked to re-enter it
+        val legacySig = seller.sign(v1.signData())
+        assertTrue(DestinationClaim.verify(v1, seller.pub, legacySig, DestinationClaim.FORMAT_LEGACY))
+        assertEquals(DestinationClaim.FORMAT_LEGACY,
+            DestinationClaim.formatOf(v1, seller.pub, legacySig))
+        assertTrue("its timestamp is used, but it is not a signed fact",
+            !DestinationClaim.timeIsSigned(DestinationClaim.FORMAT_LEGACY))
+    }
+
+    @Test fun a_legacy_claim_survives_the_wire_and_is_labelled_as_legacy() {
+        val legacySig = seller.sign(v1.signData())
+        val line = PayWire.destinationClaim(v1, legacySig, DestinationClaim.FORMAT_LEGACY)
+        assertTrue(line.contains("|" + DestinationClaim.WIRE_V1 + "|"))
+        val back = PayWire.parseDestinationClaim(line)!!
+        assertEquals(DestinationClaim.FORMAT_LEGACY, back.format)
+        assertTrue(!back.timeIsSigned)
+        assertTrue(DestinationClaim.verify(back.claim, seller.pub, back.sig, back.format))
+    }
+
+    @Test fun a_legacy_claim_relabelled_as_signed_time_is_refused() {
+        // otherwise a carrier could have an unsigned timestamp treated as authenticated
+        val legacySig = seller.sign(v1.signData())
+        assertTrue(!DestinationClaim.verify(v1, seller.pub, legacySig,
+            DestinationClaim.FORMAT_SIGNED_TIME))
+    }
+
+    @Test fun a_signed_time_claim_relabelled_as_legacy_is_refused() {
+        val sig = seller.sign(v1.signDataV2())
+        assertTrue(!DestinationClaim.verify(v1, seller.pub, sig, DestinationClaim.FORMAT_LEGACY))
+    }
+
+    @Test fun an_unknown_wire_prefix_is_not_a_claim() {
+        val sig = seller.sign(v1.signDataV2())
+        val line = PayWire.destinationClaim(v1, sig).replace("|dest2|", "|dest9|")
+        assertEquals(null, PayWire.parseDestinationClaim(line))
+    }
+
+    @Test fun formatOf_says_zero_when_neither_format_verifies() {
+        val stranger = Party()
+        assertEquals(0, DestinationClaim.formatOf(v1, seller.pub, stranger.sign(v1.signDataV2())))
+    }
+
+    // ================= the transition =================
+
+    @Test fun the_version_keeps_counting_across_the_format_change() {
+        // a legacy claim at version 3, replaced by a v2 claim at version 4, not 1. The
+        // signature format and the claim version are different things.
+        val legacy = claim(3, Settlement.Rail.MTN_MOMO, numberA, t0)
+        val next = claim(DestinationClaim.nextVersion(legacy), Settlement.Rail.AIRTEL_MONEY, numberB, t1)
+        assertEquals(4, next.version)
+        assertTrue(DestinationClaim.mayReplace(legacy, next))
+        assertTrue("an older claim may not come back", !DestinationClaim.mayReplace(next, legacy))
+    }
+
+    @Test fun a_mixed_history_cools_exactly_like_any_other() {
+        // the legacy claim's timestamp is not signed, but the rule that uses it is the
+        // same rule, so an upgraded seller behaves like everybody else
+        val legacy = claim(1, Settlement.Rail.MTN_MOMO, numberA, t0)
+        val fresh = claim(2, Settlement.Rail.AIRTEL_MONEY, numberB, t1)
+        val claims = listOf(legacy, fresh)
+        assertEquals(1, DestinationClaim.active(claims, t1 + 1_000)!!.version)
+        assertEquals(1, DestinationClaim.active(claims, t1 + cooling - 1)!!.version)
+        assertEquals(2, DestinationClaim.active(claims, t1 + cooling)!!.version)
+    }
+
     // ================= the two truths, kept apart =================
 
     @Test fun the_configured_number_and_the_one_being_paid_are_different_things() {

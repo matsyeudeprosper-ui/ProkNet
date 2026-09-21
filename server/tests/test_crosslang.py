@@ -144,6 +144,60 @@ class CrossLanguageRuleConfigTest(unittest.TestCase):
                                                broken, sig, self.f["public"]))
 
 
+class CrossLanguageDestinationV2Test(unittest.TestCase):
+    """v0.16.5: the destination claim's timestamp, signed, and agreed on by both sides.
+
+    v0.16.4 made `created_at` decide when a new destination becomes active - and it was
+    outside the signature. Anything carrying the claim could move the cooling window:
+    earlier, and a buyer is sent to a number the seller is not watching yet; later, and
+    the seller keeps being paid on a number it has abandoned.
+    """
+
+    def setUp(self):
+        self.f = load()["destination_v2"]
+
+    def test_the_canonical_bytes_are_rebuilt_exactly(self):
+        d = paybox.Destination(self.f["wire"])
+        self.assertTrue(d.time_is_signed)
+        self.assertEqual(self.f["canonical"], d.sign_data_v2().decode("utf-8"))
+        self.assertEqual(self.f["canonical"], d.sign_data().decode("utf-8"))
+        self.assertTrue(self.f["canonical"].endswith("|%d" % self.f["created_at"]),
+                        "the timestamp must be inside the signed bytes")
+
+    def test_a_claim_android_signed_is_accepted_here(self):
+        self.assertTrue(self.f["kotlin_signature"],
+                        "capture it from the Kotlin test output before running this")
+        self.assertTrue(protocol.verify(self.f["public"],
+                                        bytes(self.f["canonical"], "utf-8"),
+                                        self.f["kotlin_signature"]))
+
+    def test_an_android_signed_claim_goes_through_the_real_verifier(self):
+        parts = self.f["wire"].rsplit("|", 1)
+        line = parts[0] + "|" + self.f["kotlin_signature"]
+        paybox.Destination(line).verify(self.f["public"])
+
+    def test_the_claim_python_signed_is_the_one_kotlin_verified(self):
+        paybox.Destination(self.f["wire"]).verify(self.f["public"])
+
+    def test_moving_the_timestamp_breaks_it_on_this_side_too(self):
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(self.f["tampered_wire"]).verify(self.f["public"])
+        # and only the timestamp differs
+        a = self.f["wire"].split("|")
+        b = self.f["tampered_wire"].split("|")
+        self.assertEqual([x for i, x in enumerate(a) if i != 6],
+                         [x for i, x in enumerate(b) if i != 6])
+        self.assertNotEqual(a[6], b[6])
+
+    def test_the_store_refuses_a_claim_whose_timestamp_was_moved(self):
+        box = paybox.PayBox(":memory:")
+        with self.assertRaises(paybox.PayError):
+            box.put_destination(self.f["tampered_wire"], self.f["public"],
+                                self.f["seller_id"], self.f["created_at"])
+        self.assertEqual([], box.destinations_for_buyer(
+            self.f["seller_id"], self.f["created_at"], 10 * 60 * 1000))
+
+
 class ActiveDestinationTest(unittest.TestCase):
     """v0.16.4: the phone and the server must route a payment to the same number.
 
@@ -180,7 +234,11 @@ class ActiveDestinationTest(unittest.TestCase):
         self.box.db.commit()
 
     def test_the_fixture_holds_the_cases_the_spec_lists(self):
-        self.assertEqual(10, len(self.f["cases"]))
+        self.assertEqual(14, len(self.f["cases"]))
+        # v0.16.5 item 19: every claim says which signature format it is
+        self.assertTrue(all("format" in c for case in self.f["cases"] for c in case["claims"]))
+        self.assertTrue(any(c["format"] == 1 for case in self.f["cases"] for c in case["claims"]),
+                        "a mixed legacy/v2 history must be among the cases")
         self.assertEqual(10 * 60 * 1000, self.f["cooling_ms"])
 
     def test_every_case_agrees_with_the_phone(self):

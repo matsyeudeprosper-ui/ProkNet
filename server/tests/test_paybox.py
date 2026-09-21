@@ -17,15 +17,28 @@ MB = 1024 * 1024
 COOLING = 10 * 60 * 1000
 
 
-def dest_line(seller, msisdn="066123456", version=1, created=1_700_000_000_000, rail="MTN_MOMO"):
-    body = "%s|%s|%s|%d|%d" % (node_id(seller), rail, paybox.normalize_msisdn(msisdn), version, created)
-    sig = sign(seller, ("ProkNet-destination-claim-1|" + body[:body.rindex("|")]).encode("utf-8"))
-    # the signed data is domain|seller|rail|msisdn|version, without createdAt
-    data = "ProkNet-destination-claim-1|%s|%s|%s|%d" % (
-        node_id(seller), rail, paybox.normalize_msisdn(msisdn), version)
+def dest_line(seller, msisdn="066123456", version=1, created=1_700_000_000_000,
+              rail="MTN_MOMO", fmt=2, sign_created=None):
+    """A signed destination claim.
+
+    `fmt=2` is what every build from 67 on produces: created_at is inside the signature.
+    `fmt=1` is v0.16.0's, kept so the tests can prove a claim already on somebody's phone
+    still verifies. `sign_created` signs a DIFFERENT timestamp from the one on the wire,
+    which is the tampering v2 exists to stop.
+    """
+    number = paybox.normalize_msisdn(msisdn)
+    if fmt == 2:
+        data = "ProkNet-destination-claim-2|%s|%s|%s|%d|%d" % (
+            node_id(seller), rail, number, version,
+            created if sign_created is None else sign_created)
+        prefix = "dest2"
+    else:
+        data = "ProkNet-destination-claim-1|%s|%s|%s|%d" % (
+            node_id(seller), rail, number, version)
+        prefix = "dest1"
     sig = sign(seller, data.encode("utf-8"))
-    return "pay1.dest|dest1|%s|%s|%s|%d|%d|%s" % (
-        node_id(seller), rail, paybox.normalize_msisdn(msisdn), version, created, sig)
+    return "pay1.dest|%s|%s|%s|%s|%d|%d|%s" % (
+        prefix, node_id(seller), rail, number, version, created, sig)
 
 
 def exp_line(buyer, seller, amount=1_000, ids=("s1",), payment_id="p1",
@@ -298,6 +311,215 @@ class PayBoxTest(unittest.TestCase):
         self.assertEqual(1, len(self.box.db.execute("SELECT * FROM device_identities").fetchall()))
 
 
+
+
+
+class DestinationV2Test(unittest.TestCase):
+    """v0.16.5: the timestamp that decides when a destination goes live is signed.
+
+    v0.16.4 made `created_at` the field that decides when a new destination becomes
+    active, on the phone and here - while it was still outside the signature. Anything
+    carrying a claim could have moved the cooling window: ten minutes earlier and a buyer
+    is sent to a number the seller is not watching yet; ten minutes later and the seller
+    keeps being paid on a number it has abandoned.
+    """
+
+    def setUp(self):
+        self.box = paybox.PayBox(":memory:")
+        self.now = 1_700_000_000_000
+        self.seller = keypair()
+        self.buyer = keypair()
+
+    def put(self, **kw):
+        return self.box.put_destination(dest_line(self.seller, **kw), pub_hex(self.seller),
+                                        node_id(self.seller), kw.pop("at", self.now))
+
+    # ---- the new format ------------------------------------------------------------
+
+    def test_a_v2_claim_signs_its_timestamp(self):
+        d = paybox.Destination(dest_line(self.seller))
+        self.assertTrue(d.time_is_signed)
+        self.assertIn(b"ProkNet-destination-claim-2", d.sign_data())
+        self.assertIn(str(d.created_at).encode(), d.sign_data())
+        d.verify(pub_hex(self.seller))
+
+    def test_moving_the_timestamp_forward_breaks_the_claim(self):
+        # the seller signed 09:59 and the wire says 10:09: the cooling window has been
+        # pushed ten minutes later, and the seller keeps being paid on an old number
+        line = dest_line(self.seller, created=self.now + 600_000, sign_created=self.now)
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(line).verify(pub_hex(self.seller))
+
+    def test_moving_the_timestamp_backward_breaks_the_claim(self):
+        # the other direction: the new number goes live early, before the seller is
+        # watching it
+        line = dest_line(self.seller, created=self.now - 600_000, sign_created=self.now)
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(line).verify(pub_hex(self.seller))
+
+    def test_the_server_refuses_a_tampered_claim_outright(self):
+        line = dest_line(self.seller, created=self.now + 600_000, sign_created=self.now)
+        with self.assertRaises(paybox.PayError):
+            self.box.put_destination(line, pub_hex(self.seller), node_id(self.seller), self.now)
+        self.assertEqual([], self.box.destinations_for_buyer(node_id(self.seller), self.now, COOLING))
+
+    # ---- the old format, read-only ----------------------------------------------------
+
+    def test_a_legacy_claim_still_verifies_and_is_still_usable(self):
+        # a seller who has not changed their number since build 62 must not be asked to
+        # re-enter it
+        d = paybox.Destination(dest_line(self.seller, fmt=1))
+        self.assertFalse(d.time_is_signed)
+        self.assertIn(b"ProkNet-destination-claim-1", d.sign_data())
+        d.verify(pub_hex(self.seller))
+        self.assertTrue(self.put(fmt=1)["ok"])
+        got = self.box.destinations_for_buyer(node_id(self.seller), self.now, COOLING)
+        self.assertEqual(1, len(got))
+
+    def test_a_legacy_claim_relabelled_as_v2_does_not_verify(self):
+        # otherwise a carrier could have an unsigned timestamp treated as authenticated
+        legacy = dest_line(self.seller, fmt=1)
+        relabelled = legacy.replace("|dest1|", "|dest2|", 1)
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(relabelled).verify(pub_hex(self.seller))
+
+    def test_a_v2_claim_relabelled_as_legacy_does_not_verify(self):
+        v2 = dest_line(self.seller)
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(v2.replace("|dest2|", "|dest1|", 1)).verify(pub_hex(self.seller))
+
+    def test_an_unknown_wire_prefix_is_refused(self):
+        with self.assertRaises(paybox.PayError):
+            paybox.Destination(dest_line(self.seller).replace("|dest2|", "|dest9|", 1))
+
+    # ---- the transition ------------------------------------------------------------------
+
+    def test_the_version_keeps_counting_across_the_format_change(self):
+        # a legacy claim at version 3 is followed by a v2 claim at version 4, not 1. The
+        # signature format and the claim version are different things.
+        self.assertTrue(self.put(fmt=1, version=3, msisdn="066111111")["ok"])
+        out = self.put(fmt=2, version=4, msisdn="055222222", rail="AIRTEL_MONEY",
+                       created=self.now + 60_000)
+        self.assertTrue(out["ok"])
+        self.assertEqual(4, out["version"])
+        after = self.box.destinations_for_buyer(
+            node_id(self.seller), self.now + 60_000 + COOLING, COOLING)
+        self.assertEqual(4, after[0]["version"])
+
+    def test_a_legacy_claim_cannot_overwrite_a_newer_v2_one(self):
+        self.assertTrue(self.put(fmt=2, version=2, msisdn="055222222", rail="AIRTEL_MONEY")["ok"])
+        with self.assertRaises(paybox.PayError):
+            self.put(fmt=1, version=1, msisdn="066111111")
+        with self.assertRaises(paybox.PayError):
+            self.put(fmt=1, version=2, msisdn="066111111")
+        got = self.box.destinations_for_buyer(node_id(self.seller), self.now, COOLING)
+        self.assertEqual("AIRTEL_MONEY", got[0]["rail"])
+
+    def test_a_mixed_history_still_cools_correctly(self):
+        t1 = self.now + 60_000
+        self.assertTrue(self.put(fmt=1, version=1, msisdn="066111111")["ok"])
+        self.assertTrue(self.put(fmt=2, version=2, msisdn="055222222",
+                                 rail="AIRTEL_MONEY", created=t1)["ok"])
+        during = self.box.destinations_for_buyer(node_id(self.seller), t1 + 1_000, COOLING)
+        self.assertEqual(1, during[0]["version"], "inside cooling, the legacy claim")
+        after = self.box.destinations_for_buyer(node_id(self.seller), t1 + COOLING, COOLING)
+        self.assertEqual(2, after[0]["version"])
+
+
+class ExpectationTimingTest(unittest.TestCase):
+    """v0.16.5: an expectation is judged by the destination the buyer was GIVEN.
+
+        09:59  the buyer creates a signed expectation; MTN is still active
+        10:00  the cooling window closes and Airtel becomes active
+        10:01  the buyer finally gets online and uploads it
+
+    Checked against 10:01, the expectation named MTN while Airtel was active and the Brain
+    refused a payment the seller itself had asked for a minute earlier. Arrival time
+    depends on when a phone found signal; it is the one thing here that is not a signed
+    fact, so it decides nothing except whether the expectation has expired.
+    """
+
+    def setUp(self):
+        self.box = paybox.PayBox(":memory:")
+        self.t0 = 1_700_000_000_000
+        self.t1 = self.t0 + 60_000            # the seller changes destination
+        self.boundary = self.t1 + COOLING     # when Airtel becomes active
+        self.seller = keypair()
+        self.buyer = keypair()
+        self.mtn = paybox.destination_hash("MTN_MOMO", "066111111")
+        self.airtel = paybox.destination_hash("AIRTEL_MONEY", "055222222")
+        self.box.put_destination(dest_line(self.seller, msisdn="066111111", version=1,
+                                           created=self.t0),
+                                 pub_hex(self.seller), node_id(self.seller), self.t0)
+        self.box.put_destination(dest_line(self.seller, msisdn="055222222", version=2,
+                                           rail="AIRTEL_MONEY", created=self.t1),
+                                 pub_hex(self.seller), node_id(self.seller), self.t1)
+
+    def upload(self, created, dest, rail, at, payment_id="p1"):
+        line = exp_line(self.buyer, self.seller, created=created, dest=dest, rail=rail,
+                        payment_id=payment_id)
+        return self.box.put_expectation(line, pub_hex(self.buyer), node_id(self.buyer),
+                                        at, COOLING, {"s1": 1_000})
+
+    # ---- the exact boundary --------------------------------------------------------
+
+    def test_a_created_one_millisecond_before_the_boundary_is_accepted_after_it(self):
+        out = self.upload(self.boundary - 1, self.mtn, "MTN_MOMO", self.boundary + 1_000)
+        self.assertTrue(out["ok"], "the seller told this buyer MTN; refusing it is refusing "
+                                   "a payment the seller asked for")
+
+    def test_b_created_exactly_at_the_boundary_must_use_the_new_destination(self):
+        with self.assertRaises(paybox.PayError):
+            self.upload(self.boundary, self.mtn, "MTN_MOMO", self.boundary + 1_000)
+        out = self.upload(self.boundary, self.airtel, "AIRTEL_MONEY", self.boundary + 1_000,
+                          payment_id="p2")
+        self.assertTrue(out["ok"])
+
+    def test_c_created_after_the_boundary_must_use_the_new_destination(self):
+        with self.assertRaises(paybox.PayError):
+            self.upload(self.boundary + 1, self.mtn, "MTN_MOMO", self.boundary + 1_000)
+        out = self.upload(self.boundary + 1, self.airtel, "AIRTEL_MONEY",
+                          self.boundary + 1_000, payment_id="p3")
+        self.assertTrue(out["ok"])
+
+    # ---- a slow upload --------------------------------------------------------------
+
+    def test_an_expectation_uploaded_fifteen_minutes_late_is_still_accepted(self):
+        created = self.t1 + 1_000                      # well inside cooling: MTN
+        late = created + 15 * 60 * 1000                # long after the switch
+        out = self.upload(created, self.mtn, "MTN_MOMO", late)
+        self.assertTrue(out["ok"])
+
+    def test_but_an_expectation_that_has_actually_expired_is_refused(self):
+        created = self.t1 + 1_000
+        with self.assertRaises(paybox.PayError) as cm:
+            self.upload(created, self.mtn, "MTN_MOMO", created + 21 * 60 * 1000)
+        self.assertIn("expired", str(cm.exception))
+
+    # ---- what the buyer cannot do ------------------------------------------------------
+
+    def test_a_buyer_cannot_name_a_destination_that_was_never_active(self):
+        stranger = paybox.destination_hash("MTN_MOMO", "066999999")
+        with self.assertRaises(paybox.PayError):
+            self.upload(self.boundary + 1, stranger, "MTN_MOMO", self.boundary + 1_000)
+
+    def test_a_buyer_cannot_backdate_its_expectation_to_reach_an_old_destination(self):
+        # created_at is inside the buyer's own signature, so altering it after signing
+        # breaks the expectation rather than reopening an old destination
+        # honestly created AFTER the switch, so Airtel is required
+        line = exp_line(self.buyer, self.seller, created=self.boundary + 1,
+                        dest=self.mtn, rail="MTN_MOMO")
+        parts = line.split("|")
+        self.assertEqual(str(self.boundary + 1), parts[8], "index 8 is createdAt")
+        parts[8] = str(self.boundary - 1)              # backdated to reach MTN again
+        with self.assertRaises(paybox.PayError):
+            self.box.put_expectation("|".join(parts), pub_hex(self.buyer),
+                                     node_id(self.buyer), self.boundary + 1_000, COOLING,
+                                     {"s1": 1_000})
+
+    def test_the_rail_must_match_the_destination_it_names(self):
+        with self.assertRaises(paybox.PayError):
+            self.upload(self.t0 + 1_000, self.mtn, "AIRTEL_MONEY", self.t0 + 2_000)
 
 
 class RailsTest(unittest.TestCase):

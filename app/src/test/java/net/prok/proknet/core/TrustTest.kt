@@ -150,16 +150,16 @@ class TrustTest {
         val sellerId = Crypto.deriveId(pub).toHex()
         val claim = DestinationClaim.Claim(sellerId, Settlement.Rail.MTN_MOMO, "066123456", 1, 1_700_000_000_000L)
         assertTrue(claim.valid)
-        val sig = Crypto.sign(kp.private, claim.signData())
+        val sig = Crypto.sign(kp.private, claim.signDataV2())
         assertTrue(DestinationClaim.verify(claim, pub, sig))
 
         // somebody else signing the same claim proves nothing
         val other = Crypto.generateKeyPair()
         assertFalse(DestinationClaim.verify(claim, Crypto.publicBytes(other.public),
-            Crypto.sign(other.private, claim.signData())))
+            Crypto.sign(other.private, claim.signDataV2())))
         // and a claim whose seller id is not the signer is refused
         val impostor = DestinationClaim.Claim("dd".repeat(16), Settlement.Rail.MTN_MOMO, "066999999", 1, 1L)
-        assertFalse(DestinationClaim.verify(impostor, pub, Crypto.sign(kp.private, impostor.signData())))
+        assertFalse(DestinationClaim.verify(impostor, pub, Crypto.sign(kp.private, impostor.signDataV2())))
     }
 
     @Test
@@ -208,7 +208,7 @@ class TrustTest {
         val pub = Crypto.publicBytes(kp.public)
         val claim = DestinationClaim.Claim(Crypto.deriveId(pub).toHex(), Settlement.Rail.AIRTEL_MONEY,
             "+242 055 000 111", 2, 1_700_000_000_000L)
-        val sig = Crypto.sign(kp.private, claim.signData())
+        val sig = Crypto.sign(kp.private, claim.signDataV2())
         val back = DestinationClaim.decode(DestinationClaim.encode(claim, sig))!!
         assertTrue(DestinationClaim.verify(back.claim, pub, back.sig))
         assertEquals(claim.normalized, back.claim.normalized)

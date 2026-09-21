@@ -60,7 +60,7 @@ class PayWireTest {
     @Test
     fun the_destination_survives_the_wire_and_the_buyer_verifies_the_seller_signed_it() {
         val c = claim()
-        val line = PayWire.destinationClaim(c, seller.sign(c.signData()))
+        val line = PayWire.destinationClaim(c, seller.sign(c.signDataV2()))
         assertEquals(PayWire.T_DESTINATION_CLAIM, PayWire.typeOf(line))
         val back = PayWire.parseDestinationClaim(line)!!
         assertTrue(DestinationClaim.verify(back.claim, seller.pub, back.sig))
@@ -71,7 +71,7 @@ class PayWireTest {
     @Test
     fun a_buyer_cannot_alter_the_number_it_was_given() {
         val c = claim()
-        val sig = seller.sign(c.signData())
+        val sig = seller.sign(c.signDataV2())
         // the buyer swaps in its own number and keeps the seller's signature
         val forged = DestinationClaim.Claim(seller.id, Settlement.Rail.MTN_MOMO, "066999999", 1, now)
         assertFalse(DestinationClaim.verify(forged, seller.pub, sig))
@@ -306,7 +306,7 @@ class PayWireTest {
         val e = expectation()
         val (r, sig) = receiptFor(e)
         val lines = listOf(
-            PayWire.destinationClaim(claim(), seller.sign(claim().signData())),
+            PayWire.destinationClaim(claim(), seller.sign(claim().signDataV2())),
             PayWire.expectation(e, buyer.sign(PayWire.expectationSignData(e))),
             PayWire.expectationReply(e.paymentId, PayWire.Reply.ACCEPTED),
             PayWire.receipt(r, sig),
