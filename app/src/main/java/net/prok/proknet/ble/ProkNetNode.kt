@@ -129,6 +129,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
+        override fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) = this@ProkNetNode.onSettled(o)
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); recheckSharingIfNetworkChanged() } }
     })
     val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
@@ -139,6 +140,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun feePct(): Int = this@ProkNetNode.feePct
         override fun onSessionUp() { main.post { vpnRequested?.invoke() } }
+        override fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) = this@ProkNetNode.onSettled(o)
+
         override fun onAttemptFailed(reason: String) {
             // v0.9.2: the attempt is over. Clear it, or the next SELL is refused with "stop buying first"
             // and the VPN keeps capturing this phone's traffic with no tunnel behind it.
@@ -1473,6 +1476,26 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** The rails this phone can pay with. MOCK appears only in developer mode. */
     val paymentRails: List<net.prok.proknet.core.PaymentRails.Adapter> by lazy {
         net.prok.proknet.core.PaymentRails.all { mockPaymentsEnabled }
+    }
+
+    /**
+     * v0.15.3: the server is a witness, not a participant. A finished session always
+     * produces a local obligation; reaching the server is a separate patient job.
+     */
+    val settlementSync: net.prok.proknet.node.SettlementSync by lazy {
+        net.prok.proknet.node.SettlementSync(identity, store) { brainUrlProvider?.invoke() ?: "" }
+    }
+
+    /** Wired by NetworkNode, which owns the brain URL. */
+    @Volatile var brainUrlProvider: (() -> String)? = null
+
+    /** v0.15.3: the settlement queue talks to the network, so never on the main thread. */
+    private val settlementIo = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** v0.15.3: a session settled; queue its evidence and try if anything is reachable. */
+    fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) {
+        settlementSync.enqueue(o)
+        settlementIo.execute { settlementSync.runDue() }
     }
 
     fun obligations(): List<net.prok.proknet.core.Settlement.Obligation> = store.settlements()

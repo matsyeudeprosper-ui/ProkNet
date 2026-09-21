@@ -47,6 +47,8 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         fun onSessionUp()
         /** v0.9.2: this buy attempt is over and failed; the node clears what it was trying to do. */
         fun onAttemptFailed(reason: String)
+        /** v0.15.3: a session settled. Queue its signed evidence for the server. */
+        fun onSettled(o: Settlement.Obligation) {}
         fun onChanged()
     }
 
@@ -263,6 +265,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
             DiagLog.i(tag, "OBLIGATION " + o.settlementId.substring(0, 12) + " " + (if (fresh) "created" else "already known") +
                 ": I owe " + Market.cfa(o.buyerOwes) + " to prok-" + o.sellerId.substring(0, 8) +
                 " (seller " + Market.cfa(o.sellerNetCentimes) + " + fee " + Market.cfa(o.prokFeeCentimes) + ")")
+            if (fresh) hooks.onSettled(o)
         }
         DiagLog.i(tag, "SETTLEMENT (buyer view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastAccepted?.billable ?: 0) + " -> " + Market.cfa(fin) +
             " (" + (lastAccepted?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), my own count " + Market.mb((s?.bytesUp ?: 0) + (s?.bytesDown ?: 0)) +

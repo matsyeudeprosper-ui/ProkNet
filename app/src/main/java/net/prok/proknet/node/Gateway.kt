@@ -45,6 +45,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         fun store(): MessageStore
         /** Current seller terms: [pricePerMb, minPriceCfa, maxMb, feePct]. */
         fun terms(): IntArray
+        /** v0.15.3: a session settled. Queue its signed evidence for the server. */
+        fun onSettled(o: Settlement.Obligation) {}
         fun onChanged()
     }
 
@@ -285,6 +287,8 @@ class Gateway(private val context: Context, private val identity: Identity, priv
             val fresh = store.insertSettlementIfNew(o)
             DiagLog.i(tag, "OBLIGATION " + o.settlementId.substring(0, 12) + " " + (if (fresh) "created" else "already known") +
                 ": prok-" + o.buyerId.substring(0, 8) + " owes me " + Market.cfa(o.sellerReceivable))
+            // both phones report independently; the server reconciles the two
+            if (fresh) hooks.onSettled(o)
         }
         DiagLog.i(tag, "SETTLEMENT (seller view) session " + c.sessionHex.substring(0, 8) + ": signed usage " + Market.mb(lastSigned?.billable ?: 0) + " -> " + Market.cfa(fin) +
             " (" + (lastSigned?.let { "checkpoint #" + it.seq } ?: "no signed checkpoint: minimum only") + "), fee " + Market.cfa(split.fee) + ", seller net " + Market.cfa(split.sellerNet) + ", ledger entries booked " + booked)

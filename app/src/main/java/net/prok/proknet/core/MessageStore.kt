@@ -103,7 +103,7 @@ class StoredSession(
     val lastCheckpoint: ByteArray?, val finalCentimes: Long, val disconnectReason: String, val peerShort: String,
 )
 
-class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 6) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", null, 7) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -258,6 +258,21 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
                 "synced_at INTEGER NOT NULL DEFAULT 0)"
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status)")
+        // v0.15.3: how far each obligation has got with the server. The evidence itself
+        // is already durable in `sessions` and `checkpoints`, so this holds only the
+        // queue state: a settlement survives a restart, a flat battery and a week
+        // offline, and is submitted whenever the server is next reachable.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS settlement_sync(" +
+                "settlement_id TEXT PRIMARY KEY," +
+                "session_id TEXT NOT NULL," +
+                "state TEXT NOT NULL," +
+                "attempts INTEGER NOT NULL DEFAULT 0," +
+                "last_attempt INTEGER NOT NULL DEFAULT 0," +
+                "last_error TEXT NOT NULL DEFAULT ''," +
+                "reported_at INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_state ON settlement_sync(state)")
         // v0.15.0: where a seller wants to be paid. Local only: never advertised, never
         // gossiped, and only revealed to a buyer that owes a real settled obligation.
         db.execSQL(
@@ -305,6 +320,7 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
         }
         if (oldVersion < 5) createV5(db)
         if (oldVersion < 6) createSettlements(db)
+        if (oldVersion < 7) createSettlements(db)
     }
 
     // ---- sessions / checkpoints / ledger (v0.7) ---------------------------------------------------
@@ -465,6 +481,91 @@ class MessageStore(context: Context) : SQLiteOpenHelper(context, "proknet.db", n
             val rail = runCatching { Settlement.Rail.valueOf(it.getString(it.getColumnIndexOrThrow("rail"))) }.getOrDefault(Settlement.Rail.NONE)
             return PaymentRails.Destination(rail, it.getString(it.getColumnIndexOrThrow("msisdn")), it.getString(it.getColumnIndexOrThrow("holder")))
         }
+    }
+
+    // ---- v0.15.3: the evidence, read back long after the session ---------------------------------
+
+    /**
+     * The closing checkpoint for a session, with both signatures. Everything the server's
+     * verifier needs was already being stored during the session; this reads it back.
+     */
+    class StoredCheckpoint(val seq: Int, val body: ByteArray, val sellerSig: ByteArray?, val buyerSig: ByteArray?)
+
+    fun finalCheckpoint(sessionHex: String): StoredCheckpoint? {
+        val c = readableDatabase.query("checkpoints", null, "session_id=?", arrayOf(sessionHex),
+            null, null, "seq DESC", "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            return StoredCheckpoint(
+                it.getInt(it.getColumnIndexOrThrow("seq")),
+                it.getBlob(it.getColumnIndexOrThrow("body")),
+                it.getBlobOrNull(it, "seller_sig"),
+                it.getBlobOrNull(it, "buyer_sig"))
+        }
+    }
+
+    private fun android.database.Cursor.getBlobOrNull(c: android.database.Cursor, name: String): ByteArray? {
+        val i = c.getColumnIndexOrThrow(name)
+        return if (c.isNull(i)) null else c.getBlob(i)
+    }
+
+    // ---- v0.15.3: the settlement sync queue ------------------------------------------------------
+
+    class SyncRow(val settlementId: String, val sessionHex: String, val state: Evidence.Sync,
+                  val attempts: Int, val lastAttempt: Long, val lastError: String)
+
+    /** Queue an obligation for submission. Idempotent: an existing row is left alone. */
+    fun enqueueSync(settlementId: String, sessionHex: String) {
+        val cv = ContentValues().apply {
+            put("settlement_id", settlementId); put("session_id", sessionHex)
+            put("state", Evidence.Sync.PENDING.name)
+        }
+        writableDatabase.insertWithOnConflict("settlement_sync", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    fun syncRow(settlementId: String): SyncRow? {
+        val c = readableDatabase.query("settlement_sync", null, "settlement_id=?", arrayOf(settlementId), null, null, null, "1")
+        c.use {
+            if (!it.moveToNext()) return null
+            return SyncRow(
+                it.getString(it.getColumnIndexOrThrow("settlement_id")),
+                it.getString(it.getColumnIndexOrThrow("session_id")),
+                runCatching { Evidence.Sync.valueOf(it.getString(it.getColumnIndexOrThrow("state"))) }.getOrDefault(Evidence.Sync.PENDING),
+                it.getInt(it.getColumnIndexOrThrow("attempts")),
+                it.getLong(it.getColumnIndexOrThrow("last_attempt")),
+                it.getString(it.getColumnIndexOrThrow("last_error")))
+        }
+    }
+
+    /** Everything still worth trying, oldest first. */
+    fun pendingSync(): List<SyncRow> {
+        val out = ArrayList<SyncRow>()
+        val c = readableDatabase.query("settlement_sync", null, "state=?", arrayOf(Evidence.Sync.PENDING.name),
+            null, null, "last_attempt ASC", "50")
+        c.use {
+            while (it.moveToNext()) out.add(SyncRow(
+                it.getString(it.getColumnIndexOrThrow("settlement_id")),
+                it.getString(it.getColumnIndexOrThrow("session_id")),
+                Evidence.Sync.PENDING,
+                it.getInt(it.getColumnIndexOrThrow("attempts")),
+                it.getLong(it.getColumnIndexOrThrow("last_attempt")),
+                it.getString(it.getColumnIndexOrThrow("last_error"))))
+        }
+        return out
+    }
+
+    fun markSync(settlementId: String, state: Evidence.Sync, attempts: Int, at: Long, error: String = "") {
+        val cv = ContentValues().apply {
+            put("state", state.name); put("attempts", attempts); put("last_attempt", at); put("last_error", error)
+            if (state == Evidence.Sync.REPORTED) put("reported_at", at)
+        }
+        writableDatabase.update("settlement_sync", cv, "settlement_id=?", arrayOf(settlementId))
+    }
+
+    fun syncCounts(): Triple<Int, Int, Int> {
+        fun n(state: Evidence.Sync) = DatabaseUtils.longForQuery(readableDatabase,
+            "SELECT COUNT(*) FROM settlement_sync WHERE state=?", arrayOf(state.name)).toInt()
+        return Triple(n(Evidence.Sync.PENDING), n(Evidence.Sync.REPORTED), n(Evidence.Sync.DISPUTED))
     }
 
     fun insertLedger(e: Market.Entry): Boolean {

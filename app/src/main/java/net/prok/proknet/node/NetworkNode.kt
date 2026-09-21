@@ -334,6 +334,19 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         io.execute { doSync(why) }
     }
 
+    init {
+        // v0.15.3: the node owns the settlement queue; NetworkNode owns the server address
+        node.brainUrlProvider = { brainUrl }
+    }
+
+    /**
+     * v0.15.3: drain the settlement queue on the same timer as the brain sync. Bounded by
+     * its own backoff, so an unreachable server costs one cheap check.
+     */
+    private fun syncSettlements() {
+        try { node.settlementSync.runDue() } catch (e: Exception) { DiagLog.w(tag, "settlement sync: " + e.message) }
+    }
+
     private fun doSync(why: String) {
         val now = System.currentTimeMillis()
         lastSyncAttempt = now
@@ -345,6 +358,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             val d = SyncProtocol.parseDownload(text) ?: throw java.io.IOException("unreadable response")
             main.post { apply(d, up) }
             lastSyncOk = System.currentTimeMillis(); lastSyncError = ""; syncCount++; lastServerTime = d.serverTime
+            syncSettlements()
             backoffMs = MIN_BACKOFF_MS; nextAllowedSync = 0L
         } catch (e: Exception) {
             lastSyncError = (e.message ?: e.javaClass.simpleName)
@@ -474,6 +488,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 .append(", budget ").append(Market.cfa(c.buyerBudgetCentimes)).append(", rate ").append(Market.cfa(c.rateCentimesPerMb.toLong()))
                 .append("/MB, ceiling ").append(Market.mb(c.maxBytes)).append(", spent ").append(Market.cfa(node.tunnel.runningCost())).append("\n")
         }
+        sb.append(node.settlementSync.describe()).append("\n")
         sb.append("session shutdown:\n")
             .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")
             .append("  reason: ").append(node.tunnel.lastError.ifEmpty { "user stopped" }).append("\n")
