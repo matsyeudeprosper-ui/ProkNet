@@ -30,6 +30,19 @@ object ReceiptCapture {
     @Volatile var sink: ((DeviceReceipt.Candidate) -> Unit)? = null
 
     /**
+     * v0.16.1: is a payment actually expected right now?
+     *
+     * v0.16.0 promised content was inspected only while a payment was expected, but a
+     * running node was enough to read every default-SMS notification. This makes the
+     * promise structural: both sources ask this and return **before** touching a title or
+     * a body. It exposes one boolean and nothing else, so the listener never learns what
+     * is owed, to whom, or how much.
+     */
+    @Volatile var paymentExpected: (() -> Boolean)? = null
+
+    fun expecting(): Boolean = try { paymentExpected?.invoke() ?: false } catch (e: Exception) { false }
+
+    /**
      * The phone's default SMS application. A notification only counts as payment evidence
      * when this app posted it, because any app at all can post "Vous avez reçu 50 CFA".
      */
@@ -74,8 +87,9 @@ class ReceiptListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        // nobody is waiting on a payment: do not look at this at all
-        if (ReceiptCapture.sink == null) return
+        // v0.16.1: nobody is waiting on a payment, so this notification is none of our
+        // business. We return before reading the title or the text, not after.
+        if (ReceiptCapture.sink == null || !ReceiptCapture.expecting()) return
         val pkg = sbn.packageName ?: return
         // only the default SMS application may speak for the operator
         if (pkg != ReceiptCapture.defaultSmsPackage(this)) return
@@ -99,7 +113,7 @@ class ReceiptListener : NotificationListenerService() {
 class SmsReceiptReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (ReceiptCapture.sink == null) return
+        if (ReceiptCapture.sink == null || !ReceiptCapture.expecting()) return
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         try {
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return
