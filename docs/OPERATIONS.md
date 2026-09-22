@@ -165,7 +165,7 @@ counts processes afterwards for the same reason.
 |---|---|---|
 | `PROK_BRAIN_DB` | database file | `C:\ProkNetBrain\brain.db` |
 | `PROK_BRAIN_BIND` | interface | `127.0.0.1` |
-| `PROK_BRAIN_PORT` | port | `8080` |
+| `PROK_BRAIN_PORT` | port | `8080` (the pilot VPS uses **8081**, see below) |
 | `PROK_BRAIN_LOG` | rotating log file | console only |
 | `PROK_BRAIN_LOG_LEVEL` | log level | `INFO` |
 | `PROK_BRAIN_BACKUPS` | where backups go | `C:\ProkNetBrain\backups` |
@@ -198,10 +198,66 @@ Mobile Money number, an SMS body, a private key, a request signature, or a posit
 
 ### TLS
 
-The Brain speaks plain HTTP and binds to loopback by default. **Anything public belongs
-behind an HTTPS reverse proxy** (Caddy or nginx), and it warns in the log if you bind it
-to anything else.
+The Brain speaks plain HTTP and binds to loopback. **Anything public belongs behind an
+HTTPS reverse proxy**, and it warns in the log if you bind it to anything else.
 
-Status: **deployment ready, TLS hostname pending.** There is no public hostname or
-certificate for the pilot yet, and no temporary insecure public HTTP has been hard-coded
-anywhere to paper over that.
+Status: **live, 2026-09-22.**
+
+| | |
+|---|---|
+| Public URL | `https://proknet.duckdns.org` |
+| Certificate | Let's Encrypt, obtained and renewed automatically by Caddy |
+| Proxy | `C:\Caddy\caddy.exe`, config `C:\Caddy\Caddyfile` |
+| Brain | `127.0.0.1:8081`, never a public interface |
+| Plain HTTP | 308-redirects to HTTPS; there is no insecure path |
+
+The Caddy site block is three lines:
+
+```
+proknet.duckdns.org {
+	reverse_proxy localhost:8081
+}
+```
+
+**Port 8081, not 8080.** The pilot VPS is shared with other live services and 8080 is
+already Open WebUI. Binding the Brain there fails with `WinError 10013` - which is the
+right outcome, and `start.ps1` now says so instead of reporting a PID that has already
+exited. `PROK_BRAIN_PORT` is set to `8081` as a **machine** environment variable so the
+scheduled task sees it at boot.
+
+That box also serves `mobali.duckdns.org` and `owltrader.duckdns.org` from the same
+Caddy. Reload with `caddy reload`, never a restart, and check all three afterwards -
+one config file holds all of them.
+
+#### The DuckDNS token
+
+`proknet.duckdns.org` is a DuckDNS name. The token that controls it lives in
+`C:\ProkNetKeys\duckdns_token.txt`, outside this repository, readable only by
+Administrator and SYSTEM. It is **not** in git and must never be.
+
+It controls *every* domain on that DuckDNS account, including the two live ones above,
+so it is a credential of the same weight as a signing key. Rotate it on the DuckDNS page
+and update that file; nothing in the Brain reads it at runtime.
+
+A DuckDNS name takes the IP of whoever calls the update URL. Creating it from a phone
+points it at the phone's mobile IP, which is what happened here first. Set it explicitly:
+
+```
+curl "https://www.duckdns.org/update?domains=proknet&token=<token>&ip=<vps ip>"
+```
+
+#### Verifying it end to end
+
+```
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\status.ps1
+curl https://proknet.duckdns.org/health
+```
+
+`/health` must report the version and schema. Then check the two things a reverse proxy
+can quietly break:
+
+- an **unsigned** request to `/v1/network/jobs` must return
+  `this endpoint requires a signed request`;
+- a **signed GET with a query**, such as `/v1/network/coverage?zone=...`, must return
+  200. The signature covers the canonical target including the query, so a proxy that
+  rewrites either one breaks every phone at once. Both were verified on 2026-09-22.

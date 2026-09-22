@@ -3373,6 +3373,27 @@ the seller gateway was ALREADY running, so that was the only way the test could 
 and it is not how anybody will use ProkNet. A provider leaves the app closed and gets
 told when somebody needs them. **Section 75 starts with the provider NOT sharing.**
 
+### 75 prerequisite: point both phones at the Brain
+
+The pilot Brain is live at **`https://proknet.duckdns.org`** (since 2026-09-22).
+
+On **each** phone, open the Lab / diagnostic screen, tap **Network Brain URL**, and enter
+exactly:
+
+```
+https://proknet.duckdns.org
+```
+
+No trailing slash, and **https**, not http. Tap Save, then **Sync now**. The toast must
+say `Brain: https://proknet.duckdns.org`.
+
+Check it from a browser on the phone first if you like - `https://proknet.duckdns.org/health`
+returns the version and schema, and it must show a padlock. If the browser warns about the
+certificate, stop: something is wrong with the proxy and no phone should be pointed at it.
+
+Leaving the field **empty** turns the Brain off on that phone, which is exactly what
+sections 75g and 76 need later. Nothing else in ProkNet changes when it is empty.
+
 ### 75a. The provider is idle when the demand arrives
 
 Put the phones **far enough apart that Bluetooth cannot reach** - different rooms with a

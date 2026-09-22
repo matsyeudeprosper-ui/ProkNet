@@ -39,12 +39,34 @@ $p = Start-Process -FilePath "python" `
     -RedirectStandardError  (Join-Path $logs "brain.err.log") `
     -PassThru -WindowStyle Hidden
 
-Start-Sleep -Seconds 2
-# Count the process, do not trust Start-Process alone: a python that exits immediately
-# still returns a handle, and "started" would be a lie.
-$alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
-if (-not $alive) {
-    Write-Host "the Brain exited at once - see $logs\brain.err.log"
+# Wait for the LISTENING SOCKET, not the process.
+#
+# 2026-09-22: this script said "running, PID 4644" for a Brain that had already failed to
+# bind - the port belonged to another service on the same box - and exited. The process
+# was alive for the two seconds it took to log a line and raise, so "alive" was true and
+# meaningless. A server that is not listening serves nobody, however healthy its PID
+# looks, and reporting success for one is exactly the kind of lie that costs an hour.
+$deadline = (Get-Date).AddSeconds(15)
+$listening = $null
+while ((Get-Date) -lt $deadline) {
+    if (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { break }
+    $listening = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+        Where-Object { $_.OwningProcess -eq $p.Id }
+    if ($listening) { break }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $listening) {
+    if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) {
+        Write-Host "the Brain is running (PID $($p.Id)) but is NOT listening on port $Port"
+    } else {
+        Write-Host "the Brain exited without listening on port $Port"
+    }
+    Write-Host "see $logs\brain.err.log"
+    $owner = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    if ($owner) {
+        $who = Get-Process -Id ($owner.OwningProcess | Select-Object -First 1) -ErrorAction SilentlyContinue
+        Write-Host "port $Port is already held by PID $($owner.OwningProcess -join ', ') ($($who.ProcessName)) - set PROK_BRAIN_PORT to a free port"
+    }
     exit 1
 }
-Write-Host "running, PID $($p.Id)"
+Write-Host "running, PID $($p.Id), listening on ${Bind}:${Port}"
