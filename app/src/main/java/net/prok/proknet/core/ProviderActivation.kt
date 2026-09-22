@@ -70,8 +70,20 @@ object ProviderActivation {
 
     data class Availability(val zone: String, val potential: Boolean, val sharing: Boolean, val upstreamType: Int, val priceCentimesPerMb: Int, val busy: Boolean, val capable: Boolean)
 
+    /**
+     * v0.17.3: "you may ask this phone."
+     *
+     * Opted in, with Internet it has actually validated, and a local path it could offer.
+     * Deliberately says NOTHING about [Eligibility.alreadySharing] or [Eligibility.busy]:
+     * willingness is a standing answer, capacity is a fact about this second, and build 70
+     * made a phone undiscoverable by confusing the two. One definition, used by the
+     * presence heartbeat and by [availability], so they can never drift apart.
+     */
+    fun willing(e: Eligibility): Boolean =
+        e.optIn && e.upstreamValidated && e.accessPath != BulkPlan.SellerAccessPath.NONE
+
     fun availability(e: Eligibility, zone: String, upstreamType: Int): Availability = Availability(
-        zone, potential = e.optIn && e.upstreamValidated && e.accessPath != BulkPlan.SellerAccessPath.NONE && !e.busy,
+        zone, potential = willing(e) && !e.busy,
         sharing = e.alreadySharing, upstreamType = upstreamType, priceCentimesPerMb = e.sellPriceCentimesPerMb, busy = e.busy,
         capable = e.accessPath != BulkPlan.SellerAccessPath.NONE)
 }
