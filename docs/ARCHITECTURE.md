@@ -4058,3 +4058,108 @@ Two columns on `network_activation`: `accepted_at` and `link_deadline`. Added as
 does nothing to a table that already exists, which would have been the v0.16.1 mistake
 on the server. Declared once and applied both by the migration and defensively by
 `NetworkPlane`, so an upgraded Brain and a fresh one end up the same shape.
+
+## v0.17.2 a Brain job that stands on its own
+
+Five wiring faults, found by reading v0.17.1 rather than by a failing test. Each one
+breaks the exact scenario the milestone exists for: two phones too far apart to have
+met.
+
+### 1. A job needed a request the provider could not have
+
+The provider path did `state.requests[j.demandId]` and gave up when it was null - so an
+activation only produced an opportunity if the buyer's `NetRequest` had already arrived
+through the legacy gossip path. Two phones on opposite sides of a neighbourhood have no
+reason to have exchanged anything. The activation arrived, the store was empty, and
+there was no opportunity, no notification and no card.
+
+A demand now **carries the buyer's own signed request**, and a job hands it to the
+provider. Not an unsigned replacement: `NetRequest.encodeLine` of the exact object the
+buyer signed, stored byte-for-byte and never reconstructed.
+
+The Brain carries it; it does not vouch for it. Both ends verify:
+
+**Server**, before storing: the line parses, the signature verifies, `r.id ==
+demandId`, the request is open, not expired, and in the demand's zone - and
+`protocol.node_id(r.origin_pub)` equals the **authenticated caller**. That last check is
+the one that matters: `verify_request` only proves *somebody* signed it, so without it a
+signed request belonging to A could be uploaded by B. The full node id, not the eight
+hex characters of `origin_short`, because a short id is a prefix and prefixes collide.
+
+**Phone**, before acting: decode, verify the buyer's signature, check the id matches the
+job, check it has not expired. Fail closed - an unverifiable job produces nothing at
+all.
+
+The verified request is then folded into the ordinary request store, so eligibility, the
+card and the tombstone-on-cancel all behave exactly as they do for a gossiped one. No
+parallel Brain-only admission model.
+
+### 2. PARTAGER never told the Brain
+
+`acceptOpportunity` started the seller and marked the inbox, and never called
+`networkSync.answer`. So the activation stayed OFFERED for ever and the buyer waited on
+"un fournisseur se prépare" from somebody who had in fact already agreed. The central
+failure of the product flow, and nothing detected it because every piece worked alone.
+
+`ProviderInbox.Opportunity` now carries `brainActivationId` (empty for a local one), the
+file format gained a tenth field that older files simply lack, and PARTAGER:
+
+1. re-checks eligibility;
+2. starts the seller;
+3. **persists the acceptance** - before anything is sent;
+4. sends it on the IO executor, never the main thread.
+
+Persisted first, deliberately. A dying process or a dead network must not be able to
+lose the fact that somebody pressed the button.
+
+If the send fails, the job comes back OFFERED on the next poll while the inbox says
+accepted, and it is sent again - the server route is idempotent, and the provider is
+never asked to tap twice. That survives a restart, because the acceptance and the
+activation id are both on disk. If the Brain says the activation is genuinely over, the
+card is dropped; a running **session** is never touched, because a control-plane job
+expiring is not a reason to stop somebody's Internet.
+
+### 3. A zone colour claimed a working connection
+
+`IDLE + GREEN` said **"Internet disponible maintenant"**, and GREEN can come entirely
+from the Brain - which knows only that somebody was sharing somewhere in a coarse cell.
+Not that this phone can reach them, not that Bluetooth carries that far, not that they
+have capacity left.
+
+Now:
+
+| | |
+|---|---|
+| Brain GREEN alone | "Un fournisseur est actif dans votre zone" |
+| map GREEN | "Fournisseur actif dans cette zone" |
+| a source this phone can use | "Internet disponible maintenant" |
+| transport up | "Connecté" |
+
+`homeState` takes `localUsableNow` explicitly rather than inferring availability from a
+colour, because inferring it from a colour is exactly how a buyer gets told Internet is
+ready and then cannot load a page.
+
+### 4. Coverage freshness was refreshed by unrelated work
+
+Home and the map aged the Brain's zone answer against `lastOk`, which means "some
+control-plane run succeeded". A heartbeat, a demand poll or a job poll says nothing
+about whether the coverage endpoint answered - so a stale GREEN stayed looking fresh for
+as long as anything else was working.
+
+`zoneStatusAt` is set only when `GET /v1/network/coverage` actually returns, and the
+freshness window is measured against that.
+
+### 5. The buyer's zone move was server-only
+
+v0.17.1 had the route, the policy and the tests, and nothing on the phone ever noticed
+its own zone changing. `followTheBuyer()` compares the local coarse zone with
+`demandZone` - the zone the **server** last confirmed, tracked rather than guessed - and
+moves the demand when they differ. Only on a real change, so a heartbeat does not become
+a move; never to an unknown zone, because losing a location fix is not the same as
+having moved.
+
+### Schema 4
+
+One column, `network_demand.request_line`, as numbered additive migration 4. A demand
+created by build 69 simply has none, and a job from it carries an empty line - which the
+phone treats as unusable rather than crashing on. Android DB stays at **10**.

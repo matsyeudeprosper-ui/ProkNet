@@ -200,7 +200,8 @@ class NetworkAccessTest {
     }
 
     @Test fun the_zone_labels_are_hints_not_guarantees() {
-        assertEquals("Internet disponible maintenant", NetworkAccess.zoneLabel(green))
+        // v0.17.2: GREEN says somebody is ACTIVE here, never that Internet is waiting
+        assertEquals("Fournisseur actif dans cette zone", NetworkAccess.zoneLabel(green))
         assertEquals("ProkNet peut chercher un fournisseur", NetworkAccess.zoneLabel(yellow))
         assertEquals("Pas de fournisseur connu actuellement", NetworkAccess.zoneLabel(red))
         assertTrue("nothing may say guaranteed",
@@ -208,11 +209,12 @@ class NetworkAccessTest {
     }
 
     @Test fun an_idle_phone_describes_its_neighbourhood_rather_than_nothing() {
-        assertEquals("Internet disponible maintenant",
+        assertEquals("Un fournisseur est actif dans votre zone",
             NetworkAccess.title(NetworkAccess.idle(green)))
         assertEquals("ProkNet peut chercher un fournisseur",
             NetworkAccess.title(NetworkAccess.idle(yellow)))
         assertEquals("Appuyez pour chercher.", NetworkAccess.hint(NetworkAccess.idle(yellow)))
+        assertEquals("Appuyez pour vous connecter.", NetworkAccess.hint(NetworkAccess.idle(green)))
         assertEquals("Pas de fournisseur connu actuellement",
             NetworkAccess.title(NetworkAccess.idle(red)))
     }

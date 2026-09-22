@@ -3268,3 +3268,92 @@ the status report is simply retried later. Nothing tears down.
 - An accepted provider disappearing within a minute in 73e.
 - Duplicated Activité lines.
 - Any regression in sections 59 to 72.
+
+## 74. v0.17.2 the two-phone acceptance run
+
+Supersedes section 73 as the acceptance run. Needs the Brain reachable from both phones;
+without that this cannot be run and must be reported as "could not be tested".
+
+`status.ps1` must report `version=0.17.2` and `schema=4`.
+
+OUKITEL = provider. OnePlus = buyer.
+
+### 74a. The test this whole milestone is for
+
+Put the phones **far enough apart that Bluetooth cannot reach** - different rooms with a
+wall, or tens of metres. Make sure they have never exchanged this request: if in doubt,
+restart both apps first.
+
+OUKITEL: upstream working, PARTAGER on.
+
+OnePlus: tap **GET INTERNET**.
+
+Expected:
+1. OnePlus Home: **Recherche d'Internet…**
+2. OUKITEL notification: **Quelqu'un près de vous cherche Internet** - even though it has
+   never received this request over Bluetooth or through `/v1/sync`;
+3. OUKITEL Gagner: **DEMANDE PROCHE** with PARTAGER;
+4. tap PARTAGER -> **PRÊT À PARTAGER**;
+5. OnePlus Home: **Un fournisseur se prépare**, within a few seconds.
+
+**Step 5 is the new one.** In build 69 the buyer stayed on "Recherche d'Internet…" for
+ever, because PARTAGER never reached the Brain.
+
+**FAIL** if the OUKITEL gets no notification, or the OnePlus never leaves Recherche.
+
+### 74b. The physical takeover
+
+Now carry the phones together.
+
+Expected: BLE finds the peer, the existing authenticated transport starts, L2CAP and the
+VPN come up, Wikipedia loads in Chrome. No new transport - the one proven since v0.10.2.
+
+### 74c. It was visible throughout
+
+Home went Recherche -> se prépare -> Connexion -> Connecté. Map shows a colour for your
+cell. Gagner showed DEMANDE PROCHE then PRÊT À PARTAGER. Activité shows **Recherche
+Internet**, **Fournisseur trouvé**, **Partage accepté**, **Connexion réussie** - once
+each.
+
+### 74d. A green zone does not claim a connection
+
+With no session and no local provider in range, look at Home and the Map.
+
+Expected: at most **Un fournisseur est actif dans votre zone** and **Fournisseur actif
+dans cette zone**.
+
+**FAIL** if either says "Internet disponible maintenant" while nothing is reachable.
+
+### 74e. Acceptance survives a bad moment
+
+Start a request. Just before tapping PARTAGER on the OUKITEL, put the OUKITEL in
+aeroplane mode for ten seconds, tap PARTAGER, then turn it back on.
+
+Expected: the OnePlus still reaches **Un fournisseur se prépare** without anybody
+tapping PARTAGER a second time.
+
+### 74f. Again, without restarting
+
+Repeat 74a and 74b. One new request, one notification, one activation, no stale job in
+Gagner, no duplicated Activité lines.
+
+### 74g. Brain off - the section that matters most
+
+Clear the Brain URL on both phones, put them side by side, and run the local flow.
+
+Expected: exactly as before. Local provider request, PARTAGER, L2CAP, VPN, Internet.
+
+### 74h. Brain dies mid-session
+
+With Internet working, run `stop.ps1` on the VPS.
+
+Expected: the session keeps working. Browsing continues, accounting continues, nothing
+tears down.
+
+### What would make this a FAIL
+
+- No notification in 74a with the phones apart.
+- The buyer never reaching "Un fournisseur se prépare".
+- Any zone colour claiming Internet is available in 74d.
+- Any regression in 74g or 74h.
+- Any regression in sections 59 to 73.

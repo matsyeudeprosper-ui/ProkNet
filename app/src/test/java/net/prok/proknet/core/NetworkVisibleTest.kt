@@ -31,8 +31,10 @@ class NetworkVisibleTest {
         zone: Coverage.ZoneStatus = yellow,
         brainOffline: Boolean = false,
         startedAt: Long = 0,
+        localUsable: Boolean = false,
     ) = NetworkAccess.homeState(internetUp, linkComingUp, searchingLocally,
-        lastAttemptFailed, demandId, demandStatus, zone, brainOffline, now, startedAt)
+        lastAttemptFailed, demandId, demandStatus, zone, brainOffline, now, startedAt,
+        localUsable)
 
     /** What the Home card would print, through the same two calls the screen makes. */
     private fun line(s: NetworkAccess.Snapshot) = NetworkAccess.title(s)
@@ -98,7 +100,7 @@ class NetworkVisibleTest {
     }
 
     @Test fun an_idle_phone_describes_its_neighbourhood() {
-        assertEquals("Internet disponible maintenant", line(home(zone = green)))
+        assertEquals("Un fournisseur est actif dans votre zone", line(home(zone = green)))
         assertEquals("ProkNet peut chercher un fournisseur", line(home(zone = yellow)))
         assertEquals("Pas de fournisseur connu actuellement", line(home(zone = red)))
     }
@@ -181,13 +183,81 @@ class NetworkVisibleTest {
     }
 
     @Test fun the_map_labels_never_promise_anything() {
-        assertEquals("Internet disponible maintenant", NetworkAccess.zoneLabel(green))
+        assertEquals("Fournisseur actif dans cette zone", NetworkAccess.zoneLabel(green))
         assertEquals("ProkNet peut chercher un fournisseur", NetworkAccess.zoneLabel(yellow))
         assertEquals("Pas de fournisseur connu actuellement", NetworkAccess.zoneLabel(red))
         for (z in Coverage.ZoneStatus.values()) {
             val l = NetworkAccess.zoneLabel(z)
             assertTrue(!l.contains("garanti") && !l.contains("sûr"))
         }
+    }
+
+    // ================= items 15-18: a zone colour is not a connection =================
+
+    /**
+     * The bug this replaced: `IDLE + GREEN` said "Internet disponible maintenant", and
+     * GREEN can come entirely from the Brain - which knows only that somebody was sharing
+     * somewhere in a coarse cell. Not that this phone can reach them, not that Bluetooth
+     * carries that far, not that they still have capacity.
+     */
+    @Test fun a_brain_green_zone_never_claims_working_internet() {
+        val s = home(zone = green)                       // no local source, nothing up
+        assertEquals("Un fournisseur est actif dans votre zone", line(s))
+        assertTrue("a colour must not promise a connection",
+            !line(s).contains("disponible maintenant"))
+        assertTrue(line(s) != "Connecté")
+    }
+
+    @Test fun a_real_local_source_may_promise_internet() {
+        val s = home(zone = red, localUsable = true)
+        assertEquals(NetworkAccess.State.LOCAL_AVAILABLE, s.state)
+        assertEquals("Internet disponible maintenant", line(s))
+    }
+
+    @Test fun the_transport_being_up_says_connected() {
+        assertEquals("Connecté", line(home(internetUp = true)))
+    }
+
+    @Test fun the_brain_saying_connected_while_the_transport_has_not_never_says_connected() {
+        val s = home(demandId = "dem-1", demandStatus = "CONNECTED", zone = green)
+        assertEquals("Connexion en cours…", line(s))
+        assertTrue(line(s) != "Connecté")
+    }
+
+    @Test fun a_green_zone_with_a_live_search_still_says_it_is_searching() {
+        // the colour must not overtake a request that is actually in progress
+        assertEquals("Recherche d'Internet…",
+            line(home(demandId = "dem-1", demandStatus = "SEARCHING", zone = green)))
+    }
+
+    @Test fun a_local_source_does_not_hijack_a_request_already_under_way() {
+        val s = home(demandId = "dem-1", demandStatus = "PROVIDER_ACCEPTED",
+            zone = green, localUsable = true)
+        assertEquals("Un fournisseur se prépare", line(s))
+    }
+
+    @Test fun no_line_anywhere_promises_internet_from_a_colour_alone() {
+        for (zone in Coverage.ZoneStatus.values()) {
+            val s = home(zone = zone)                    // localUsable = false throughout
+            assertTrue(zone.toString() + " said: " + line(s),
+                !line(s).contains("disponible maintenant"))
+            assertTrue(!NetworkAccess.zoneLabel(zone).contains("disponible maintenant"))
+        }
+    }
+
+    // ================= items 19-20, 36: coverage has its own clock =================
+
+    @Test fun a_coverage_answer_ages_out_on_its_own_timestamp() {
+        // GREEN fetched at T0, and nothing fetched since - however busy the rest of the
+        // control plane has been
+        assertEquals(green, NetworkAccess.mergeZone(red, green, 4 * 60_000))
+        assertEquals("six minutes later it is no longer evidence",
+            red, NetworkAccess.mergeZone(red, green, 6 * 60_000))
+    }
+
+    @Test fun a_never_fetched_coverage_answer_is_not_fresh() {
+        assertEquals(red, NetworkAccess.mergeZone(red, green, Long.MAX_VALUE))
+        assertTrue(!NetworkAccess.brainZoneFresh(Long.MAX_VALUE))
     }
 
     // ================= items 11-13: Activité =================

@@ -276,7 +276,7 @@ class NetworkApiTest(unittest.TestCase):
             self.assertEqual(200, r.status)
             out = json.loads(r.read().decode("utf-8"))
         self.assertTrue(out["ok"])
-        self.assertEqual("0.17.1", out["version"])
+        self.assertEqual("0.17.2", out["version"])
         text = json.dumps(out)
         for leak in ("nodes", "requests", "sources", "settlements", "syncs", "db"):
             self.assertNotIn(leak, text, "a probe must not report how many people use ProkNet")
@@ -284,7 +284,7 @@ class NetworkApiTest(unittest.TestCase):
     def test_the_counts_moved_behind_a_signature(self):
         out = self.call("GET", "/v1/network/diagnostics", self.buyer)[1]
         self.assertIn("network", out)
-        self.assertEqual(3, out["schema"])
+        self.assertEqual(4, out["schema"])
 
     # ---- item 70: spam control that does not break recovery -------------------------------
 
@@ -398,7 +398,7 @@ class UpgradeFromV165Test(unittest.TestCase):
 
         from brain.db import Brain
         b = Brain(self.path)
-        self.assertEqual(3, b.schema_version(), "the upgrade must be recorded, not implied")
+        self.assertEqual(4, b.schema_version(), "the upgrade must be recorded, not implied")
         b.db.close()
 
         after = self.snapshot()
@@ -423,8 +423,8 @@ class UpgradeFromV165Test(unittest.TestCase):
         Brain(self.path).db.close()
         mid = self.snapshot()
         b = Brain(self.path)
-        self.assertEqual(3, b.schema_version())
-        for v in (2, 3):
+        self.assertEqual(4, b.schema_version())
+        for v in (2, 3, 4):
             self.assertEqual(1, int(b.db.execute(
                 "SELECT COUNT(*) FROM schema_version WHERE version=?", (v,)).fetchone()[0]),
                 "migration %d must be recorded once" % v)
