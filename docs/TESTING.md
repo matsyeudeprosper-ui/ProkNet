@@ -3357,3 +3357,116 @@ tears down.
 - Any zone colour claiming Internet is available in 74d.
 - Any regression in 74g or 74h.
 - Any regression in sections 59 to 73.
+
+## 75. v0.17.3 the idle-provider acceptance run
+
+Supersedes section 74 as the acceptance run. Needs the Brain reachable from both phones;
+without that this cannot be run and must be reported as "could not be tested".
+
+`status.ps1` must report `version=0.17.3` and `schema=4`.
+
+OUKITEL = provider. OnePlus = buyer.
+
+**What is different from 74, and why this section exists.** In 74 the OUKITEL had
+PARTAGER already on before the buyer asked. Build 70 could only publish a presence while
+the seller gateway was ALREADY running, so that was the only way the test could pass -
+and it is not how anybody will use ProkNet. A provider leaves the app closed and gets
+told when somebody needs them. **Section 75 starts with the provider NOT sharing.**
+
+### 75a. The provider is idle when the demand arrives
+
+Put the phones **far enough apart that Bluetooth cannot reach** - different rooms with a
+wall, or tens of metres. If in doubt, restart both apps so nothing was exchanged earlier.
+
+OUKITEL, before you start:
+- Internet working (the phone's own connection, Wi-Fi or mobile data);
+- Gagner: **« Me prévenir quand quelqu'un cherche Internet »** ON;
+- **PARTAGER OFF.** No sharing, no buyer connected. This is the whole point.
+- Bluetooth on.
+
+OnePlus: tap **GET INTERNET**.
+
+Expected:
+1. OnePlus Home: **Recherche d'Internet…**
+2. OUKITEL notification: **Quelqu'un près de vous cherche Internet** - while it is still
+   not sharing, and although it has never received this request over Bluetooth or
+   through `/v1/sync`;
+3. OUKITEL Gagner: the demand card with PARTAGER;
+4. tap **PARTAGER** -> **PRÊT À PARTAGER** (only now does the seller start);
+5. OnePlus Home: **Un fournisseur se prépare**, within a few seconds.
+
+**This is the exact thing build 70 could not guarantee.** With PARTAGER off it published
+no presence at all, so no activation could ever be sent; with PARTAGER on it would have
+refused the job as *Vous partagez déjà votre Internet*.
+
+**FAIL** if the OUKITEL gets no notification while it is idle, or the OnePlus never
+leaves Recherche.
+
+### 75b. The acceptance survives a broken moment
+
+Run 75a again with a new request. This time, **after** the notification arrives but
+**before** you tap PARTAGER, put the OUKITEL into aeroplane mode. Tap PARTAGER. Wait ten
+seconds, then turn aeroplane mode off.
+
+Expected:
+- the OUKITEL still shows **PRÊT À PARTAGER** - the tap was never lost;
+- nobody is asked to tap PARTAGER a second time;
+- the OnePlus reaches **Un fournisseur se prépare** by itself within a minute of the
+  connection coming back.
+
+**FAIL** if the demand card disappears from Gagner while the OUKITEL has no network, or
+if the buyer stays on Recherche after connectivity returns.
+
+### 75c. And after a restart
+
+Repeat 75b, but instead of waiting, **force-stop the ProkNet app on the OUKITEL** while
+it is in aeroplane mode, then turn the radio back on and reopen the app.
+
+Expected: the acceptance is sent by itself on the first job poll. The OnePlus reaches
+**Un fournisseur se prépare**. No second tap.
+
+### 75d. The physical takeover
+
+Now carry the phones together.
+
+Expected: BLE finds the peer, the existing authenticated transport starts, L2CAP and the
+VPN come up, Wikipedia loads in Chrome. No new transport - the one proven since v0.10.2.
+
+### 75e. A green zone still does not claim a connection
+
+With no session and no local provider in range, look at Home and the Map.
+
+Expected: at most **Un fournisseur est actif dans votre zone** and **Fournisseur actif
+dans cette zone**.
+
+**FAIL** if either says "Internet disponible maintenant" while nothing is reachable.
+
+### 75f. A busy provider is not offered a second buyer
+
+While the OUKITEL is serving the OnePlus, have a third phone (or the OnePlus after it
+disconnects, from a different account) ask for Internet in the same area.
+
+Expected: the OUKITEL gets **no** second activation while it is serving somebody. Its
+zone may still show as covered.
+
+### 75g. Brain off - the section that matters most
+
+Clear the Brain URL on both phones, put them side by side, and run the local flow.
+
+Expected: exactly as before. Local provider request, PARTAGER, L2CAP, VPN, Internet.
+
+### 75h. Brain dies mid-session
+
+With Internet working, run `stop.ps1` on the VPS.
+
+Expected: the session keeps working. Browsing continues, accounting continues, nothing
+tears down.
+
+### What would make this a FAIL
+
+- No notification in 75a while the OUKITEL is idle and not sharing.
+- The demand card disappearing in 75b because the network went away.
+- A second tap being needed in 75b or 75c.
+- Any zone colour claiming Internet is available in 75e.
+- Any regression in 75g or 75h.
+- Any regression in sections 59 to 74.

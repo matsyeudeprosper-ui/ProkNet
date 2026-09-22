@@ -4163,3 +4163,159 @@ having moved.
 One column, `network_demand.request_line`, as numbered additive migration 4. A demand
 created by build 69 simply has none, and a job from it carries an empty line - which the
 phone treats as unusable rather than crashing on. Android DB stays at **10**.
+
+## v0.17.3 an idle provider is a real provider
+
+Two runtime blockers, both found by reading build 70 rather than running it, and neither
+visible to any test that already passed. They have the same shape as the five faults of
+v0.17.2: every piece was correct on its own, and the join between them made a state the
+product depends on unreachable.
+
+### 1. Presence required the seller gateway to be running already
+
+Build 70 built the presence as `sharingEnabled = e.optIn && node.sellOn`, and the
+heartbeat published nothing unless that was true. `sellOn` means "the seller gateway is
+running right now", so the Brain could only ever see a phone that was **already
+sharing**.
+
+That is a contradiction with the product, not a detail. The flow ProkNet exists for is:
+
+    an idle phone with Internet, opted in, not sharing
+      -> the Brain knows it exists
+      -> a buyer's demand is offered to it
+      -> the notification arrives
+      -> the user taps PARTAGER
+      -> sharing starts
+
+With `sellOn = false` there was no presence, so no activation could ever arrive. With
+`sellOn = true` the presence existed but PARTAGER then refused the job with
+`ALREADY_SHARING`. Neither state completes the loop. TESTING 74 passed only because it
+instructed Mike to turn PARTAGER on before the buyer asked, which is not how anybody
+will use this.
+
+**Willingness and current sharing are now separate facts, and neither is derived from
+the other.**
+
+| | meaning | derived from |
+|---|---|---|
+| `willing` | you may ask this phone | opted in, validated upstream, a local path it could offer |
+| `availableForActivation` | and it has room | `willing && currentLoad < maxBuyers` |
+| `currentlySharing` | the gateway is up | `sellOn` - reported for truth, never a prerequisite |
+| `currentLoad` | live seller sessions | 0 or 1 in the pilot |
+
+On the wire `sharingEnabled` carries `availableForActivation`, which is what the matcher
+has always needed: *this provider can be asked*, not *this provider is already serving
+somebody*. **The Brain schema does not change.** The server has always gated separately
+on `sharing_enabled` and `has_capacity()`, in both `candidates()` and `zone_status()`, so
+honest capacity numbers do the rest.
+
+A **busy** provider keeps heartbeating, with `currentLoad = 1`. It is a real provider and
+its zone is genuinely covered; withdrawing would make a covered area look empty. It
+simply gets no second buyer. Only an **unwilling** phone - opted out, no Internet, no
+path - withdraws its presence, because a buyer matched to somebody who has opted out
+wastes a real walk to a kiosk.
+
+`freeReady` and `commercialReady` describe **ability** now, not the gateway: "if the user
+accepts this request, can this phone serve it?". `commercialReady` is
+`willing && mayOfferPaidSharing()`, which is every v0.16 paid-seller condition unchanged.
+Explicit opt-in is still required, so no phone becomes a provider silently.
+
+The decision lives in one pure object, `core/ProviderPresence.kt`, which the presence
+hook calls - so the test and the phone run the same function rather than two hopefully
+identical ones. `willing` is a single definition in `ProviderActivation`, and the v0.13
+`availability()` is expressed in terms of it, so they cannot drift.
+
+### 2. The acknowledgement retry existed and could not run
+
+v0.17.2 added a retry for an acceptance that never reached the Brain. `pollJobs` then
+did:
+
+```kotlin
+if (found.map { it.activationId } == jobs.map { it.activationId }) return
+```
+
+and the reconciliation was downstream of that. But the stuck case is **by definition**
+the same activation coming back in the same state, because the acceptance never arrived.
+So the one situation the retry existed for was the one situation in which it never ran.
+A provider could stay stuck for ever while every poll succeeded.
+
+`pollJobs` now: decode and verify every job, then call `onJobsSeen` **on every successful
+poll**, and only then - if the list actually moved - replace it and call `onJobs` for the
+UI. The change key is `activationId + ":" + state`, so OFFERED becoming ACCEPTED counts
+as movement.
+
+The poll gate was wrong for the same reason. It required `sharingEnabled`, which after
+PARTAGER is false because the phone is full - so the phone that has just accepted was
+exactly the phone that stopped polling. It gates on `willing` now.
+
+Server side this already worked: `jobs_for_provider` never looked at `sharing_enabled`,
+so a full provider can still reach its own jobs. That is now pinned by a test, because
+it is load-bearing for recovery.
+
+### 3. A dropped packet is not a decision
+
+`answer()` returned a Boolean, and `false` meant "refused", "timed out", "no signal" and
+"the server had a fault" all at once. The retry treated `false` as a refusal and removed
+the provider's accepted opportunity - so a provider who tapped PARTAGER somewhere with
+bad signal could lose the card, and with it the buyer's answer.
+
+Every `NetworkError` in the Brain is an HTTP 400, so the status code cannot carry the
+distinction, and matching on the English message would have been the third cross-language
+string divergence in this project. So a definitive refusal now carries a
+machine-readable `reason`; a transient one carries none.
+
+    ACTIVATION_UNKNOWN      the activation does not exist
+    ACTIVATION_NOT_YOURS    it was offered to somebody else
+    ACTIVATION_SETTLED      already declined or otherwise closed
+    ACTIVATION_EXPIRED      answered after its deadline
+
+`BrainAnswer.classify` maps 2xx to `ACCEPTED`; exception, no reply, 5xx, 408, 429 **and
+any 4xx whose reason is not on that list** to `RETRYABLE_FAILURE`; and only a listed
+reason to `TERMINAL_REJECT`. Conservative on purpose: retrying a settled activation costs
+one idempotent request, and discarding a live one costs a buyer waiting for ever on
+somebody who already agreed.
+
+`server/tests/fixtures/brain_answer_reasons.txt` is one committed file that both the
+Python and the Kotlin test read. Two independent implementations of one rule, each with
+its own green suite, is exactly the shape in which a mismatch survives - v0.16.3 shipped
+one. If either side drifts, one of the two tests fails.
+
+What each outcome does:
+
+- **retryable** - keep the opportunity, keep `accepted`, keep `brainActivationId`, keep
+  selling, log quietly, try again next poll. Nothing is removed.
+- **terminal** - drop the stale card, and only if no seller session is live.
+  `BrainAck.outcome` refuses to drop one while a session exists: somebody is using the
+  Internet right now, and control-plane bookkeeping never cuts that off.
+- **accepted** - record it and stop retrying. A repeat the server answers with
+  `duplicate: 1` is a success, not a refusal.
+
+### 4. Durable acknowledgement
+
+`ProviderInbox.Opportunity` gained `brainAcked`, appended as field 11. The decoder
+accepts 9 fields (build 69), 10 (build 70) and 11 (build 71); a missing field reads as
+"not acknowledged", which costs one idempotent request and never a lost tap. An upgrade
+that dropped the inbox would break a promise to a buyer who is already waiting.
+
+**The server's job state is the authority**; `brainAcked` is only the phone's memory of
+what that authority last said. So:
+
+- server `OFFERED` + local `accepted` -> resend, *even if* `brainAcked` was true. A stale
+  local "acknowledged" must not silence the one signal that says the acceptance was lost.
+- server `ACCEPTED` or `LOCAL_LINK_SEEN` + local `accepted` -> mark acknowledged, send
+  nothing.
+- job absent from `/jobs` -> do nothing. Absence is not a verdict, and one failed or
+  empty GET must not throw away a tap. An opportunity leaves when the buyer's own request
+  expires, when it is tombstoned, or when the Brain states a terminal reason.
+
+`offerFromBrain` preserves `accepted` as before, and preserves `brainAcked` only for the
+same activation id; a genuinely new activation has certainly not been acknowledged.
+
+This decision is pure too, in `core/BrainAck.kt`, with `NetworkNode` a thin loop over it,
+so the retry and restart tests exercise the code the phone runs.
+
+### No schema change
+
+Brain schema stays **4**, Android DB stays **10**. This is bookkeeping, and an appended
+inbox field is the right size of change for it. Nothing in payment, settlement, trust,
+BLE, L2CAP, the VPN or the rendezvous timings was touched.
