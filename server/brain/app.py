@@ -280,6 +280,11 @@ class Handler(BaseHTTPRequestHandler):
             out["candidates"] = served.get("candidates", 0)
             return out
 
+        if p == "/v1/network/demand/move":
+            # the buyer has walked somewhere else; the same request follows them
+            return STATE.net.move_demand(str(body.get("demandId", "")), who,
+                                         str(body.get("zone", ""))[:32], now)
+
         if p == "/v1/network/demand/cancel":
             audit("demand.cancelled", buyer=who, demand=str(body.get("demandId", "")))
             return STATE.net.cancel_demand(str(body.get("demandId", "")), who, now)

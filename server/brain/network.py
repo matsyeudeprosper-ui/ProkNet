@@ -48,10 +48,27 @@ PRESENCE_TTL_MS = 120 * 1000
 PRESENCE_KEEP_MS = 24 * 3600 * 1000
 
 #: An offered activation the provider never answers. Short: the buyer is standing there.
-ACTIVATION_TTL_MS = 75 * 1000
+OFFER_TTL_MS = 75 * 1000
+
+#: Kept as the old name, because v0.17.0 called it this and tests refer to it.
+ACTIVATION_TTL_MS = OFFER_TTL_MS
+
+#: Once a provider has said yes, it gets a real window.
+#:
+#: v0.17.0 used the 75-second offer window for this too, which meant an accepted provider
+#: vanished a minute later while the two people were still walking towards each other -
+#: the buyer's screen said "un fournisseur se prépare" and then gave up for no reason the
+#: buyer could see. Deciding to help and being within Bluetooth range are minutes apart.
+LINK_WAIT_TTL_MS = 10 * 60 * 1000
 
 #: A demand outlives several activation attempts.
-DEMAND_TTL_MS = 10 * 60 * 1000
+#:
+#: v0.17.1 raised this from ten minutes to fifteen, for a concrete reason. An accepted
+#: provider now gets a ten-minute window to reach the buyer, and with both numbers equal
+#: that window swallowed the whole request - so "try the next provider when the first one
+#: never turns up" could never actually happen. Fifteen leaves room for one failed
+#: rendezvous and another attempt.
+DEMAND_TTL_MS = 15 * 60 * 1000
 
 #: How many providers one demand may wake, one at a time. Twenty phones buzzing for one
 #: small request is how a network makes itself unwelcome.
@@ -204,6 +221,26 @@ CREATE TABLE IF NOT EXISTS network_cooldown(
 """
 
 
+#: v0.17.1 adds two columns to `network_activation`.
+#:
+#: Declared here once and applied two ways, which is the only way an upgraded server and a
+#: fresh one end up identical: `db.MIGRATIONS[2]` runs them as **numbered migration 3** on
+#: a database that already exists, and `NetworkPlane.__init__` adds whatever is missing on
+#: a connection nobody migrated. Putting them into SCHEMA instead would have been the
+#: v0.16.1 mistake on the server - `CREATE TABLE IF NOT EXISTS` does nothing to a table
+#: that is already there, so no existing Brain would ever have got them.
+ADDED_V3 = (
+    ("accepted_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("link_deadline", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+#: The same thing as SQL, for the numbered migration. `ALTER TABLE ADD COLUMN` with a
+#: default does not rewrite the rows, so no activation can be lost on the way.
+MIGRATION_3 = "\n".join(
+    "ALTER TABLE network_activation ADD COLUMN %s %s;" % (name, decl)
+    for name, decl in ADDED_V3)
+
+
 class NetworkError(Exception):
     """The request cannot be honoured. The message is safe to return to the caller."""
 
@@ -268,6 +305,13 @@ class NetworkPlane:
         self.db = db if isinstance(db, sqlite3.Connection) else sqlite3.connect(db)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        # and anything a numbered migration would have added, for a connection that was
+        # never migrated - a test's bare in-memory database, for instance
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(network_activation)")}
+        for name, decl in ADDED_V3:
+            if name not in have:
+                self.db.execute("ALTER TABLE network_activation ADD COLUMN %s %s"
+                                % (name, decl))
         self.db.commit()
 
     # ---- events -------------------------------------------------------------------
@@ -281,6 +325,51 @@ class NetworkPlane:
             "SELECT * FROM network_events ORDER BY id DESC LIMIT ?", (limit,))]
 
     # ---- presence -----------------------------------------------------------------
+
+    def oldest_waiting_demand(self, zone: str, now: int):
+        """The demand in this zone that has been waiting longest and can still be served.
+
+        Oldest first, deliberately. When a provider appears, favouring the newest request
+        would mean somebody who has been standing there for eight minutes watches newer
+        arrivals get served ahead of them.
+        """
+        marks = ",".join("?" * len(DEMAND_LIVE))
+        rows = self.db.execute(
+            "SELECT * FROM network_demand WHERE zone=? AND status IN (%s) AND expires_at>?"
+            " AND attempts<? ORDER BY created_at ASC" % marks,
+            (zone,) + tuple(DEMAND_LIVE) + (now, MAX_ACTIVATION_ATTEMPTS)).fetchall()
+        for r in rows:
+            if self.live_activation_for(r["demand_id"]) is None:
+                return dict(r)
+        return None
+
+    def serve_zone(self, zone: str, now: int):
+        """A provider has just become useful here. Give the work to whoever waited longest.
+
+        v0.17.1. v0.17.0 only matched at the moment a demand was created, so a buyer who
+        asked before any provider was awake stayed SEARCHING for ever even once somebody
+        turned sharing on beside them. This is the other half of the loop.
+        """
+        d = self.oldest_waiting_demand(zone, now)
+        if d is None:
+            return None
+        return self.serve(d["demand_id"], now)
+
+    def _reconsider_provider_offers(self, provider_id: str, old_zone: str, new_zone: str,
+                                    now: int):
+        """A provider that has moved cannot serve an offer it was given somewhere else.
+
+        An unanswered offer in the old zone is closed at once, so the buyer's search
+        resumes instead of waiting on somebody who has walked away. An offer already
+        ACCEPTED is left alone: the two of them may well be moving towards each other,
+        which is exactly what the local-link window is for.
+        """
+        if old_zone == new_zone:
+            return
+        for r in self.db.execute(
+                "SELECT * FROM network_activation WHERE provider_id=? AND state=? AND zone=?",
+                (provider_id, OFFERED, old_zone)).fetchall():
+            self._expire_activation(dict(r), now, "the provider left the area")
 
     def put_presence(self, provider_id: str, body: dict, now: int) -> dict:
         """A heartbeat. Idempotent by construction: one row per provider, replaced.
@@ -299,6 +388,7 @@ class NetworkPlane:
             raise NetworkError("unknown offer class")
         ttl = int(body.get("ttlMs", PRESENCE_TTL_MS))
         ttl = max(30_000, min(ttl, PRESENCE_TTL_MS))
+        was = self.presence(provider_id)
         with self.db:
             self.db.execute(
                 "INSERT INTO network_presence(provider_id, zone, updated_at, expires_at,"
@@ -324,7 +414,18 @@ class NetworkPlane:
                  max(0, int(body.get("currentLoad", 0))),
                  max(1, int(body.get("maxBuyers", 1))), offer,
                  int(body.get("priceHintInternal", -1))))
-        return {"ok": True, "expiresAt": now + ttl, "ttlMs": ttl}
+            if was is not None:
+                self._reconsider_provider_offers(provider_id, was.zone, zone, now)
+        out = {"ok": True, "expiresAt": now + ttl, "ttlMs": ttl}
+        # v0.17.1: a provider that has just become useful - newly awake, back under
+        # capacity, or arrived in this zone - is offered the work somebody is waiting for.
+        # Without this, matching only ever happened when a demand was created.
+        p = self.presence(provider_id)
+        if p is not None and p.ready_for(COMMERCIAL) and p.has_capacity():
+            served = self.serve_zone(zone, now)
+            if served and "activationId" in served:
+                out["served"] = served["activationId"]
+        return out
 
     def drop_presence(self, provider_id: str, now: int) -> dict:
         """A provider that stops sharing says so at once rather than waiting to go stale."""
@@ -424,6 +525,42 @@ class NetworkPlane:
         self.note("demand." + to.lower(), demand_id, why, now)
         return True
 
+    def move_demand(self, demand_id: str, buyer_id: str, zone: str, now: int) -> dict:
+        """The buyer has walked into a different neighbourhood while still searching.
+
+        v0.17.1 policy, stated so it is not guesswork: **the same demand follows the
+        buyer.** Its id, its age and its attempt count are kept - it is one need, and
+        recreating it would reset the buyer's place in the queue and burn the cooldown -
+        and any offer still outstanding in the old zone is closed at once, because a
+        provider there can no longer help. The matcher then runs in the new zone.
+
+        Only while the demand is live, and only by its own buyer.
+        """
+        d = self.demand(demand_id)
+        if d is None:
+            raise NetworkError("unknown demand")
+        if d["buyer_id"] != buyer_id:
+            raise NetworkError("only the buyer may move its own demand")
+        if d["status"] not in DEMAND_LIVE:
+            raise NetworkError("that demand is no longer live")
+        if not zone:
+            raise NetworkError("a demand needs a zone")
+        if zone == d["zone"]:
+            return {"ok": True, "duplicate": True, "zone": zone, "status": d["status"]}
+
+        with self.db:
+            # an offer in the old zone is dead: the two of them are no longer near
+            for r in self.db.execute(
+                    "SELECT * FROM network_activation WHERE demand_id=? AND state=?",
+                    (demand_id, OFFERED)).fetchall():
+                self._expire_activation(dict(r), now, "the buyer left the area")
+            self.db.execute("UPDATE network_demand SET zone=?, updated_at=? WHERE demand_id=?",
+                            (zone, now, demand_id))
+            self.note("demand.moved", demand_id, zone, now)
+        out = self.serve(demand_id, now)
+        out["zone"] = zone
+        return out
+
     def cancel_demand(self, demand_id: str, buyer_id: str, now: int) -> dict:
         """The buyer stopped needing it, or found Internet another way.
 
@@ -471,10 +608,11 @@ class NetworkPlane:
 
     def jobs_for_provider(self, provider_id: str, now: int, limit: int = 10):
         """A provider's own inbox, and only its own."""
-        return [dict(r) for r in self.db.execute(
+        rows = [dict(r) for r in self.db.execute(
             "SELECT * FROM network_activation WHERE provider_id=? AND state IN (?,?,?)"
-            " AND expires_at>? ORDER BY created_at LIMIT ?",
-            (provider_id, OFFERED, ACCEPTED, LOCAL_LINK_SEEN, now, limit))]
+            " ORDER BY created_at LIMIT ?",
+            (provider_id, OFFERED, ACCEPTED, LOCAL_LINK_SEEN, limit))]
+        return [a for a in rows if now < self.deadline_of(a)]
 
     def offer(self, demand_id: str, provider_id: str, now: int) -> dict:
         """Ask one provider. One at a time, and never more than MAX_ACTIVATION_ATTEMPTS.
@@ -525,7 +663,7 @@ class NetworkPlane:
             return {"ok": True, "duplicate": True, "state": want}
         if want not in ACTIVATION_NEXT.get(a["state"], ()):
             raise NetworkError("that activation has already been settled")
-        if now >= int(a["expires_at"]):
+        if now >= self.deadline_of(a):
             with self.db:
                 self._expire_activation(a, now, "answered too late")
             raise NetworkError("that activation has expired")
@@ -535,10 +673,28 @@ class NetworkPlane:
                             " provider_said=? WHERE activation_id=?",
                             (want, now, want, activation_id))
             if accept:
+                # v0.17.1: a real window to walk towards each other, bounded by the
+                # demand itself so an accepted activation can never outlive the request
+                # it serves.
+                d = self.demand(a["demand_id"])
+                deadline = min(int(d["expires_at"]), now + LINK_WAIT_TTL_MS) if d else now + LINK_WAIT_TTL_MS
+                self.db.execute("UPDATE network_activation SET accepted_at=?, link_deadline=?"
+                                " WHERE activation_id=?", (now, deadline, activation_id))
                 self.set_demand_status(a["demand_id"], PROVIDER_ACCEPTED, now, provider_id[:8])
                 self._bump(provider_id, "accepted", now)
             self.note("activation." + want.lower(), activation_id, provider_id[:8], now)
         return {"ok": True, "state": want}
+
+    @staticmethod
+    def deadline_of(a) -> int:
+        """When this activation runs out.
+
+        The offer window while it is only OFFERED; the local-link window once a provider
+        has agreed. One place, so nothing has to remember which applies.
+        """
+        if a["state"] in (ACCEPTED, LOCAL_LINK_SEEN) and int(a["link_deadline"] or 0) > 0:
+            return int(a["link_deadline"])
+        return int(a["expires_at"])
 
     def _expire_activation(self, a: dict, now: int, why: str):
         self.db.execute("UPDATE network_activation SET state=?, updated_at=? WHERE activation_id=?",
@@ -736,10 +892,16 @@ class NetworkPlane:
         """
         n = {"activations": 0, "demands": 0, "presence": 0, "events": 0}
         with self.db:
+            # OFFERED runs out on its own short window; ACCEPTED and LOCAL_LINK_SEEN run
+            # out on the longer one, so nobody who agreed to help disappears in a minute
             for r in self.db.execute(
-                    "SELECT * FROM network_activation WHERE state IN (?,?,?) AND expires_at<=?",
-                    (OFFERED, ACCEPTED, LOCAL_LINK_SEEN, now)).fetchall():
-                self._expire_activation(dict(r), now, "no answer")
+                    "SELECT * FROM network_activation WHERE state IN (?,?,?)",
+                    (OFFERED, ACCEPTED, LOCAL_LINK_SEEN)).fetchall():
+                a = dict(r)
+                if now < self.deadline_of(a):
+                    continue
+                why = "no answer" if a["state"] == OFFERED else "the phones never met"
+                self._expire_activation(a, now, why)
                 n["activations"] += 1
             marks = ",".join("?" * len(DEMAND_LIVE))
             for r in self.db.execute(

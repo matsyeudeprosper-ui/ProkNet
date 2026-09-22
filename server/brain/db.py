@@ -46,6 +46,10 @@ MIGRATIONS = [
     # as a numbered migration rather than another CREATE IF NOT EXISTS, so the server can
     # always say which schema it is on.
     network.SCHEMA,
+    # 3: v0.17.1. An accepted provider needs a real window to reach the buyer, separate
+    # from the short window it had to answer in. Additive only: two columns with defaults,
+    # so no existing activation, demand or financial row is touched.
+    network.MIGRATION_3,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000
