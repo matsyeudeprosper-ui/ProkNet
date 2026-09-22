@@ -377,12 +377,20 @@ class NetworkPlane:
 
     # ---- presence -----------------------------------------------------------------
 
-    def oldest_waiting_demand(self, zone: str, now: int):
+    def oldest_waiting_demand(self, zone: str, now: int, usable=None):
         """The demand in this zone that has been waiting longest and can still be served.
 
         Oldest first, deliberately. When a provider appears, favouring the newest request
         would mean somebody who has been standing there for eight minutes watches newer
         arrivals get served ahead of them.
+
+        v0.17.4: `usable` skips demands the provider that triggered this could not serve
+        anyway. Before v0.17.4 every provider advertised free_ready whenever it could not
+        charge, so almost anything matched almost anything and the question never arose.
+        Now that FREE is explicit, a FREE demand nobody in the zone can serve would
+        otherwise sit at the head of this queue and absorb every heartbeat, starving the
+        COMMERCIAL demands behind it. Fairness is unchanged - still oldest first - among
+        the demands this provider can actually take.
         """
         marks = ",".join("?" * len(DEMAND_LIVE))
         rows = self.db.execute(
@@ -390,18 +398,31 @@ class NetworkPlane:
             " AND attempts<? ORDER BY created_at ASC" % marks,
             (zone,) + tuple(DEMAND_LIVE) + (now, MAX_ACTIVATION_ATTEMPTS)).fetchall()
         for r in rows:
-            if self.live_activation_for(r["demand_id"]) is None:
-                return dict(r)
+            d = dict(r)
+            if self.live_activation_for(d["demand_id"]) is not None:
+                continue
+            if usable is not None and not usable(d):
+                continue
+            return d
         return None
 
-    def serve_zone(self, zone: str, now: int):
+    def serve_zone(self, zone: str, now: int, provider_id: str = ""):
         """A provider has just become useful here. Give the work to whoever waited longest.
 
         v0.17.1. v0.17.0 only matched at the moment a demand was created, so a buyer who
         asked before any provider was awake stayed SEARCHING for ever even once somebody
         turned sharing on beside them. This is the other half of the loop.
+
+        v0.17.4: when a named provider triggered this, skip the demands it could not serve
+        - see `oldest_waiting_demand`. The full matcher still runs afterwards, so this
+        only chooses WHICH waiting buyer to try, never who gets offered the job.
         """
-        d = self.oldest_waiting_demand(zone, now)
+        usable = None
+        if provider_id:
+            p = self.presence(provider_id)
+            if p is not None:
+                usable = lambda d: p.ready_for(str(d["requested_class"]))
+        d = self.oldest_waiting_demand(zone, now, usable)
         if d is None:
             return None
         return self.serve(d["demand_id"], now)
@@ -473,7 +494,7 @@ class NetworkPlane:
         # Without this, matching only ever happened when a demand was created.
         p = self.presence(provider_id)
         if p is not None and p.ready_for(COMMERCIAL) and p.has_capacity():
-            served = self.serve_zone(zone, now)
+            served = self.serve_zone(zone, now, provider_id)
             if served and "activationId" in served:
                 out["served"] = served["activationId"]
         return out
