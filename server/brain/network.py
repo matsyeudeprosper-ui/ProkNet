@@ -260,8 +260,36 @@ MIGRATION_4 = "\n".join(
     for name, decl in ADDED_V4)
 
 
+# v0.17.3: machine-readable reasons an activation can NEVER be accepted.
+#
+# The phone has to tell "this activation is over" apart from "the network is down", and a
+# Boolean cannot. Every NetworkError already becomes HTTP 400, so the status code says
+# nothing, and matching on the English message would be the third cross-language string
+# divergence in this project - v0.16.3 shipped one that no green suite could see. So the
+# reason travels as a slug, and server/tests/fixtures/brain_answer_reasons.txt is the single list
+# both sides test against.
+#
+# Everything NOT in this set - a rate limit, an internal fault, an unreachable server, a
+# reason a newer Brain invented - is retryable on the phone. Retrying a settled activation
+# costs one idempotent request; discarding a live one costs a buyer waiting for ever.
+ACTIVATION_UNKNOWN = "ACTIVATION_UNKNOWN"
+ACTIVATION_NOT_YOURS = "ACTIVATION_NOT_YOURS"
+ACTIVATION_SETTLED = "ACTIVATION_SETTLED"
+ACTIVATION_EXPIRED = "ACTIVATION_EXPIRED"
+
+TERMINAL_REASONS = (ACTIVATION_UNKNOWN, ACTIVATION_NOT_YOURS,
+                    ACTIVATION_SETTLED, ACTIVATION_EXPIRED)
+
+
 class NetworkError(Exception):
-    """The request cannot be honoured. The message is safe to return to the caller."""
+    """The request cannot be honoured. The message is safe to return to the caller.
+
+    `reason` is empty for everything the phone should simply try again later.
+    """
+
+    def __init__(self, message: str, reason: str = ""):
+        super().__init__(message)
+        self.reason = reason
 
 
 def _b(v) -> int:
@@ -719,18 +747,21 @@ class NetworkPlane:
         """
         a = self.activation(activation_id)
         if a is None:
-            raise NetworkError("unknown activation")
+            raise NetworkError("unknown activation", ACTIVATION_UNKNOWN)
         if a["provider_id"] != provider_id:
-            raise NetworkError("only the provider this was offered to may answer it")
+            raise NetworkError("only the provider this was offered to may answer it",
+                               ACTIVATION_NOT_YOURS)
         want = ACCEPTED if accept else DECLINED
         if a["state"] == want:
+            # v0.17.3: a repeat is a success, not a refusal. A phone whose first accept
+            # was lost to a dead network must be able to send it again and be finished.
             return {"ok": True, "duplicate": True, "state": want}
         if want not in ACTIVATION_NEXT.get(a["state"], ()):
-            raise NetworkError("that activation has already been settled")
+            raise NetworkError("that activation has already been settled", ACTIVATION_SETTLED)
         if now >= self.deadline_of(a):
             with self.db:
                 self._expire_activation(a, now, "answered too late")
-            raise NetworkError("that activation has expired")
+            raise NetworkError("that activation has expired", ACTIVATION_EXPIRED)
 
         with self.db:
             self.db.execute("UPDATE network_activation SET state=?, updated_at=?,"

@@ -1,0 +1,23 @@
+# v0.17.3: the reasons the Brain gives for an activation that can never be accepted.
+#
+# Both halves of the system read this file. The server (server/brain/network.py) sets
+# these slugs on a NetworkError; the phone (core/BrainAnswer.kt) treats exactly these as
+# TERMINAL_REJECT and everything else - a rate limit, an internal fault, an unreachable
+# server, a reason a newer Brain invented - as RETRYABLE_FAILURE.
+#
+# Why a file rather than two lists. v0.16.3 shipped a Kotlin/Python canonical-form
+# mismatch that neither side's green suite could see, because two independent
+# implementations of one rule are each self-consistent and never meet. If either side of
+# this list drifts, one of the two tests reading this file fails.
+#
+# Adding a slug here is a decision with a cost: it lets a phone throw away a provider's
+# acceptance. Retrying a settled activation costs one idempotent request; discarding a
+# live one costs a buyer waiting for ever on somebody who already agreed. When in doubt,
+# leave it out and let it retry.
+#
+# One slug per line. Blank lines and lines starting with # are ignored.
+
+ACTIVATION_UNKNOWN
+ACTIVATION_NOT_YOURS
+ACTIVATION_SETTLED
+ACTIVATION_EXPIRED

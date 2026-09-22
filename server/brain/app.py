@@ -43,7 +43,22 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.17.2"
+VERSION = "0.17.3"
+
+
+def _network_error(e) -> dict:
+    """The body for a refused control-plane request.
+
+    v0.17.3: a phone must be able to tell "this activation is over" from "the network had
+    a bad moment", and every NetworkError is an HTTP 400 either way. So a definitive
+    refusal carries a machine-readable `reason`; a transient one carries none, and the
+    phone keeps what it has and tries again. The prose stays exactly as it was.
+    """
+    out = {"error": str(e)}
+    reason = getattr(e, "reason", "")
+    if reason:
+        out["reason"] = reason
+    return out
 
 LOG = logging.getLogger("proknet.brain")
 
@@ -457,7 +472,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self._network_get(who, now)
             except network.NetworkError as e:
-                self._json(400, {"error": str(e)})
+                self._json(400, _network_error(e))
             return
 
         if self.path.startswith("/v1/settlements/"):
@@ -602,7 +617,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self._json(200, self._network_post(body, submitter, now))
                 except network.NetworkError as e:
-                    self._json(400, {"error": str(e)})
+                    self._json(400, _network_error(e))
                 return
 
             # ---- v0.16.2: the Brain as a carrier for signed payment objects ----
