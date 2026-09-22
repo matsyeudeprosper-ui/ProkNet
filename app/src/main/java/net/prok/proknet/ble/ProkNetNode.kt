@@ -1509,6 +1509,13 @@ class ProkNetNode(private val context: Context) : TransportListener {
     /** Wired by NetworkNode, which owns the brain URL. */
     @Volatile var brainUrlProvider: (() -> String)? = null
 
+    /**
+     * v0.17.0: the coarse zone this phone is in, wired by NetworkNode because
+     * `CoverageEngine` owns the location. Empty or `z?` when location is unavailable, and
+     * the control plane then simply does nothing - the local path is unaffected.
+     */
+    @Volatile var zoneProvider: (() -> String)? = null
+
     /** v0.15.3: the settlement queue talks to the network, so never on the main thread. */
     private val settlementIo = java.util.concurrent.Executors.newSingleThreadExecutor()
 
@@ -1525,6 +1532,16 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * limit. Selling Internet is not evidence that you pay your debts.
      */
     fun buyerVerifiedPayments(): Int = payments.buyerVerifiedPayments()
+
+    /**
+     * v0.17.0: the live control plane. Its own subsystem, in its own failure domain: if
+     * this cannot reach the Brain, payments and local Internet carry on untouched.
+     */
+    val networkSync: net.prok.proknet.node.NetworkBrainSync by lazy {
+        net.prok.proknet.node.NetworkBrainSync(identity,
+            { brainUrlProvider?.invoke() ?: "" },
+            { zoneProvider?.invoke()?.takeIf { it != net.prok.proknet.core.CoverageModel.NO_ZONE } ?: "" })
+    }
 
     /** v0.16.2: the same signed payment objects, carried by the Brain when phones are apart. */
     val paymentSync: net.prok.proknet.node.PaymentSync by lazy {

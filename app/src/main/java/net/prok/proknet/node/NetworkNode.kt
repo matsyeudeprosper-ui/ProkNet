@@ -161,6 +161,60 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * seller gateway is not running and its upstream is null, so the phone's real
      * current Internet is the evidence; once SELL is on the gateway is authoritative.
      */
+    /**
+     * v0.17.0: tell the control plane what this phone can honestly offer, and let it feed
+     * the activation inbox that has existed since v0.13.3.
+     *
+     * Nothing new is invented for the provider experience. A Brain activation becomes an
+     * `ProviderInbox` opportunity exactly like a locally gossiped one, so the notification,
+     * the Gagner card and PARTAGER all keep working the way they already do.
+     */
+    private fun wireControlPlane() {
+        node.networkSync.presenceHook = {
+            val z = cover.zone()
+            val e = eligibility()
+            if (z == net.prok.proknet.core.CoverageModel.NO_ZONE) null
+            else net.prok.proknet.node.NetworkBrainSync.Presence(
+                zone = z,
+                // the provider is the only party that can see its own upstream and radio,
+                // so capability is its claim - but a claim never becomes an obligation:
+                // every v0.16 check still runs locally before it shares for money
+                // "could this phone actually carry somebody" - the path it could offer,
+                // not merely whether it has a bar of signal
+                upstreamAvailable = e.accessPath != net.prok.proknet.core.BulkPlan.SellerAccessPath.NONE,
+                upstreamClass = if (e.upstreamValidated) "VALIDATED" else "UNVALIDATED",
+                sharingEnabled = e.optIn && node.sellOn,
+                commercialReady = node.mayOfferPaidSharing(),
+                freeReady = e.optIn && node.sellOn && !node.mayOfferPaidSharing(),
+                sponsoredReady = false,
+                // the gateway accepts one session at a time, so load is 0 or 1. The
+                // server clamps these anyway: a provider cannot claim impossible capacity.
+                currentLoad = if (node.gateway.session != null) 1 else 0,
+                maxBuyers = 1,
+                offerClass = if (node.mayOfferPaidSharing()) "COMMERCIAL" else "FREE",
+                // internal only: the buyer is never shown a per-MB figure
+                priceHintInternal = node.sellPrice * 100)
+        }
+
+        node.networkSync.onJobs = { jobs ->
+            val now = System.currentTimeMillis()
+            for (j in jobs) {
+                // a Brain job is an opportunity like any other; Source.BRAIN already exists
+                val r = state.requests[j.demandId]
+                if (r != null) synchronized(this) {
+                    inbox = net.prok.proknet.core.ProviderInbox.offer(
+                        inbox, r, net.prok.proknet.core.ProviderInbox.Source.BRAIN, now)
+                }
+            }
+            if (jobs.isNotEmpty()) { rebuildInbox("brain jobs"); alertNow() }
+        }
+
+        node.networkSync.onDemand = { status ->
+            DiagLog.i(tag, "my Internet request: " + status)
+            main.post { inboxChanged?.invoke() }
+        }
+    }
+
     fun currentUpstream(): net.prok.proknet.core.Tunnel.NetView? = if (node.sellOn) node.gateway.upstream else Upstream.now(context)
 
     fun eligibility(): ProviderActivation.Eligibility {
@@ -337,6 +391,8 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     init {
         // v0.15.3: the node owns the settlement queue; NetworkNode owns the server address
         node.brainUrlProvider = { brainUrl }
+        node.zoneProvider = { cover.zone() }
+        wireControlPlane()
         // v0.16.0: anything booked before the queue existed, or abandoned by the old
         // twelve-attempt limit, is picked up again on every start
         try { node.settlementSync.backfill() } catch (e: Exception) { DiagLog.w(tag, "backfill: " + e.message) }
@@ -346,10 +402,18 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * v0.15.3: drain the settlement queue on the same timer as the brain sync. Bounded by
      * its own backoff, so an unreachable server costs one cheap check.
      */
-    private fun syncSettlements() {
+    /**
+     * v0.17.0: every Brain-facing subsystem, each in its own failure domain.
+     *
+     * This used to run only after a successful `/v1/sync`, which meant one hiccup in
+     * coverage gossip also stopped settlements and payments reaching the server. v0.15.3
+     * taught that lesson and v0.16.2 quietly re-introduced it. Each call is now its own
+     * try/catch, and `runBrainSubsystems` is called whether or not the sync itself worked.
+     */
+    private fun runBrainSubsystems() {
         try { node.settlementSync.runDue() } catch (e: Exception) { DiagLog.w(tag, "settlement sync: " + e.message) }
-        // v0.16.2: and the payment objects for phones that are not near each other
         try { node.paymentSync.run() } catch (e: Exception) { DiagLog.w(tag, "payment sync: " + e.message) }
+        try { node.networkSync.run() } catch (e: Exception) { DiagLog.w(tag, "network sync: " + e.message) }
     }
 
     private fun doSync(why: String) {
@@ -363,14 +427,18 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             val d = SyncProtocol.parseDownload(text) ?: throw java.io.IOException("unreadable response")
             main.post { apply(d, up) }
             lastSyncOk = System.currentTimeMillis(); lastSyncError = ""; syncCount++; lastServerTime = d.serverTime
-            syncSettlements()
             backoffMs = MIN_BACKOFF_MS; nextAllowedSync = 0L
         } catch (e: Exception) {
             lastSyncError = (e.message ?: e.javaClass.simpleName)
             nextAllowedSync = System.currentTimeMillis() + backoffMs
             DiagLog.w(tag, "SYNC failed: " + lastSyncError + " (next try in " + (backoffMs / 1000) + " s)")
             backoffMs = minOf(backoffMs * 2, MAX_BACKOFF_MS)
-        } finally { syncing.set(false) }
+        } finally {
+            // outside the try, and outside the failure of the sync above: settlements,
+            // payments and the control plane each stand on their own
+            runBrainSubsystems()
+            syncing.set(false)
+        }
     }
 
     private fun buildUpload(now: Long): SyncProtocol.Upload {
@@ -495,6 +563,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         }
         sb.append(node.payments.describe()).append("\n")
         sb.append(node.paymentSync.describe()).append("\n")
+        sb.append(node.networkSync.describe()).append("\n")
         sb.append(node.settlementSync.describe()).append("\n")
         sb.append("session shutdown:\n")
             .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")
