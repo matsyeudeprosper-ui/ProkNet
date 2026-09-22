@@ -3953,3 +3953,108 @@ so old timestamps are never treated as fresh.
 The Android database is **unchanged at version 10**. Network control state is not
 financial and lives in the existing file-based pattern that `RequestGossip` and
 `ProviderInbox` already use, so there was no honest reason to bump it.
+
+## v0.17.1 making the Brain visible, and giving an accepted provider time
+
+v0.17.0 built the control plane and drew none of it. Mike would have installed build
+68 and seen nothing new: the Home status model existed and no view read it, the map
+never received a Brain colour, and the Activité event model wrote nothing. That is
+what this release fixes, plus four behaviours the loop needed to be honest.
+
+### Home, the map and Activité
+
+`NetworkAccess.homeState` is the whole Home decision as one pure function.
+`MainActivity` needs a `Context` and cannot run off a phone, so the screen gathers
+facts and draws the answer while the decision lives where a test can reach it. That
+is the only way "PROVIDER_ACCEPTED shows *Un fournisseur se prépare*" gets verified
+rather than asserted about a string constant.
+
+The branch order **is** the honesty rule, and it is tested as such:
+
+1. the transport says Internet works -> CONNECTED, and nothing else can produce it;
+2. the transport is bringing a link up -> CONNECTING;
+3. a Brain demand is live -> whatever the Brain says it is;
+4. searching locally -> SEARCHING;
+5. the last attempt failed -> FAILED;
+6. otherwise -> IDLE, described by the zone.
+
+The Brain reporting CONNECTED means *somebody* told it a connection happened, not
+that this phone has one, so it produces "Connexion en cours…" and never "Connecté".
+
+`NetworkAccess.mergeZone` merges rather than replaces. Local observation outranks the
+Brain, because a source this phone can see is stronger evidence than a server's
+opinion about the neighbourhood. A Brain answer older than five minutes is
+**discarded** rather than downgraded one step: there is no honest middle ground
+between "somebody was there five minutes ago" and "somebody is there", and a zone
+staying green because somebody was there yesterday is the specific thing it prevents.
+Nothing known is RED; there are no demo cells.
+
+`NetworkHistory` is a small durable list for Activité, one line per real transition.
+Dedup is the design rather than an afterthought: a waiting buyer polls every few
+seconds, so the naive version prints "Recherche Internet" four times. Rows are keyed
+on the demand and the transition, and a repeat returns the same object so the screen
+does not even repaint. A technical kind writes nothing at all.
+
+It is deliberately **not** in SQLite, so the Android database stays at **10**. This is
+coordination history, not signed evidence: it holds nothing verifiable, losing it
+costs a reader some scrollback, and `RequestGossip` and `ProviderInbox` already keep
+their state in files this way. A migration with nothing to migrate would be worse.
+
+### An accepted provider now has time to arrive
+
+v0.17.0 reused the 75-second window a provider had to *answer* in as the window to
+actually reach the buyer. So somebody who tapped PARTAGER vanished a minute later
+while the two of them were still walking towards each other, and the buyer's screen
+gave up for no reason they could see.
+
+`OFFER_TTL_MS` (75 s) and `LINK_WAIT_TTL_MS` (10 min) are now separate, and
+`deadline_of` is the single place that knows which applies. The accepted window is
+`min(demand expiry, acceptedAt + wait)`, so it can never outlive the request it
+serves.
+
+`DEMAND_TTL_MS` went from 10 minutes to 15, for a concrete reason rather than taste:
+with both numbers equal, an accepted provider swallowed the whole request and "try the
+next provider when the first never turns up" could never fire. A test caught that - it
+asserted a fallback that was unreachable.
+
+### The other half of matching
+
+v0.17.0 matched only when a demand was created, so a buyer who asked before anybody
+was sharing stayed SEARCHING for ever even once a provider woke up beside them. A
+presence heartbeat now picks up waiting work, which also covers a provider coming back
+under capacity after a session and one arriving in the zone.
+
+Oldest compatible demand first. Somebody who has waited eight minutes must not watch
+newer arrivals get served ahead of them.
+
+### Movement
+
+Written down rather than left to guesswork. A buyer who walks keeps the **same**
+demand - same id, same age, same attempt count, because recreating it would reset
+their place in the queue and burn the cooldown - and any offer left behind in the old
+zone closes at once. A provider that walks away loses an **unanswered** offer but
+keeps one it has already **accepted**, because it may well be walking towards the
+buyer and that is what the window is for.
+
+### Local networking wins
+
+The Brain is not a reservation system. If it activated provider A and local discovery
+found B first, B is used and the demand closes - `localConnectionWon` reports the
+result first so the matcher still learns what worked, then cancels. Every step is
+best-effort: it runs after a session is already up and nothing in it may touch one.
+
+### Restart
+
+The demand id lives in memory, so a process death loses it. `reconcile()` asks the
+Brain on the next run - `GET /v1/network/demand` with no id answers with this buyer's
+live request. Server authority rather than a local table: one round trip cannot
+disagree with the server, and when the Brain is unreachable the honest answer is that
+we do not know, which is also what a stale local copy would have been hiding.
+
+### Schema 3
+
+Two columns on `network_activation`: `accepted_at` and `link_deadline`. Added as
+**numbered migration 3**, not a quiet edit of schema 2 - `CREATE TABLE IF NOT EXISTS`
+does nothing to a table that already exists, which would have been the v0.16.1 mistake
+on the server. Declared once and applied both by the migration and defensively by
+`NetworkPlane`, so an upgraded Brain and a fresh one end up the same shape.

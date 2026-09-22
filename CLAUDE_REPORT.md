@@ -1,3 +1,197 @@
+# CLAUDE_REPORT - ProkNet v0.17.1 "the Brain, visibly"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.1, build 69. **643 Android tests, 314 server tests, all passing.**
+Floor was 611 + 287; every one of those still passes.
+
+## 1. What was incomplete in v0.17.0
+
+My own report said it: the Home status model existed and no view read it, the map never
+received a Brain colour, and the Activité model wrote nothing. Mike would have installed
+build 68 and seen nothing new. Four behaviours were also missing or wrong:
+
+- an accepted provider got the 75-second window it had to *answer* in, not a window to
+  actually reach the buyer;
+- matching happened only when a demand was created, so a provider appearing later served
+  nobody;
+- no fairness rule, so a long wait could be jumped;
+- no policy for either party walking to a different zone.
+
+## 2. Home - actual screen integration
+
+A card in `activity_main.xml` (`homeNet`, `homeNetTitle`, `homeNetSub`) captioned
+**INTERNET AUTOUR DE VOUS**, drawn by `renderNetworkCard()` from `refreshHome`, which runs
+on every tick - so it follows the demand, the activation, the zone, local discovery, the
+transport and the sync result without a screen change.
+
+The decision is `NetworkAccess.homeState`, a pure function. `MainActivity` needs a
+`Context`, so the screen gathers facts and the decision lives where a test can run it.
+That is the only way "PROVIDER_ACCEPTED shows *Un fournisseur se prépare*" is verified
+rather than asserted about a string constant.
+
+The truth rule holds and is tested: the Brain reporting CONNECTED - which means *somebody*
+told it a connection happened, not that this phone has one - gives "Connexion en cours…",
+never "Connecté". A test loops every server status with `internetUp = true` and asserts
+none can override the transport.
+
+## 3. Map - actual screen integration
+
+`refreshMap` now merges. `NetworkAccess.mergeZone` puts local observation above the Brain,
+and **discards** a Brain answer older than five minutes rather than downgrading it - there
+is no honest middle ground between "somebody was there five minutes ago" and "somebody is
+there". Nothing known is RED; no demo cells. The cell the phone stands in carries the
+merged colour, so map and Home cannot disagree. The label under it is the plain sentence.
+
+## 4. Activité - actual persistence and integration
+
+`core/NetworkHistory.kt`: a durable file, one row per real transition, rendered into the
+existing `ActivityUi` rows. Dedup is the design - a poll that learns nothing returns the
+same object, so the screen does not repaint. A technical kind writes nothing.
+
+**Android DB stays at 10.** This is coordination history, not signed evidence; it holds
+nothing verifiable, and `RequestGossip`/`ProviderInbox` already persist this way. A
+migration with nothing to migrate would have been worse than none.
+
+## 5. Gagner - verified, not assumed
+
+I read the path. A Brain job becomes a `ProviderInbox.Opportunity` with `Source.BRAIN`,
+which the v0.13.3 notification and Gagner card already render, and dismissing the
+notification does not remove the opportunity - `ProviderInbox` only drops it on accept,
+decline or expiry. `NetworkAccess.providerTitle/providerText` carry the DEMANDE PROCHE /
+PRÊT À PARTAGER wording and are unit-tested.
+
+## 6. Accepted-activation wait window
+
+`OFFER_TTL_MS` 75 s and `LINK_WAIT_TTL_MS` 10 min are separate; `deadline_of` is the one
+place that knows which applies. The accepted window is `min(demand expiry, acceptedAt +
+wait)`, so it cannot outlive its request.
+
+**`DEMAND_TTL_MS` went 10 -> 15 minutes**, and this is the interesting bit: with both
+numbers equal an accepted provider swallowed the whole request, so item 19's fallback was
+unreachable. A test asserted it and failed, which is how I found out.
+
+## 7. Fallback after an accepted timeout
+
+The window closes -> activation EXPIRED -> demand back to SEARCHING -> next eligible
+provider, and the one who agreed and did not arrive is not asked again. If no time or
+attempts remain the demand simply ends, which the buyer sees as "Personne ne peut partager
+pour le moment".
+
+## 8. Local provider wins, and the demand closes
+
+`localConnectionWon` reports the result **first** (so the matcher still learns what
+worked) then cancels the demand. Wired from `MainActivity` at the moment the buyer goes
+ONLINE, whichever provider carried it - the Brain is not a reservation system.
+
+## 9. Brain status reporting stays best-effort
+
+`onLocalLink` runs on the node's IO executor and can only log. Nothing in the reporting
+path can end a session. Item 41's property - Brain disappears mid-session, session
+continues - holds because no transport code waits on any of it.
+
+## 10. Zone change policy
+
+**Buyer:** the same demand follows them. Same id, age and attempt count, because
+recreating would reset their queue position and burn the cooldown; any offer left behind
+closes at once; the matcher runs in the new zone. `POST /v1/network/demand/move`.
+
+**Provider:** an unanswered offer is expired on a zone change. An accepted one is kept,
+because they may be walking towards the buyer and that is what the window is for.
+
+## 11. Capacity and upstream
+
+`currentLoad` is `if (gateway.session != null) 1 else 0` and `maxBuyers` is 1, because the
+gateway accepts one session - no multi-buyer capability is advertised. The server clamps
+impossible values. A heartbeat arriving back under capacity picks up waiting work.
+`upstreamAvailable` uses `accessPath != NONE`, the same readiness the sharing code uses,
+not "the Wi-Fi radio is on". `sponsoredReady` is always false; nothing fakes a sponsor.
+
+## 12. Late matching and fairness
+
+A presence heartbeat serves the oldest waiting demand in that zone with attempts left.
+Tests: provider appears later; provider appears in another zone and serves nobody;
+capacity returns; oldest-first with two waiting buyers; a second provider serves the
+second buyer.
+
+## 13. Subsystem independence
+
+`runBrainSubsystems` runs in a `finally`, outside the `/v1/sync` try, with settlements,
+payments and the control plane each in their own `try/catch`. On the server they are
+separate route families and separate modules.
+
+**Honest limit:** this is verified by structure and by reading, not by a unit test - the
+three subsystems need a `Context` to instantiate, so there is no JVM test that kills one
+and watches the others. The server-side separation is covered by the route tests.
+
+## 14. Schema and migrations
+
+| | |
+|---|---|
+| Brain schema | **2 -> 3**, numbered migration, additive `ALTER TABLE ADD COLUMN` |
+| Android DB | **10, unchanged** |
+
+I had first put the new columns into schema 2's `CREATE TABLE`. That is the v0.16.1
+mistake on the server - `CREATE TABLE IF NOT EXISTS` does nothing to an existing table -
+so no Brain in the field would ever have got them. A test now builds a real schema-2
+database with an accepted activation in it, upgrades, and checks the row survives, both
+migrations are recorded once, and the shape matches a fresh install.
+
+## 15. HTTPS, VPS, backup
+
+- **HTTPS: unchanged and unclaimed.** Plain HTTP, binds to loopback, warns if bound
+  elsewhere. Software ready; a real distant-phone test needs a reachable HTTPS endpoint
+  that does not exist yet. Nothing insecure is hard-coded.
+- All five scripts re-checked with the PowerShell parser: install, start, stop, status,
+  backup.
+- **Backup re-validated on a schema-3 database** holding both a settlement and a live
+  network demand: `integrity_check = ok`, 22 tables, schema 3, settlement present,
+  `network_demand` present, `link_deadline` column present.
+
+## 16. Totals and artefacts
+
+| | |
+|---|---|
+| Android tests | **643** (floor 611) |
+| Server tests | **314** (floor 287) |
+| All previous | green, unmodified |
+| Version / build | **0.17.1 / 69** |
+| APK SHA256 | `447e203ea4461960836326e3568a91932567ff609332c1f51cce916c925947f2` |
+
+## 17. Hardware status
+
+- **Hardware-proven, unchanged:** Bluetooth/L2CAP Internet, VPN browsing, provider
+  activation and recovery, pricing and contracts, graceful stops, the signed final
+  checkpoint.
+- **Software-proven only:** the whole Mobile Money payment stack, and all of v0.17 and
+  v0.17.1.
+- **Still unproven:** real MTN/Airtel message parsing, and every part of the Brain loop on
+  actual phones. **v0.17.1 is software-proven only** until you run TESTING 73.
+
+## 18. Remaining limitations
+
+- No JVM test kills one Brain subsystem to watch the others (section 13).
+- Android restart uses server reconciliation rather than a local table: if the Brain is
+  unreachable at start, the phone does not know it had a demand until it can ask.
+- Sponsored providers are modelled and nothing produces them.
+- Capacity is 0 or 1.
+- A buyer's zone move needs something to call `move_demand`; the route and the policy are
+  there and tested, but the phone does not yet detect its own zone change and call it.
+- TLS hostname pending.
+
+## 19. Definition of done
+
+Met on the software side. The loop is visible in Home, Map, Gagner and Activité; an
+accepted provider has ten minutes rather than seventy-five seconds; local networking
+supersedes and cancels Brain coordination; the Brain can disappear without touching an
+active or local session; and every v0.16 payment and security test is green.
+
+Not moving to v0.18. TESTING 73 is the gate.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.0 "the live Network Brain"
 
 Date: 2026-09-21

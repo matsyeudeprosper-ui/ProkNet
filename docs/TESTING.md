@@ -3166,3 +3166,105 @@ Expected: listening, and `/health` answers with version 0.17.0.
 - The buyer being told Internet is available before the transport says so.
 - A provider that has stopped sharing still being woken.
 - Any section from 59 to 71 behaving differently.
+
+## 73. v0.17.1 the two-phone Network Brain, visibly
+
+This is the acceptance run for the whole v0.17 milestone. It needs the Brain
+**running and reachable from both phones**; without that, sections 73a to 73e cannot
+be run and must be reported as "could not be tested", not as a pass.
+
+OUKITEL = provider. OnePlus = buyer.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\start.ps1
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\status.ps1
+```
+
+`status.ps1` must report `version=0.17.1` and `schema=3`. Put the Brain URL into both
+phones under COPY NETWORK.
+
+### 73a. Test 1 - the distant control plane
+
+Set the OUKITEL up as a provider: upstream working, PARTAGER on. Put the two phones
+far enough apart that Bluetooth cannot reach - a different room with a wall, or a few
+tens of metres.
+
+On the OnePlus, tap **GET INTERNET**.
+
+Expected, in order:
+1. Home shows **INTERNET AUTOUR DE VOUS** and **Recherche d'Internet…**;
+2. the OUKITEL gets a notification: **Quelqu'un près de vous cherche Internet**;
+3. Gagner on the OUKITEL shows **DEMANDE PROCHE** with a PARTAGER button;
+4. tap PARTAGER: Gagner becomes **PRÊT À PARTAGER**;
+5. the OnePlus Home changes to **Un fournisseur se prépare**.
+
+**FAIL** if the OnePlus ever says Internet is available at this point. Nothing has
+connected yet.
+
+### 73b. Test 2 - the physical takeover
+
+Now carry the phones together.
+
+Expected: Bluetooth finds the peer, the existing authenticated transport starts,
+L2CAP and the VPN come up, and Wikipedia loads in Chrome on the OnePlus.
+
+That is the whole point of the milestone: a Brain activation followed by the data
+plane that has been hardware-proven since v0.10.2.
+
+### 73c. Test 3 - it was visible the whole time
+
+During the same run, check all four:
+
+| | |
+|---|---|
+| Home | went Recherche -> fournisseur se prépare -> Connexion -> Connecté |
+| Map | the cell you are standing in has a colour, with a plain sentence under it |
+| Gagner | showed DEMANDE PROCHE, then PRÊT À PARTAGER |
+| Activité | shows **Recherche Internet**, **Fournisseur trouvé**, **Partage accepté**, **Connexion réussie** - once each |
+
+This is specifically what build 68 failed to do.
+
+**FAIL** if Activité shows any line more than once, or shows anything technical.
+
+### 73d. Test 4 - again, without restarting anything
+
+Disconnect and run 73a and 73b again.
+
+Expected: one new request, one notification, one activation, one connection. No stale
+job left in Gagner from the first run, and no duplicated Activité lines.
+
+### 73e. Test 5 - a provider who says yes and does not arrive
+
+Start a request, tap PARTAGER on the OUKITEL, and then **keep the phones apart**.
+
+Expected: the OnePlus says **Un fournisseur se prépare** and stays that way for
+minutes rather than giving up after one. This is the v0.17.0 bug. Eventually it either
+tries somebody else or says **Personne ne peut partager pour le moment** - both are
+honest; silently forgetting is not.
+
+### 73f. Test 6 - the Brain off, nothing changed
+
+Clear the Brain URL on both phones. Put them side by side.
+
+Expected: the existing local flow works exactly as before - local provider request,
+PARTAGER, L2CAP, VPN, Internet. Home falls back to describing the area.
+
+**This is the most important section here.** The local network must never depend on
+the server.
+
+### 73g. Test 7 - the Brain disappears mid-session
+
+With Internet working through the OUKITEL, stop the Brain on the VPS
+(`stop.ps1`).
+
+Expected: the session **keeps working**. Browsing continues, accounting continues, and
+the status report is simply retried later. Nothing tears down.
+
+### What would make this a FAIL
+
+- Any regression in 73f.
+- A session ending because the Brain went away in 73g.
+- The buyer being told Internet is available before it is.
+- An accepted provider disappearing within a minute in 73e.
+- Duplicated Activité lines.
+- Any regression in sections 59 to 72.

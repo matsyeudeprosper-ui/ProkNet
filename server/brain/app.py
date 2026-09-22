@@ -43,7 +43,7 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.17.0"
+VERSION = "0.17.1"
 
 LOG = logging.getLogger("proknet.brain")
 
