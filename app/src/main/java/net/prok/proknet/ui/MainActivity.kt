@@ -313,11 +313,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
      */
     private fun networkSnapshot(now: Long): NetworkAccess.Snapshot {
         val sync = node.networkSync
+        // v0.17.2: a source this phone can actually reach, from local discovery - not a
+        // colour. A GREEN zone can be entirely the Brain's opinion about a coarse cell.
+        val localUsable = cover.reachableIds().isNotEmpty() &&
+            cover.state.sources.values.any {
+                CoverageModel.usableNow(it, cover.reachableIds().contains(it.id))
+            }
         val zone = NetworkAccess.mergeZone(
             local = cover.hereStatus(),
             brain = sync.zoneStatus,
-            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
-            localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
+            // and coverage freshness comes from when the COVERAGE answer arrived, never
+            // from "some control-plane call succeeded"
+            brainAgeMs = if (sync.zoneStatusAt == 0L) Long.MAX_VALUE else now - sync.zoneStatusAt,
+            localDirectUsable = buyerState() == ProductState.Buyer.ONLINE || localUsable)
 
         // the decision itself is pure and shared with the tests; this only gathers the
         // facts the screen can see
@@ -332,7 +340,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             zone = zone,
             brainOffline = sync.configured && !sync.reachable,
             now = now,
-            requestStartedAt = requestStartedAt)
+            requestStartedAt = requestStartedAt,
+            localUsableNow = localUsable)
     }
 
     private fun renderNetworkCard(now: Long = System.currentTimeMillis()) {
@@ -590,7 +599,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         return NetworkAccess.mergeZone(
             local = local,
             brain = sync.zoneStatus,
-            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
+            brainAgeMs = if (sync.zoneStatusAt == 0L) Long.MAX_VALUE else now - sync.zoneStatusAt,
             localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
     }
 
@@ -623,7 +632,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val here = NetworkAccess.mergeZone(
             local = CoverageModel.hereStatus(cells, zone),
             brain = sync.zoneStatus,
-            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
+            brainAgeMs = if (sync.zoneStatusAt == 0L) Long.MAX_VALUE else now - sync.zoneStatusAt,
             localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
         text(R.id.mapHereTitle, NetworkAccess.zoneLabel(here))
         text(R.id.mapHereSub, when {

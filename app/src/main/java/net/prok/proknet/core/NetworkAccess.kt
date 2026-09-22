@@ -147,8 +147,15 @@ object NetworkAccess {
      * Internet before the transport has reported a path.
      */
     fun title(s: Snapshot): String = when (s.state) {
+        // v0.17.2: an IDLE phone describes its AREA, and an area is not a connection.
+        //
+        // This said "Internet disponible maintenant" on a GREEN zone, and GREEN can come
+        // entirely from the Brain - which only knows that somebody was sharing somewhere
+        // in a coarse cell. It does not know this phone can reach them, or that Bluetooth
+        // carries that far, or that they still have capacity. Only LOCAL_AVAILABLE, which
+        // requires a source this phone can actually use, may promise Internet.
         State.IDLE -> when (s.zone) {
-            Coverage.ZoneStatus.GREEN -> "Internet disponible maintenant"
+            Coverage.ZoneStatus.GREEN -> "Un fournisseur est actif dans votre zone"
             Coverage.ZoneStatus.YELLOW -> "ProkNet peut chercher un fournisseur"
             Coverage.ZoneStatus.RED -> "Pas de fournisseur connu actuellement"
         }
@@ -171,6 +178,8 @@ object NetworkAccess {
             "Cela peut prendre quelques minutes."
         s.state == State.PROVIDER_ACCEPTED -> "Gardez le téléphone à proximité."
         s.state == State.FAILED -> "Réessayez dans un moment."
+        s.state == State.IDLE && s.zone == Coverage.ZoneStatus.GREEN ->
+            "Appuyez pour vous connecter."
         s.state == State.IDLE && s.zone == Coverage.ZoneStatus.YELLOW ->
             "Appuyez pour chercher."
         else -> ""
@@ -178,7 +187,9 @@ object NetworkAccess {
 
     /** What the map says for a zone. Operational hints, never guarantees. */
     fun zoneLabel(z: Coverage.ZoneStatus): String = when (z) {
-        Coverage.ZoneStatus.GREEN -> "Internet disponible maintenant"
+        // same reasoning as the Home card: the map is coarse zone status, so GREEN says
+        // somebody is active around here, never that a connection is waiting for you
+        Coverage.ZoneStatus.GREEN -> "Fournisseur actif dans cette zone"
         Coverage.ZoneStatus.YELLOW -> "ProkNet peut chercher un fournisseur"
         Coverage.ZoneStatus.RED -> "Pas de fournisseur connu actuellement"
     }
@@ -305,11 +316,21 @@ object NetworkAccess {
         brainOffline: Boolean,
         now: Long,
         requestStartedAt: Long = 0,
+        /**
+         * v0.17.2: a source THIS PHONE can use right now, from local discovery.
+         *
+         * Passed in rather than inferred from [zone], because a GREEN zone can be entirely
+         * the Brain's opinion about a coarse cell. Inferring availability from a colour is
+         * precisely how a buyer gets told Internet is ready and then cannot load a page.
+         */
+        localUsableNow: Boolean = false,
     ): Snapshot {
         val base = idle(zone)
         val s = when {
             internetUp -> onLink(base, LinkEvent.INTERNET_UP, now)
             linkComingUp -> onLink(base, LinkEvent.PEER_SEEN, now)
+            // a real local source, not a colour
+            localUsableNow && demandId.isEmpty() && !searchingLocally -> localAvailable(base)
             demandId.isNotEmpty() && demandStatus.isNotEmpty() -> onDemandStatus(
                 searching(demandId, now, zone, brainOffline), demandStatus, demandId, now,
                 requestStartedAt)
