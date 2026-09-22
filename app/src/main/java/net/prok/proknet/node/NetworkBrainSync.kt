@@ -7,6 +7,7 @@ import net.prok.proknet.core.BrainPayload
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
+import net.prok.proknet.core.NetRequest
 import net.prok.proknet.core.NetworkAccess
 import net.prok.proknet.core.SignedApi
 
@@ -64,11 +65,31 @@ class NetworkBrainSync(
         private set
     @Volatile var zoneStatus: Coverage.ZoneStatus = Coverage.ZoneStatus.RED
         private set
+
+    /**
+     * v0.17.2: when the ZONE answer itself last arrived.
+     *
+     * Not `lastOk`, which means "some control-plane run succeeded". A heartbeat, a demand
+     * poll or a job poll succeeding says nothing about whether the coverage endpoint
+     * answered, and using the general timestamp kept a stale GREEN looking fresh for as
+     * long as anything else was working. 0 means we have never had one.
+     */
+    @Volatile var zoneStatusAt = 0L
+        private set
     @Volatile var reachable = false
         private set
 
     /** The demand this phone is waiting on, or empty. Survives a restart via the caller. */
     @Volatile var demandId = ""
+
+    /**
+     * v0.17.2: the zone the SERVER currently has for our demand.
+     *
+     * Tracked from what the server said rather than assumed from the latest local fix, so
+     * "have I moved?" is a comparison between two known facts instead of a guess.
+     */
+    @Volatile var demandZone = ""
+        private set
 
     /** Activation jobs offered to this phone, newest first. Fed into `ProviderInbox`. */
     @Volatile var jobs: List<Job> = emptyList()
@@ -79,7 +100,9 @@ class NetworkBrainSync(
         private set
 
     class Job(val activationId: String, val demandId: String, val zone: String,
-              val state: String, val createdAt: Long, val expiresAt: Long)
+              val state: String, val createdAt: Long, val expiresAt: Long,
+              /** v0.17.2: the buyer's own signed request, verified before use. */
+              val request: NetRequest.Request)
 
     // ---- hooks the node wires up ----------------------------------------------------------
 
@@ -127,6 +150,7 @@ class NetworkBrainSync(
         try {
             heartbeat(now)
             reconcile()
+            followTheBuyer()
             pollDemand()
             pollJobs()
             refreshZone()
@@ -194,15 +218,20 @@ class NetworkBrainSync(
      * wake a second provider.
      */
     fun createDemand(id: String, budgetCentimes: Long, requestedClass: String,
-                     need: String = "BROWSE"): String {
+                     need: String = "BROWSE", requestLine: String = ""): String {
         if (!configured) return ""
         val z = zone()
         if (z.isEmpty()) return ""
+        // v0.17.2: the buyer's OWN signed request travels with the demand. A provider on
+        // the other side of the neighbourhood has never met this buyer and has no reason
+        // to hold their gossiped request, so without this the activation arrives and the
+        // provider has nothing it can verify or show.
         val body = json(
             "demandId" to id, "zone" to z,
             "budgetCentimes" to budgetCentimes,
             "requestedClass" to requestedClass,
-            "connectivityNeed" to need)
+            "connectivityNeed" to need,
+            "requestLine" to requestLine)
         val (code, text) = post("/v1/network/demand", body)
         if (code !in 200..299) {
             DiagLog.w(tag, "request refused by the network: " + BrainPayload.field(text, "error"))
@@ -210,6 +239,7 @@ class NetworkBrainSync(
         }
         demandId = BrainPayload.field(text, "demandId").ifEmpty { id }
         demandStatus = BrainPayload.field(text, "status")
+        demandZone = z
         DiagLog.i(tag, "asked the network for Internet (" + demandStatus + ")")
         onDemand?.invoke(demandStatus)
         return demandId
@@ -239,6 +269,7 @@ class NetworkBrainSync(
             if (id.isEmpty() || status.isEmpty()) return
             demandId = id
             demandStatus = status
+            demandZone = BrainPayload.field(text, "zone")
             DiagLog.i(tag, "picked my Internet request back up: " + status)
             onDemand?.invoke(status)
         } catch (e: Exception) {
@@ -252,6 +283,8 @@ class NetworkBrainSync(
         val (code, text) = get("/v1/network/demand?id=" + demandId)
         if (code == 404) { clearDemand(); return }
         if (code !in 200..299) return
+        val z = BrainPayload.field(text, "zone")
+        if (z.isNotEmpty()) demandZone = z
         val status = BrainPayload.field(text, "status")
         if (status.isEmpty() || status == demandStatus) return
         demandStatus = status
@@ -295,6 +328,30 @@ class NetworkBrainSync(
         it.state == "ACCEPTED" || it.state == "LOCAL_LINK_SEEN"
     }?.activationId ?: ""
 
+    /**
+     * v0.17.2: a live request follows the buyer when they walk somewhere else.
+     *
+     * v0.17.1 had the route, the policy and the tests, and nothing on the phone ever
+     * noticed its own zone changing - so a buyer who walked two streets kept waiting on
+     * providers in the area they had left.
+     *
+     * Only on a real change, so a heartbeat every forty-five seconds does not become a
+     * move every forty-five seconds. Never to an unknown zone: losing a location fix is
+     * not the same as having moved, and the last known zone is better than none.
+     */
+    private fun followTheBuyer() {
+        if (demandId.isEmpty()) return
+        val z = zone()
+        if (z.isEmpty()) return
+        if (demandZone.isEmpty()) { demandZone = z; return }
+        if (z == demandZone) return
+        val (code, text) = post("/v1/network/demand/move", json("demandId" to demandId, "zone" to z))
+        if (code in 200..299) {
+            demandZone = BrainPayload.field(text, "zone").ifEmpty { z }
+            DiagLog.i(tag, "my request followed me to a new area")
+        }
+    }
+
     /** The buyer nudges the matcher, used when a provider declined or went quiet. */
     fun nudge() {
         if (!configured || demandId.isEmpty()) return
@@ -319,6 +376,7 @@ class NetworkBrainSync(
     private fun clearDemand() {
         demandId = ""
         demandStatus = ""
+        demandZone = ""
     }
 
     // ---- provider: collect work, answer it -------------------------------------------------
@@ -328,11 +386,31 @@ class NetworkBrainSync(
         if (p == null || !p.sharingEnabled) return
         val (code, text) = get("/v1/network/jobs")
         if (code !in 200..299) return
+        val now = System.currentTimeMillis()
         val found = BrainPayload.objects(text, "jobs").mapNotNull { o ->
             val id = o["activationId"] ?: return@mapNotNull null
-            Job(id, o["demandId"] ?: "", o["zone"] ?: "", o["state"] ?: "",
+            val demand = o["demandId"] ?: ""
+            // v0.17.2: the job is only usable if the buyer's own signature checks out
+            // HERE. The Brain handed it over; that is carriage, not evidence. Fail closed:
+            // an unverifiable job produces no opportunity, no notification and no card.
+            val line = o["requestLine"] ?: ""
+            if (line.isEmpty()) {
+                DiagLog.w(tag, "a job arrived without the buyer's request; ignored")
+                return@mapNotNull null
+            }
+            val r = NetRequest.decodeLine(line)
+            if (r == null || !NetRequest.verify(r)) {
+                DiagLog.w(tag, "a job carried a request that does not verify; ignored")
+                return@mapNotNull null
+            }
+            if (r.id != demand) {
+                DiagLog.w(tag, "a job carried a request for a different demand; ignored")
+                return@mapNotNull null
+            }
+            if (r.expired(now)) return@mapNotNull null
+            Job(id, demand, o["zone"] ?: "", o["state"] ?: "",
                 (o["createdAt"] ?: "0").toLongOrNull() ?: 0L,
-                (o["expiresAt"] ?: "0").toLongOrNull() ?: 0L)
+                (o["expiresAt"] ?: "0").toLongOrNull() ?: 0L, r)
         }
         if (found.map { it.activationId } == jobs.map { it.activationId }) return
         jobs = found
@@ -393,6 +471,8 @@ class NetworkBrainSync(
             "YELLOW" -> Coverage.ZoneStatus.YELLOW
             else -> Coverage.ZoneStatus.RED
         }
+        // only here, and only on a real answer
+        zoneStatusAt = System.currentTimeMillis()
     }
 
     // ---- plumbing -------------------------------------------------------------------------------

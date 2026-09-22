@@ -31,9 +31,22 @@ object ProviderInbox {
         val notifiedAt: Long = 0,
         /** The provider pressed PARTAGER for it. */
         val accepted: Boolean = false,
+        /**
+         * v0.17.2: the Brain activation this came from, for [Source.BRAIN] only.
+         *
+         * Without it, pressing PARTAGER could start the seller and leave the Brain
+         * showing OFFERED for ever - the buyer would wait on "un fournisseur se prépare"
+         * that never arrives, because nothing knew which activation to acknowledge.
+         *
+         * Empty for a local opportunity, which has no activation behind it.
+         */
+        val brainActivationId: String = "",
     ) {
         val local: Boolean get() = source == Source.LOCAL
         fun expired(now: Long): Boolean = now >= expiresAt
+
+        /** Accepted here, but the Brain has not been told yet. */
+        fun needsBrainAck(): Boolean = accepted && brainActivationId.isNotEmpty()
     }
 
     data class State(
@@ -60,6 +73,22 @@ object ProviderInbox {
      * A request this phone could serve. The same generation twice changes
      * nothing; a newer generation updates in place and never re-alerts.
      */
+    /**
+     * v0.17.2: the same offer, remembering which Brain activation produced it.
+     *
+     * Re-offering an activation the provider has already accepted must not quietly reset
+     * that - a phone whose acceptance has not reached the Brain yet will see the job come
+     * back as OFFERED on the next poll, and forgetting would lose the tap.
+     */
+    fun offerFromBrain(st: State, r: NetRequest.Request, activationId: String, now: Long): State {
+        val existing = st.items[r.id]
+        val next = offer(st, r, Source.BRAIN, now)
+        val o = next.items[r.id] ?: return next
+        return next.copy(items = next.items + (r.id to o.copy(
+            brainActivationId = activationId,
+            accepted = o.accepted || (existing?.accepted ?: false))))
+    }
+
     fun offer(st: State, r: NetRequest.Request, source: Source, now: Long): State {
         val cur = st.items[r.requestKey()]
         if (cur != null && r.generation <= cur.generation) return st
@@ -175,7 +204,7 @@ object ProviderInbox {
         val sb = StringBuilder("V\t1\n")
         for (o in st.items.values.sortedBy { it.receivedAt })
             sb.append("O\t").append(listOf(o.requestId, o.originShort, o.source.name, o.zone.replace("\t", " "), o.receivedAt, o.expiresAt,
-                o.generation, o.notifiedAt, o.accepted).joinToString("\t")).append('\n')
+                o.generation, o.notifiedAt, o.accepted, o.brainActivationId).joinToString("\t")).append('\n')
         return sb.toString()
     }
 
@@ -185,7 +214,13 @@ object ProviderInbox {
             if (line.length < 2 || line[0] != 'O') continue
             try {
                 val f = line.substring(2).split('\t')
-                if (f.size >= 9) items[f[0]] = Opportunity(f[0], f[1], Source.valueOf(f[2]), f[3], f[4].toLong(), f[5].toLong(), f[6].toInt(), f[7].toLong(), f[8].toBoolean())
+                // v0.17.2 appended a tenth field. A file written by build 69 has nine and
+                // must still load: an old install losing its inbox on upgrade would drop
+                // requests a provider had already agreed to.
+                if (f.size >= 9) items[f[0]] = Opportunity(
+                    f[0], f[1], Source.valueOf(f[2]), f[3], f[4].toLong(), f[5].toLong(),
+                    f[6].toInt(), f[7].toLong(), f[8].toBoolean(),
+                    if (f.size >= 10) f[9] else "")
             } catch (_: Exception) { /* one bad line never loses the rest */ }
         }
         return State(items)

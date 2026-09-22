@@ -153,10 +153,11 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     fun originate(id: String, zone: String): NetRequest.Request {
         val now = System.currentTimeMillis()
         val r = NetRequest.sign(NetRequest.oneTap(id, node.identity.shortIdHex, node.identity.pubBytes.toHex(), now, zone), node.identity)
-        askTheNetwork(id)
         synchronized(this) { state = RequestGossip.originate(state, r) }
         DiagLog.i(tag, "REQUEST " + r.id + " created in " + zone + ", expires in " + ((r.expiresAt - now) / 60_000) + " min: asking the phones around")
         save(); forwardTo(node.peers(), "new request"); syncSoon("request created")
+        // v0.17.2: only now, with the signed request stored, does the Brain hear about it
+        askTheNetwork(id)
         return r
     }
 
@@ -194,13 +195,17 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     private fun askTheNetwork(id: String) {
         if (!node.networkSync.configured) return
         val budget = node.buyBudgetCentimes
+        // v0.17.2: read the signed request from the store BEFORE going asynchronous, so
+        // the demand can never reach the Brain before the object it refers to exists here
+        val line = state.requests[id]?.let { NetRequest.encodeLine(it) } ?: return
         io.execute {
             try {
                 node.networkSync.createDemand(
                     id, budget,
                     // a buyer with nothing to spend is asking for free help, and must
                     // never be quietly matched to somebody who charges
-                    if (budget <= 0) "FREE" else "COMMERCIAL")
+                    if (budget <= 0) "FREE" else "COMMERCIAL",
+                    requestLine = line)
             } catch (e: Exception) { DiagLog.w(tag, "the network did not take the request: " + e.message) }
         }
     }
@@ -285,14 +290,27 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         node.networkSync.onJobs = { jobs ->
             val now = System.currentTimeMillis()
             for (j in jobs) {
-                // a Brain job is an opportunity like any other; Source.BRAIN already exists
-                val r = state.requests[j.demandId]
-                if (r != null) synchronized(this) {
-                    inbox = net.prok.proknet.core.ProviderInbox.offer(
-                        inbox, r, net.prok.proknet.core.ProviderInbox.Source.BRAIN, now)
+                // v0.17.2: the job carries the buyer's own signed request, already
+                // verified by NetworkBrainSync. v0.17.1 looked the request up in the
+                // gossip store instead - which two phones far apart have no reason to
+                // have exchanged, so the activation arrived and the provider saw nothing.
+                val r = j.request
+                synchronized(this) {
+                    // fold it into the normal request store too, so everything downstream
+                    // - eligibility, the card, the tombstone on cancel - behaves as it
+                    // always has for a locally gossiped request
+                    val (st, _) = net.prok.proknet.core.RequestGossip.receive(state, r, now, "brain")
+                    state = st
+                    inbox = net.prok.proknet.core.ProviderInbox.offerFromBrain(
+                        inbox, r, j.activationId, now)
                 }
             }
-            if (jobs.isNotEmpty()) { rebuildInbox("brain jobs"); alertNow() }
+            if (jobs.isNotEmpty()) {
+                save(); saveInbox()
+                rebuildInbox("brain jobs"); alertNow()
+                // and anything accepted here whose acknowledgement never reached the Brain
+                ackAcceptedBrainJobs(jobs)
+            }
         }
 
         node.networkSync.onDemand = { status ->
@@ -335,6 +353,39 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * A different buyer is never suppressed because another request was recent:
      * the old global two-minute cooldown lost real demand on the phones.
      */
+    /**
+     * v0.17.2: an acceptance that never reached the Brain, retried.
+     *
+     * The provider tapped PARTAGER, the acceptance was persisted, and the request failed -
+     * no signal, or the process died on the way. The Brain then still shows OFFERED, and
+     * the buyer is waiting on somebody who has in fact already agreed. So whenever a job
+     * comes back still OFFERED while the inbox says accepted, send it again. The server
+     * route is idempotent, and the provider is never asked to tap twice.
+     *
+     * If the Brain says the activation is genuinely finished, the opportunity is dropped
+     * so Gagner does not sit on a dead job for ever. A running SESSION is never touched:
+     * the control plane expiring is not a reason to stop somebody's Internet.
+     */
+    private fun ackAcceptedBrainJobs(jobs: List<net.prok.proknet.node.NetworkBrainSync.Job>) {
+        val stillOffered = jobs.filter { it.state == "OFFERED" }
+        if (stillOffered.isEmpty()) return
+        io.execute {
+            for (j in stillOffered) {
+                val o = inbox.items[j.demandId] ?: continue
+                if (!o.needsBrainAck() || o.brainActivationId != j.activationId) continue
+                DiagLog.i(tag, "re-sending an acceptance the network never received")
+                try {
+                    if (!node.networkSync.answer(j.activationId, true)) {
+                        // refused rather than unreachable: the job is over, so stop
+                        // showing it. The seller stays selling; only the card goes.
+                        synchronized(this) { inbox = ProviderInbox.remove(inbox, j.demandId) }
+                        saveInbox(); main.post { inboxChanged?.invoke() }
+                    }
+                } catch (e: Exception) { DiagLog.w(tag, "retry: " + e.message) }
+            }
+        }
+    }
+
     private fun alertNow() {
         val now = System.currentTimeMillis()
         val a = ProviderInbox.alert(inbox, now) ?: return
@@ -367,8 +418,22 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         DiagLog.i(tag, "PARTAGER accepted for " + id + ": starting the normal seller flow")
         val err = node.setSelling(true)
         if (err != null) { DiagLog.w(tag, "setSelling refused: " + err); return "Le partage n'a pas pu démarrer." }
+        // persisted BEFORE anything is sent, so a dying process or a dead network can
+        // never lose the fact that somebody pressed the button
         inbox = ProviderInbox.accept(inbox, id, now)
         saveInbox(); inboxChanged?.invoke()
+        // v0.17.2: and tell the Brain, off the main thread. Without this the activation
+        // stayed OFFERED for ever and the buyer waited on a provider that had in fact
+        // already agreed - the central failure of the whole product flow.
+        inbox.items[id]?.brainActivationId?.takeIf { it.isNotEmpty() }?.let { act ->
+            io.execute {
+                try {
+                    if (node.networkSync.answer(act, true))
+                        DiagLog.i(tag, "the network knows this phone accepted")
+                    else DiagLog.w(tag, "acceptance not delivered yet; it will be retried")
+                } catch (e: Exception) { DiagLog.w(tag, "acceptance: " + e.message) }
+            }
+        }
         syncSoon("provider activated")
         return null
     }
