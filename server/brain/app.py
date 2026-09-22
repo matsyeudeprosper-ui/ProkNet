@@ -43,7 +43,7 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.17.1"
+VERSION = "0.17.2"
 
 LOG = logging.getLogger("proknet.brain")
 
@@ -218,10 +218,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if p.startswith("/v1/network/jobs"):
             # a provider's own inbox, and only its own
+            # v0.17.2: each job carries the buyer's own signed request, so a provider
+            # that has never met that buyer can verify it locally and act on it. Private
+            # to the assigned provider - there is still no route that lists requests.
             self._json(200, {"jobs": [{
                 "activationId": j["activation_id"], "demandId": j["demand_id"],
                 "zone": j["zone"], "state": j["state"],
                 "createdAt": int(j["created_at"]), "expiresAt": int(j["expires_at"]),
+                "requestLine": j.get("request_line") or "",
             } for j in STATE.net.jobs_for_provider(who, now)]})
             return
 

@@ -35,6 +35,8 @@ somebody who owes that seller right now.
 import sqlite3
 import time
 
+from . import protocol
+
 # ---- how long things live ------------------------------------------------------------
 # Every one of these is a constant here rather than a literal at a call site, because a
 # pilot will want to change them without reading the matching code.
@@ -234,11 +236,28 @@ ADDED_V3 = (
     ("link_deadline", "INTEGER NOT NULL DEFAULT 0"),
 )
 
+#: v0.17.2 adds one column to `network_demand`: the buyer's own signed request.
+#:
+#: Until now a demand was an id and some fields the server filled in, and the provider was
+#: expected to already hold the matching `NetRequest` from the legacy gossip path. Two
+#: phones far apart have no reason to have exchanged anything, so the activation arrived
+#: and the provider had nothing to show. Carrying the signed line makes a job
+#: self-contained: the provider verifies the buyer's own signature and needs nobody else.
+#:
+#: Stored exactly as the buyer signed it. Never reconstructed, never re-signed.
+ADDED_V4 = (
+    ("request_line", "TEXT NOT NULL DEFAULT ''"),
+)
+
 #: The same thing as SQL, for the numbered migration. `ALTER TABLE ADD COLUMN` with a
 #: default does not rewrite the rows, so no activation can be lost on the way.
 MIGRATION_3 = "\n".join(
     "ALTER TABLE network_activation ADD COLUMN %s %s;" % (name, decl)
     for name, decl in ADDED_V3)
+
+MIGRATION_4 = "\n".join(
+    "ALTER TABLE network_demand ADD COLUMN %s %s;" % (name, decl)
+    for name, decl in ADDED_V4)
 
 
 class NetworkError(Exception):
@@ -312,6 +331,10 @@ class NetworkPlane:
             if name not in have:
                 self.db.execute("ALTER TABLE network_activation ADD COLUMN %s %s"
                                 % (name, decl))
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(network_demand)")}
+        for name, decl in ADDED_V4:
+            if name not in have:
+                self.db.execute("ALTER TABLE network_demand ADD COLUMN %s %s" % (name, decl))
         self.db.commit()
 
     # ---- events -------------------------------------------------------------------
@@ -459,6 +482,37 @@ class NetworkPlane:
                             (demand_id,)).fetchone()
         return dict(r) if r is not None else None
 
+    def check_request_line(self, line: str, demand_id: str, buyer_id: str, zone: str,
+                           now: int):
+        """The buyer's own signed request, checked before it is stored or handed on.
+
+        Everything here is checked because the provider will act on it without ever having
+        met this buyer. The identity check is the one that matters most: `verify_request`
+        only proves the line was signed by whoever owns `origin_pub`, so on its own a
+        signed request belonging to A could be submitted by B and would look fine.
+        Deriving the full node id from the public key and requiring it to equal the
+        **authenticated caller** is what stops that - and it is the full id, not the eight
+        hex characters of `origin_short`, because a short id is a prefix and prefixes
+        collide.
+        """
+        fields = line.split("\t")
+        r = protocol.parse_request(fields)
+        if r is None:
+            raise NetworkError("the signed request does not parse")
+        if not protocol.verify_request(r):
+            raise NetworkError("the signed request does not verify")
+        if protocol.node_id(r.origin_pub) != buyer_id:
+            raise NetworkError("that signed request belongs to somebody else")
+        if r.id != demand_id:
+            raise NetworkError("the signed request is not for this demand")
+        if not r.open:
+            raise NetworkError("the signed request is not open")
+        if r.expired(now):
+            raise NetworkError("the signed request has already expired")
+        if r.zone != zone:
+            raise NetworkError("the signed request is for another area")
+        return r
+
     def put_demand(self, buyer_id: str, body: dict, now: int) -> dict:
         """A buyer says it needs Internet and could not find any itself.
 
@@ -495,17 +549,25 @@ class NetworkPlane:
         if cool is not None and now < int(cool["until_ms"]):
             raise NetworkError("please wait a moment before asking again")
 
+        # v0.17.2: the buyer's own signed request travels with the demand, so a provider
+        # that has never met this buyer can verify it without the legacy gossip path.
+        request_line = str(body.get("requestLine", ""))
+        if request_line:
+            self.check_request_line(request_line, demand_id, buyer_id, zone, now)
+
         ttl = max(60_000, min(int(body.get("ttlMs", DEMAND_TTL_MS)), DEMAND_TTL_MS))
         with self.db:
             self.db.execute(
                 "INSERT INTO network_demand(demand_id, buyer_id, zone, created_at,"
                 " expires_at, updated_at, budget_centimes, requested_class,"
-                " connectivity_need, status, attempts) VALUES(?,?,?,?,?,?,?,?,?,?,0)",
+                " connectivity_need, status, attempts, request_line)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",
                 (demand_id, buyer_id, zone, now, now + ttl, now,
                  max(0, int(body.get("budgetCentimes", 0))), want,
-                 str(body.get("connectivityNeed", ""))[:32], CREATED))
+                 str(body.get("connectivityNeed", ""))[:32], CREATED, request_line))
             self.note("demand.created", demand_id, zone, now)
-        return {"ok": True, "demandId": demand_id, "status": CREATED, "expiresAt": now + ttl}
+        return {"ok": True, "demandId": demand_id, "status": CREATED, "expiresAt": now + ttl,
+                "carriesRequest": bool(request_line)}
 
     def set_demand_status(self, demand_id: str, to: str, now: int, why: str = "") -> bool:
         """Move a demand, only along a path that exists.
@@ -609,8 +671,10 @@ class NetworkPlane:
     def jobs_for_provider(self, provider_id: str, now: int, limit: int = 10):
         """A provider's own inbox, and only its own."""
         rows = [dict(r) for r in self.db.execute(
-            "SELECT * FROM network_activation WHERE provider_id=? AND state IN (?,?,?)"
-            " ORDER BY created_at LIMIT ?",
+            "SELECT a.*, d.request_line AS request_line FROM network_activation a"
+            " LEFT JOIN network_demand d ON d.demand_id = a.demand_id"
+            " WHERE a.provider_id=? AND a.state IN (?,?,?)"
+            " ORDER BY a.created_at LIMIT ?",
             (provider_id, OFFERED, ACCEPTED, LOCAL_LINK_SEEN, limit))]
         return [a for a in rows if now < self.deadline_of(a)]
 

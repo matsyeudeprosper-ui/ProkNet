@@ -50,6 +50,10 @@ MIGRATIONS = [
     # from the short window it had to answer in. Additive only: two columns with defaults,
     # so no existing activation, demand or financial row is touched.
     network.MIGRATION_3,
+    # 4: v0.17.2. A demand carries the buyer's own signed NetRequest, so a provider that
+    # has never met the buyer can verify the request itself. Additive: one column with a
+    # default, so every existing demand, activation and financial row is untouched.
+    network.MIGRATION_4,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000
