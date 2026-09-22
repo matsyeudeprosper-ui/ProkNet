@@ -167,6 +167,30 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * A failure here costs nothing: the local gossip request has already been created and
      * carried, and the Brain's copy is simply absent until the next sync picks it up.
      */
+    /**
+     * v0.17.1: the transport reached a milestone worth telling the Brain about.
+     *
+     * Off the main thread and best-effort: a status upload that fails must never end a
+     * working session, so this can only ever log. Also the point where a local connection
+     * makes the network's coordination obsolete - the Brain is not a reservation system,
+     * and whichever provider actually worked is the one that counts.
+     */
+    fun onLocalLink(e: net.prok.proknet.core.NetworkAccess.LinkEvent) {
+        if (!node.networkSync.configured) return
+        io.execute {
+            try {
+                when (e) {
+                    net.prok.proknet.core.NetworkAccess.LinkEvent.INTERNET_UP ->
+                        node.networkSync.localConnectionWon(node.networkSync.myActivation)
+                    else -> {
+                        val act = node.networkSync.myActivation
+                        if (act.isNotEmpty()) node.networkSync.report(act, e)
+                    }
+                }
+            } catch (ex: Exception) { DiagLog.w(tag, "status: " + ex.message) }
+        }
+    }
+
     private fun askTheNetwork(id: String) {
         if (!node.networkSync.configured) return
         val budget = node.buyBudgetCentimes

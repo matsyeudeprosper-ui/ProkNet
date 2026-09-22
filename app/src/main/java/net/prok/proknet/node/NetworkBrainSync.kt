@@ -126,6 +126,7 @@ class NetworkBrainSync(
         if (!running.compareAndSet(false, true)) return
         try {
             heartbeat(now)
+            reconcile()
             pollDemand()
             pollJobs()
             refreshZone()
@@ -214,6 +215,38 @@ class NetworkBrainSync(
         return demandId
     }
 
+    /**
+     * v0.17.1: after a restart, ask the Brain what we were waiting for.
+     *
+     * The demand id lives in memory, so a process death loses it - and a phone that comes
+     * back saying "Recherche d'Internet…" with no demand, or worse creating a second one,
+     * would be both wrong and rude to whichever provider it woke. The server is the
+     * authority: `GET /v1/network/demand` with no id answers with this buyer's live
+     * request, if it has one.
+     *
+     * Deliberately not a local database. One request round-trip on start is simpler than
+     * a table, cannot disagree with the server, and if the Brain is unreachable the honest
+     * answer is that we do not know - which is also the answer a stale local copy would
+     * have been hiding.
+     */
+    fun reconcile() {
+        if (!configured || demandId.isNotEmpty()) return
+        try {
+            val (code, text) = get("/v1/network/demand")
+            if (code !in 200..299) return
+            val id = BrainPayload.field(text, "demandId")
+            val status = BrainPayload.field(text, "status")
+            if (id.isEmpty() || status.isEmpty()) return
+            demandId = id
+            demandStatus = status
+            DiagLog.i(tag, "picked my Internet request back up: " + status)
+            onDemand?.invoke(status)
+        } catch (e: Exception) {
+            // no demand restored and none invented; the next run tries again
+            DiagLog.w(tag, "could not ask about my request: " + e.message)
+        }
+    }
+
     private fun pollDemand() {
         if (demandId.isEmpty()) return
         val (code, text) = get("/v1/network/demand?id=" + demandId)
@@ -230,6 +263,37 @@ class NetworkBrainSync(
             demandId = ""
         }
     }
+
+    /**
+     * v0.17.1: a local path came up, so the network coordination is obsolete.
+     *
+     * The Brain is not a reservation system. Fast usable Internet wins, whoever provided
+     * it - if the Brain activated A and local discovery found B first, B is used and the
+     * demand closes. Reporting the result first, then cancelling, so the matcher still
+     * learns that its suggestion worked when it was the one that worked.
+     *
+     * Every step is best-effort. This runs after a session is already up, and nothing
+     * here may fail in a way that touches it.
+     */
+    fun localConnectionWon(activationId: String = "") {
+        if (!configured) return
+        try {
+            if (activationId.isNotEmpty())
+                report(activationId, NetworkAccess.LinkEvent.INTERNET_UP)
+            if (demandId.isNotEmpty()) {
+                DiagLog.i(tag, "connected locally; withdrawing the network request")
+                cancelDemand()
+            }
+        } catch (e: Exception) {
+            // the session is up and stays up; the Brain's copy expires on its own
+            DiagLog.w(tag, "could not withdraw the request: " + e.message)
+        }
+    }
+
+    /** The activation this phone is currently working on, or empty. */
+    val myActivation: String get() = jobs.firstOrNull {
+        it.state == "ACCEPTED" || it.state == "LOCAL_LINK_SEEN"
+    }?.activationId ?: ""
 
     /** The buyer nudges the matcher, used when a provider declined or went quiet. */
     fun nudge() {

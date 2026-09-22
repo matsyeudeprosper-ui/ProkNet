@@ -268,7 +268,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                     if (peer == null || !node.hasKey(peer.shortId)) return          // its key is on the way; next tick
                     DiagLog.i(tag, "GET INTERNET decision: " + c.name + " via " + c.way + " at " + CoverageModel.priceWord(c.priceCentimesPerMb) + ": " + d.reason)
                     val found = InternetRequest.apply(r, d, now)
-                    if (node.buy(peer)) update(InternetRequest.connecting(found, now))
+                    if (node.buy(peer)) {
+                        update(InternetRequest.connecting(found, now))
+                        network.onLocalLink(NetworkAccess.LinkEvent.PEER_SEEN)
+                    }
                     else update(InternetRequest.failed(found, node.lastBuyError.ifEmpty { "cannot start the purchase" }, now))
                 } else if (r.state == InternetRequest.State.SEARCHING && now - requestStartedAt > SEARCH_WINDOW_MS) {
                     DiagLog.i(tag, "GET INTERNET: nothing usable after " + (SEARCH_WINDOW_MS / 1000) + " s: " + d.reason + "; asking the network")
@@ -279,10 +282,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             }
             InternetRequest.State.DIRECT_SOURCE_FOUND, InternetRequest.State.CONNECTING -> {
                 val b = buyerState()
-                if (b == ProductState.Buyer.ONLINE) { update(InternetRequest.online(r, now)); r.sourceId?.let { cover.onSuccess(it) }; network.end(r.id, NetRequest.State.FULFILLED) }
+                if (b == ProductState.Buyer.ONLINE) {
+                    update(InternetRequest.online(r, now)); r.sourceId?.let { cover.onSuccess(it) }
+                    // v0.17.1: local Internet is up. Tell the Brain it worked, then close
+                    // the demand - whichever provider actually carried it is the one that
+                    // counts, and nobody else should still be woken for this.
+                    network.onLocalLink(NetworkAccess.LinkEvent.INTERNET_UP)
+                    network.end(r.id, NetRequest.State.FULFILLED)
+                }
                 else if (b == ProductState.Buyer.LOST || (b == ProductState.Buyer.IDLE && !buyerOn())) {
                     lostDismissed = false
-                    update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now)); network.end(r.id, NetRequest.State.CANCELLED)
+                    update(InternetRequest.failed(r, ProductState.lostHint(buyError()), now))
+                    network.onLocalLink(NetworkAccess.LinkEvent.LINK_FAILED)
+                    network.end(r.id, NetRequest.State.CANCELLED)
                 }
             }
             else -> {}
