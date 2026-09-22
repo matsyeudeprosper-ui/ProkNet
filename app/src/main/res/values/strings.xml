@@ -294,6 +294,8 @@ INTERNET</string>
 
     <!-- v0.12.5 the strip and the cards -->
     <string name="strip_sources">sources</string>
+    <!-- v0.17.1: the network around you -->
+    <string name="home_net_caption">INTERNET AUTOUR DE VOUS</string>
     <string name="strip_price">prix</string>
     <string name="strip_last">dernière fois</string>
     <string name="row_share_short">Partager</string>

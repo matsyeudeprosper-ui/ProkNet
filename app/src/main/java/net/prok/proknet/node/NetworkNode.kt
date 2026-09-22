@@ -47,7 +47,31 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         private set
     /** v0.13.3: the one source of truth behind the notification AND the Gagner card. */
     @Volatile var inbox: ProviderInbox.State = ProviderInbox.State()
+
         private set
+
+    /**
+     * v0.17.1: the network's own events, for Activité. Durable, deduplicated, and not in
+     * the SQLite database - this is coordination history, not signed evidence, and
+     * `RequestGossip` and `ProviderInbox` already keep their state this way.
+     */
+    @Volatile var history: net.prok.proknet.core.NetworkHistory.State =
+        net.prok.proknet.core.NetworkHistory.State()
+    private val historyFile = File(context.filesDir, "network.history.v1.txt")
+
+    fun saveHistory() {
+        io.execute {
+            try { historyFile.writeText(net.prok.proknet.core.NetworkHistory.encode(history)) }
+            catch (e: Exception) { DiagLog.w(tag, "history: " + e.message) }
+        }
+    }
+
+    private fun loadHistory() {
+        try {
+            if (historyFile.exists())
+                history = net.prok.proknet.core.NetworkHistory.decode(historyFile.readText())
+        } catch (e: Exception) { DiagLog.w(tag, "history: " + e.message) }
+    }
     @Volatile private var retry = ControlRetry.State()
     private val inboxFile = File(context.filesDir, "opportunities.v1.txt")
     /** Show one aggregated alert; the hook answers whether it could be shown. */
@@ -430,6 +454,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         // v0.15.3: the node owns the settlement queue; NetworkNode owns the server address
         node.brainUrlProvider = { brainUrl }
         node.zoneProvider = { cover.zone() }
+        loadHistory()
         wireControlPlane()
         // v0.16.0: anything booked before the queue existed, or abandoned by the old
         // twelve-attempt limit, is picked up again on every start

@@ -36,6 +36,8 @@ import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.DestinationClaim
 import net.prok.proknet.core.EarnUi
+import net.prok.proknet.core.NetworkAccess
+import net.prok.proknet.core.NetworkHistory
 import net.prok.proknet.core.Evidence
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
@@ -289,6 +291,67 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     private fun update(r: InternetRequest.Request) { request = r; cover.recordRequest(r) }
 
+    /**
+     * v0.17.1: what the network around you is doing, in one line.
+     *
+     * Reads the single `NetworkAccess` model rather than inventing screen flags, and takes
+     * the honest state: the LOCAL transport decides CONNECTED, the Brain only decides what
+     * it is trying. So this can say "un fournisseur se prépare" while saying nothing at all
+     * about Internet being available - which is the point.
+     */
+    private fun networkSnapshot(now: Long): NetworkAccess.Snapshot {
+        val sync = node.networkSync
+        val zone = NetworkAccess.mergeZone(
+            local = cover.hereStatus(),
+            brain = sync.zoneStatus,
+            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
+            localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
+
+        // the decision itself is pure and shared with the tests; this only gathers the
+        // facts the screen can see
+        return NetworkAccess.homeState(
+            internetUp = buyerState() == ProductState.Buyer.ONLINE,
+            linkComingUp = request?.state == InternetRequest.State.CONNECTING ||
+                request?.state == InternetRequest.State.DIRECT_SOURCE_FOUND,
+            searchingLocally = request?.state == InternetRequest.State.SEARCHING,
+            lastAttemptFailed = request?.state == InternetRequest.State.FAILED,
+            demandId = sync.demandId,
+            demandStatus = sync.demandStatus,
+            zone = zone,
+            brainOffline = sync.configured && !sync.reachable,
+            now = now,
+            requestStartedAt = requestStartedAt)
+    }
+
+    private fun renderNetworkCard(now: Long = System.currentTimeMillis()) {
+        val s = networkSnapshot(now)
+        text(R.id.homeNetTitle, NetworkAccess.title(s))
+        val sub = NetworkAccess.hint(s)
+        text(R.id.homeNetSub, sub)
+        v<android.widget.TextView>(R.id.homeNetSub).visibility =
+            if (sub.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        // the dot is the zone colour, which is a hint about the area and never a promise
+        v<android.widget.TextView>(R.id.homeNetTitle).setCompoundDrawablesRelativeWithIntrinsicBounds(
+            when (s.zone) {
+                Coverage.ZoneStatus.GREEN -> R.drawable.dot_ok
+                Coverage.ZoneStatus.YELLOW -> R.drawable.dot_warn
+                Coverage.ZoneStatus.RED -> R.drawable.dot_muted
+            }, 0, 0, 0)
+        // and the history gets one line per real transition, never one per poll
+        if (s.demandId.isNotEmpty() && node.networkSync.demandStatus.isNotEmpty())
+            noteNetworkEvent(s.demandId, node.networkSync.demandStatus, now)
+    }
+
+    /** One Activité line per logical transition, however often the Brain repeats itself. */
+    private fun noteNetworkEvent(demandId: String, status: String, now: Long) {
+        val before = network.history
+        val after = NetworkHistory.onStatus(before, demandId, status, now)
+        if (after !== before) {
+            network.history = after
+            network.saveHistory()
+        }
+    }
+
     private fun stopAll() {
         val now = System.currentTimeMillis()
         request?.let { if (!it.terminal) { update(InternetRequest.cancelled(it, now)); network.end(it.id, NetRequest.State.CANCELLED) } }
@@ -363,6 +426,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun refreshHome(b: ProductState.Buyer, s: ProductState.Seller, running: Boolean) {
+        // v0.17.1: drawn every tick, so it follows the demand, the activation, the zone,
+        // local discovery, the transport and the sync result without a screen change
+        renderNetworkCard()
         text(R.id.chipNode, getString(if (running) R.string.node_on else R.string.node_off))
         v<TextView>(R.id.chipNode).setCompoundDrawablesRelativeWithIntrinsicBounds(if (running) R.drawable.dot_ok else R.drawable.dot_muted, 0, 0, 0)
         val now = System.currentTimeMillis()
@@ -506,6 +572,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     // ---- map -------------------------------------------------------------------------------------------
 
+    /** The merged colour for the zone this phone is in. One rule, used by map and Home. */
+    private fun brainMergedStatus(local: Coverage.ZoneStatus, now: Long): Coverage.ZoneStatus {
+        val sync = node.networkSync
+        return NetworkAccess.mergeZone(
+            local = local,
+            brain = sync.zoneStatus,
+            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
+            localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
+    }
+
     private fun refreshMap() {
         val now = System.currentTimeMillis()
         val cells = cover.cells(); val zone = cover.zone(); val reach = cover.reachableIds()
@@ -515,14 +591,29 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             if (s.kind == CoverageModel.SourceKind.WIFI && (s.name == "Wi-Fi" || s.name.isEmpty())) getString(R.string.map_wifi_connected)
             else if (s.kind == CoverageModel.SourceKind.WIFI) "Wi-Fi " + s.name else s.name }
         val marks = sources.map { CoverageMapView.Mark(it.id, nameOf(it), statusOf(it), now - it.lastSeen) }
-        v<CoverageMapView>(R.id.mapView).set(cells, zone, marks)
+        // the cell this phone is standing in carries the merged colour, so the map and
+        // the Home card can never disagree about where you are
+        val merged = if (CoverageModel.zoneIndex(zone) == null) cells else cells.map {
+            if (it.zoneId != zone) it else it.copy(status = brainMergedStatus(it.status, now))
+        }
+        v<CoverageMapView>(R.id.mapView).set(merged, zone, marks)
         val located = CoverageModel.zoneIndex(zone) != null
         text(R.id.mapHint, getString(if (located) R.string.map_grid_hint else R.string.map_radar_hint))
         val nowCount = marks.count { it.status == Coverage.ZoneStatus.GREEN }
         val recentCount = marks.count { it.status == Coverage.ZoneStatus.YELLOW }
         text(R.id.mapNow, nowCount.toString()); text(R.id.mapRecent, recentCount.toString())
-        val here = CoverageModel.hereStatus(cells, zone)
-        text(R.id.mapHereTitle, CoverageModel.cellWord(here))
+        // v0.17.1: this zone's colour is local observation MERGED with what the Brain
+        // knows, never one replacing the other. A source this phone can see outranks the
+        // server's opinion about the area, and a Brain answer older than five minutes is
+        // discarded rather than shown - a zone must not stay green because somebody was
+        // there yesterday.
+        val sync = node.networkSync
+        val here = NetworkAccess.mergeZone(
+            local = CoverageModel.hereStatus(cells, zone),
+            brain = sync.zoneStatus,
+            brainAgeMs = if (sync.lastOk == 0L) Long.MAX_VALUE else now - sync.lastOk,
+            localDirectUsable = buyerState() == ProductState.Buyer.ONLINE)
+        text(R.id.mapHereTitle, NetworkAccess.zoneLabel(here))
         text(R.id.mapHereSub, when {
             !cover.hasLocationPermission() -> getString(R.string.map_place_sub)
             !located -> getString(R.string.map_no_fix)
@@ -769,6 +860,21 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                 positive = seller,
                 chip = ActivityUi.chip(settled, free, seller),
                 tone = ActivityUi.tone(settled, free)))
+        }
+        // v0.17.1: the network's own events, in ordinary French, one per real transition.
+        // NetworkHistory has already deduplicated them, so a buyer polling every few
+        // seconds cannot fill this screen with "Recherche Internet".
+        for (h in network.history.visible) {
+            val word = (if (h.at >= today) timeFmt else dateFmt).format(Date(h.at))
+            rows.add(h.at to ActivityUi.Row(
+                sessionHex = h.key,
+                kind = ActivityUi.Kind.CARRIED,
+                title = h.line,
+                subtitle = word,
+                amount = "",
+                positive = false,
+                chip = "",
+                tone = WalletUi.Tone.NEUTRAL))
         }
         val groups = ActivityUi.group(rows, now)
         val list = v<LinearLayout>(R.id.activityList); list.removeAllViews()

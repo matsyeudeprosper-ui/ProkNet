@@ -59,6 +59,60 @@ object NetworkAccess {
     }
 
     /**
+     * v0.17.1: how long a zone answer from the Brain may be believed.
+     *
+     * Shorter than the server's own presence window on purpose. The phone is reading a
+     * cached answer over a connection that may have died minutes ago, so its confidence
+     * has to decay faster than the thing it describes. A zone that was green yesterday is
+     * not green now.
+     */
+    const val BRAIN_ZONE_FRESH_MS = 5 * 60_000L
+
+    /**
+     * v0.17.1: one colour for a zone, from everything we know about it.
+     *
+     * The precedence matters more than the code. **Local observation outranks the Brain**,
+     * because a source this phone can actually see is stronger evidence than a server's
+     * opinion about the neighbourhood - and because the Brain's answer is a cached hint
+     * that ages, while a usable source in front of you does not.
+     *
+     * 1. a local source that works right now -> GREEN, whatever the Brain thinks;
+     * 2. a fresh Brain GREEN -> GREEN;
+     * 3. anything anyone still considers a candidate -> YELLOW;
+     * 4. nothing useful and nothing fresh -> RED.
+     *
+     * A stale Brain answer is discarded rather than downgraded one step, because there is
+     * no honest middle ground between "somebody was there five minutes ago" and "somebody
+     * is there" - and leaving yesterday's provider showing green is the specific thing
+     * this is written to prevent.
+     */
+    fun mergeZone(
+        local: Coverage.ZoneStatus,
+        brain: Coverage.ZoneStatus,
+        brainAgeMs: Long,
+        localDirectUsable: Boolean = false,
+    ): Coverage.ZoneStatus {
+        val brainFresh = brainAgeMs in 0 until BRAIN_ZONE_FRESH_MS
+        val b = if (brainFresh) brain else Coverage.ZoneStatus.RED
+        return when {
+            localDirectUsable -> Coverage.ZoneStatus.GREEN
+            local == Coverage.ZoneStatus.GREEN -> Coverage.ZoneStatus.GREEN
+            b == Coverage.ZoneStatus.GREEN -> Coverage.ZoneStatus.GREEN
+            local == Coverage.ZoneStatus.YELLOW || b == Coverage.ZoneStatus.YELLOW ->
+                Coverage.ZoneStatus.YELLOW
+            else -> Coverage.ZoneStatus.RED
+        }
+    }
+
+    /**
+     * Whether a Brain zone answer is still worth showing at all.
+     *
+     * Exposed so a screen can decide to say nothing rather than say something stale.
+     */
+    fun brainZoneFresh(brainAgeMs: Long): Boolean =
+        brainAgeMs in 0 until BRAIN_ZONE_FRESH_MS
+
+    /**
      * Everything a screen needs, and nothing it does not.
      *
      * No provider id, because no screen should show one - a buyer is told somebody is
@@ -216,6 +270,55 @@ object NetworkAccess {
         }
         val id = if (next == State.IDLE || next == State.FAILED) "" else demandId
         return Snapshot(next, id, waited, s.zone, s.brainOffline)
+    }
+
+    /**
+     * v0.17.1: the whole Home decision, as one pure function.
+     *
+     * `MainActivity` needs a `Context` and cannot run off a phone, so the decision lives
+     * here and the screen only draws the result. A test therefore exercises the same
+     * function the screen runs, rather than a parallel copy of the reasoning - which is
+     * the only way "PROVIDER_ACCEPTED shows *Un fournisseur se prépare*" can actually be
+     * verified rather than asserted about a string constant.
+     *
+     * The order of the branches IS the honesty rule:
+     *
+     * 1. the transport says Internet works -> CONNECTED. Nothing else can produce this.
+     * 2. the transport is bringing a link up -> CONNECTING.
+     * 3. a Brain demand is live -> whatever the Brain says it is.
+     * 4. searching locally -> SEARCHING.
+     * 5. the last attempt failed -> FAILED.
+     * 6. otherwise -> IDLE, described by the zone.
+     *
+     * @param internetUp the transport's own verdict, and the only route to CONNECTED.
+     * @param linkComingUp a peer is being connected to right now.
+     * @param demandStatus the Brain's word for our demand, empty when there is none.
+     */
+    fun homeState(
+        internetUp: Boolean,
+        linkComingUp: Boolean,
+        searchingLocally: Boolean,
+        lastAttemptFailed: Boolean,
+        demandId: String,
+        demandStatus: String,
+        zone: Coverage.ZoneStatus,
+        brainOffline: Boolean,
+        now: Long,
+        requestStartedAt: Long = 0,
+    ): Snapshot {
+        val base = idle(zone)
+        val s = when {
+            internetUp -> onLink(base, LinkEvent.INTERNET_UP, now)
+            linkComingUp -> onLink(base, LinkEvent.PEER_SEEN, now)
+            demandId.isNotEmpty() && demandStatus.isNotEmpty() -> onDemandStatus(
+                searching(demandId, now, zone, brainOffline), demandStatus, demandId, now,
+                requestStartedAt)
+            demandId.isNotEmpty() -> searching(demandId, now, zone, brainOffline)
+            searchingLocally -> searching("", now, zone, brainOffline)
+            lastAttemptFailed -> Snapshot(State.FAILED, "", 0, zone, brainOffline)
+            else -> base
+        }
+        return withBrainOffline(withZone(s, zone), brainOffline)
     }
 
     /** A local source is usable right now, so nothing else matters. */

@@ -36,6 +36,13 @@
                     <Button android:id="@+id/btnHomeStop" android:text="@string/stop_big" style="@style/DangerButton" android:layout_marginTop="20dp" />
                 </LinearLayout>
 
+                <!-- v0.17.1: what the network around you is doing. One line, always true. -->
+                <LinearLayout android:id="@+id/homeNet" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp" android:layout_marginBottom="14dp" android:clickable="true" android:focusable="true">
+                    <TextView android:id="@+id/homeNetCaption" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/home_net_caption" style="@style/Caption" />
+                    <TextView android:id="@+id/homeNetTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="" android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" android:drawablePadding="10dp" android:gravity="center_vertical" />
+                    <TextView android:id="@+id/homeNetSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" android:textSize="13sp" android:textColor="@color/text_muted" android:visibility="gone" />
+                </LinearLayout>
+
                 <!-- one strip: three values at a glance -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:background="@drawable/bg_strip" android:paddingTop="12dp" android:paddingBottom="12dp" android:layout_marginBottom="14dp">
                     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center">
