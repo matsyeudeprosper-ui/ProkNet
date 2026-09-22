@@ -41,12 +41,22 @@ object ProviderInbox {
          * Empty for a local opportunity, which has no activation behind it.
          */
         val brainActivationId: String = "",
+        /**
+         * v0.17.3: the Brain has confirmed this acceptance.
+         *
+         * Without it `needsBrainAck()` was true for the whole life of the opportunity, so
+         * every later poll was a candidate for a pointless re-acknowledgement, and nothing
+         * on disk could say the difference between "agreed, told" and "agreed, not told
+         * yet" after a restart. The server's own job state is still the authority; this is
+         * the phone's durable memory of what that authority last said.
+         */
+        val brainAcked: Boolean = false,
     ) {
         val local: Boolean get() = source == Source.LOCAL
         fun expired(now: Long): Boolean = now >= expiresAt
 
-        /** Accepted here, but the Brain has not been told yet. */
-        fun needsBrainAck(): Boolean = accepted && brainActivationId.isNotEmpty()
+        /** Accepted here, and the Brain has not confirmed it. */
+        fun needsBrainAck(): Boolean = accepted && brainActivationId.isNotEmpty() && !brainAcked
     }
 
     data class State(
@@ -84,16 +94,21 @@ object ProviderInbox {
         val existing = st.items[r.id]
         val next = offer(st, r, Source.BRAIN, now)
         val o = next.items[r.id] ?: return next
+        val sameActivation = existing != null && existing.brainActivationId == activationId
         return next.copy(items = next.items + (r.id to o.copy(
             brainActivationId = activationId,
-            accepted = o.accepted || (existing?.accepted ?: false))))
+            accepted = o.accepted || (existing?.accepted ?: false),
+            // a NEW activation for the same buyer has certainly not been acknowledged;
+            // the same one coming back keeps whatever the Brain last told us
+            brainAcked = sameActivation && (existing?.brainAcked ?: false))))
     }
 
     fun offer(st: State, r: NetRequest.Request, source: Source, now: Long): State {
         val cur = st.items[r.requestKey()]
         if (cur != null && r.generation <= cur.generation) return st
         val o = Opportunity(r.id, r.originShort, source, r.zone, cur?.receivedAt ?: now, r.expiresAt, r.generation,
-            notifiedAt = cur?.notifiedAt ?: 0, accepted = cur?.accepted ?: false)
+            notifiedAt = cur?.notifiedAt ?: 0, accepted = cur?.accepted ?: false,
+            brainActivationId = cur?.brainActivationId ?: "", brainAcked = cur?.brainAcked ?: false)
         return st.copy(items = st.items + (r.id to o))
     }
 
@@ -103,6 +118,16 @@ object ProviderInbox {
 
     fun accept(st: State, requestId: String, now: Long): State =
         st.items[requestId]?.let { st.copy(items = st.items + (requestId to it.copy(accepted = true))) } ?: st
+
+    /**
+     * v0.17.3: the Brain has this acceptance; stop trying to give it again.
+     *
+     * [acked] false is a real move too - a job that comes back OFFERED means the server
+     * does NOT have it, whatever this phone last believed, so the retry must come back on.
+     */
+    fun brainAcked(st: State, requestId: String, acked: Boolean = true): State =
+        st.items[requestId]?.takeIf { it.brainAcked != acked }
+            ?.let { st.copy(items = st.items + (requestId to it.copy(brainAcked = acked))) } ?: st
 
     /** Expired opportunities leave by themselves: no stale demand card, ever. */
     fun sweep(st: State, now: Long): State {
@@ -204,7 +229,7 @@ object ProviderInbox {
         val sb = StringBuilder("V\t1\n")
         for (o in st.items.values.sortedBy { it.receivedAt })
             sb.append("O\t").append(listOf(o.requestId, o.originShort, o.source.name, o.zone.replace("\t", " "), o.receivedAt, o.expiresAt,
-                o.generation, o.notifiedAt, o.accepted, o.brainActivationId).joinToString("\t")).append('\n')
+                o.generation, o.notifiedAt, o.accepted, o.brainActivationId, o.brainAcked).joinToString("\t")).append('\n')
         return sb.toString()
     }
 
@@ -214,13 +239,16 @@ object ProviderInbox {
             if (line.length < 2 || line[0] != 'O') continue
             try {
                 val f = line.substring(2).split('\t')
-                // v0.17.2 appended a tenth field. A file written by build 69 has nine and
-                // must still load: an old install losing its inbox on upgrade would drop
-                // requests a provider had already agreed to.
+                // v0.17.2 appended a tenth field and v0.17.3 an eleventh. A file written
+                // by build 69 has nine and by build 70 has ten, and both must still load:
+                // an old install losing its inbox on upgrade would drop requests a
+                // provider had already agreed to. A missing eleventh field reads as "not
+                // acknowledged", which costs one idempotent retry and never a lost tap.
                 if (f.size >= 9) items[f[0]] = Opportunity(
                     f[0], f[1], Source.valueOf(f[2]), f[3], f[4].toLong(), f[5].toLong(),
                     f[6].toInt(), f[7].toLong(), f[8].toBoolean(),
-                    if (f.size >= 10) f[9] else "")
+                    if (f.size >= 10) f[9] else "",
+                    f.size >= 11 && f[10].toBoolean())
             } catch (_: Exception) { /* one bad line never loses the rest */ }
         }
         return State(items)

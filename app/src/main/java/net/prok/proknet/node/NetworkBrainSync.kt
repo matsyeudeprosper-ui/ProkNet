@@ -3,12 +3,15 @@ package net.prok.proknet.node
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
+import net.prok.proknet.core.BrainAck
+import net.prok.proknet.core.BrainAnswer
 import net.prok.proknet.core.BrainPayload
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.NetRequest
 import net.prok.proknet.core.NetworkAccess
+import net.prok.proknet.core.ProviderPresence
 import net.prok.proknet.core.SignedApi
 
 /**
@@ -106,8 +109,14 @@ class NetworkBrainSync(
 
     // ---- hooks the node wires up ----------------------------------------------------------
 
-    /** True while this phone genuinely could and would share. Asked, never assumed. */
-    @Volatile var presenceHook: (() -> Presence?)? = null
+    /**
+     * What this phone can honestly offer right now. Asked, never assumed.
+     *
+     * v0.17.3: the decision itself lives in [ProviderPresence], so the test and the phone
+     * run the same function. Build 70 made it inline and it was wrong in a way no unit
+     * test could reach.
+     */
+    @Volatile var presenceHook: (() -> ProviderPresence.State?)? = null
 
     /** Called when the Brain reports a new status for our demand. */
     @Volatile var onDemand: ((String) -> Unit)? = null
@@ -115,20 +124,16 @@ class NetworkBrainSync(
     /** Called with jobs offered to this phone, so the existing inbox can show them. */
     @Volatile var onJobs: ((List<Job>) -> Unit)? = null
 
-    class Presence(
-        val zone: String,
-        val upstreamAvailable: Boolean,
-        val upstreamClass: String,
-        val sharingEnabled: Boolean,
-        val commercialReady: Boolean,
-        val freeReady: Boolean,
-        val sponsoredReady: Boolean,
-        val currentLoad: Int,
-        val maxBuyers: Int,
-        val offerClass: String,
-        /** Internal only. The buyer never sees a per-MB figure. */
-        val priceHintInternal: Int,
-    )
+    /**
+     * v0.17.3: called after EVERY successful job poll, changed list or not.
+     *
+     * [onJobs] is the UI path and is skipped when nothing moved. Acknowledgement
+     * reconciliation is not a UI concern and must never be skipped: the exact recovery
+     * case is a job that comes back with the SAME id in the SAME state because the
+     * acceptance never arrived, and build 70's early return made that case unreachable -
+     * the provider's tap could stay stuck for ever while every poll succeeded.
+     */
+    @Volatile var onJobsSeen: ((List<Job>) -> Unit)? = null
 
     private var backoffMs = MIN_BACKOFF_MS
     private var nextAllowed = 0L
@@ -176,7 +181,10 @@ class NetworkBrainSync(
     private fun heartbeat(now: Long) {
         val p = presenceHook?.invoke()
         if (p == null || p.zone.isEmpty()) return
-        if (!p.sharingEnabled || !p.upstreamAvailable) {
+        // v0.17.3: a WILLING phone keeps its presence alive even while it is full, so a
+        // covered zone does not look empty the moment somebody is being served. Only an
+        // unwilling phone - opted out, no Internet, no path - withdraws.
+        if (!p.shouldPublish) {
             // withdrawing at once is kinder than going stale: a buyer matched to a phone
             // that has stopped sharing wastes a real walk to a kiosk
             if (lastHeartbeat != 0L) {
@@ -190,7 +198,12 @@ class NetworkBrainSync(
             "zone" to p.zone,
             "upstreamAvailable" to p.upstreamAvailable,
             "upstreamClass" to p.upstreamClass,
-            "sharingEnabled" to p.sharingEnabled,
+            // v0.17.3: on the wire this field means "you may ask this phone", which is
+            // what the matcher needs - NOT "this phone is already serving somebody",
+            // which is what build 70 sent and which made an idle provider invisible.
+            // Whether there is room is carried honestly by currentLoad / maxBuyers, which
+            // the Brain has always checked separately.
+            "sharingEnabled" to p.availableForActivation,
             "commercialReady" to p.commercialReady,
             "freeReady" to p.freeReady,
             "sponsoredReady" to p.sponsoredReady,
@@ -383,7 +396,10 @@ class NetworkBrainSync(
 
     private fun pollJobs() {
         val p = presenceHook?.invoke()
-        if (p == null || !p.sharingEnabled) return
+        // v0.17.3: WILLING, not available-for-activation. A provider that has just
+        // accepted is full, and gating the poll on having room would stop exactly the
+        // phone whose acknowledgement still has to be reconciled.
+        if (p == null || !p.willing) return
         val (code, text) = get("/v1/network/jobs")
         if (code !in 200..299) return
         val now = System.currentTimeMillis()
@@ -412,7 +428,16 @@ class NetworkBrainSync(
                 (o["createdAt"] ?: "0").toLongOrNull() ?: 0L,
                 (o["expiresAt"] ?: "0").toLongOrNull() ?: 0L, r)
         }
-        if (found.map { it.activationId } == jobs.map { it.activationId }) return
+        // v0.17.3: reconciliation FIRST, and unconditionally. The failure this prevents:
+        // the provider taps PARTAGER, the accept request dies on the way, the next poll
+        // returns the same activation in the same OFFERED state - and build 70 returned
+        // early because the list had not changed, so the retry never ran and the buyer
+        // waited for ever on somebody who had already agreed.
+        try { onJobsSeen?.invoke(found) } catch (e: Exception) { DiagLog.w(tag, "reconcile: " + e.message) }
+        // the UI path may still be skipped when genuinely nothing moved. A state change
+        // counts as movement: OFFERED becoming ACCEPTED is the same id and a different fact.
+        val key = { l: List<Job> -> BrainAck.movementKey(l.map { it.activationId to it.state }) }
+        if (key(found) == key(jobs)) return
         jobs = found
         if (found.isNotEmpty())
             DiagLog.i(tag, found.size.toString() + " nearby request(s) offered to this phone")
@@ -425,18 +450,30 @@ class NetworkBrainSync(
      * The caller persists the acceptance BEFORE calling this, so a phone that dies between
      * the tap and the reply comes back still knowing it agreed.
      */
-    fun answer(activationId: String, accept: Boolean): Boolean {
-        if (!configured || activationId.isEmpty()) return false
+    fun answer(activationId: String, accept: Boolean): BrainAnswer.Result {
+        if (!configured || activationId.isEmpty()) return BrainAnswer.Result.RETRYABLE_FAILURE
         val path = if (accept) "/v1/network/jobs/accept" else "/v1/network/jobs/decline"
         return try {
-            val (code, _) = post(path, json("activationId" to activationId))
-            if (code in 200..299) {
-                DiagLog.i(tag, (if (accept) "accepted" else "declined") + " a nearby request")
-                jobs = jobs.filter { it.activationId != activationId }
-                true
-            } else false
+            val (code, text) = post(path, json("activationId" to activationId))
+            val r = BrainAnswer.classify(code, text)
+            when (r) {
+                BrainAnswer.Result.ACCEPTED -> {
+                    DiagLog.i(tag, (if (accept) "accepted" else "declined") + " a nearby request")
+                    jobs = jobs.filter { it.activationId != activationId }
+                }
+                // v0.17.3: an unrecognised refusal, a 5xx or a rate limit is not a verdict
+                // on this activation. Say so quietly and change nothing.
+                BrainAnswer.Result.RETRYABLE_FAILURE ->
+                    DiagLog.w(tag, "the network did not take the answer (HTTP " + code + "); it will be retried")
+                BrainAnswer.Result.TERMINAL_REJECT ->
+                    DiagLog.i(tag, "the network says this activation is over: " +
+                        BrainPayload.field(text, "reason"))
+            }
+            r
         } catch (e: Exception) {
-            DiagLog.w(tag, "answer did not reach the network: " + e.message); false
+            // no server answered, so nothing was decided
+            DiagLog.w(tag, "answer did not reach the network: " + e.message)
+            BrainAnswer.unreachable()
         }
     }
 
@@ -518,6 +555,11 @@ class NetworkBrainSync(
         (if (reachable) "reachable" else "unreachable") +
             ", zone " + zoneStatus +
             (if (demandId.isEmpty()) "" else ", my request " + demandStatus) +
-            (if (jobs.isEmpty()) "" else ", " + jobs.size + " job(s) offered")) +
+            (if (jobs.isEmpty()) "" else ", " + jobs.size + " job(s) offered") +
+            (presenceHook?.invoke()?.let {
+                ", " + (if (it.willing) "willing" else "not willing") +
+                    (if (it.availableForActivation) ", room for a buyer" else ", no room") +
+                    (if (it.currentlySharing) ", sharing now" else "")
+            } ?: "")) +
         (if (lastError.isEmpty()) "" else "\n  last error: " + lastError)
 }

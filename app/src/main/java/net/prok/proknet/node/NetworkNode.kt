@@ -261,30 +261,24 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * the Gagner card and PARTAGER all keep working the way they already do.
      */
     private fun wireControlPlane() {
+        // v0.17.3: the whole decision lives in the pure ProviderPresence, so the test
+        // and the phone run the same function. Build 70 built it inline here as
+        // `sharingEnabled = e.optIn && node.sellOn`, which meant only a phone ALREADY
+        // sharing was ever visible to the Brain - so an idle opted-in provider could
+        // never be offered a buyer, and the distant two-phone loop could not start.
+        //
+        // The provider is still the only party that can see its own upstream and radio,
+        // so capability remains its claim - and a claim never becomes an obligation:
+        // every v0.16 check still runs locally before it shares for money.
         node.networkSync.presenceHook = {
-            val z = cover.zone()
-            val e = eligibility()
-            if (z == net.prok.proknet.core.CoverageModel.NO_ZONE) null
-            else net.prok.proknet.node.NetworkBrainSync.Presence(
-                zone = z,
-                // the provider is the only party that can see its own upstream and radio,
-                // so capability is its claim - but a claim never becomes an obligation:
-                // every v0.16 check still runs locally before it shares for money
-                // "could this phone actually carry somebody" - the path it could offer,
-                // not merely whether it has a bar of signal
-                upstreamAvailable = e.accessPath != net.prok.proknet.core.BulkPlan.SellerAccessPath.NONE,
-                upstreamClass = if (e.upstreamValidated) "VALIDATED" else "UNVALIDATED",
-                sharingEnabled = e.optIn && node.sellOn,
-                commercialReady = node.mayOfferPaidSharing(),
-                freeReady = e.optIn && node.sellOn && !node.mayOfferPaidSharing(),
-                sponsoredReady = false,
+            net.prok.proknet.core.ProviderPresence.of(
+                zone = cover.zone(),
+                eligibility = eligibility(),
+                currentlySharing = node.sellOn,
                 // the gateway accepts one session at a time, so load is 0 or 1. The
                 // server clamps these anyway: a provider cannot claim impossible capacity.
-                currentLoad = if (node.gateway.session != null) 1 else 0,
-                maxBuyers = 1,
-                offerClass = if (node.mayOfferPaidSharing()) "COMMERCIAL" else "FREE",
-                // internal only: the buyer is never shown a per-MB figure
-                priceHintInternal = node.sellPrice * 100)
+                activeSessions = if (node.gateway.session != null) 1 else 0,
+                mayOfferPaidSharing = node.mayOfferPaidSharing())
         }
 
         node.networkSync.onJobs = { jobs ->
@@ -308,10 +302,12 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
             if (jobs.isNotEmpty()) {
                 save(); saveInbox()
                 rebuildInbox("brain jobs"); alertNow()
-                // and anything accepted here whose acknowledgement never reached the Brain
-                ackAcceptedBrainJobs(jobs)
             }
         }
+
+        // v0.17.3: every successful poll, whether or not the list changed. The stuck-tap
+        // case is by definition a job that comes back unchanged.
+        node.networkSync.onJobsSeen = { jobs -> reconcileBrainAcks(jobs) }
 
         node.networkSync.onDemand = { status ->
             DiagLog.i(tag, "my Internet request: " + status)
@@ -366,23 +362,63 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
      * so Gagner does not sit on a dead job for ever. A running SESSION is never touched:
      * the control plane expiring is not a reason to stop somebody's Internet.
      */
-    private fun ackAcceptedBrainJobs(jobs: List<net.prok.proknet.node.NetworkBrainSync.Job>) {
-        val stillOffered = jobs.filter { it.state == "OFFERED" }
-        if (stillOffered.isEmpty()) return
+    private fun reconcileBrainAcks(jobs: List<net.prok.proknet.node.NetworkBrainSync.Job>) {
+        // the decision itself is pure and lives in BrainAck, so the test and the phone
+        // run the same function. The SERVER's job state is the authority on whether it
+        // has our acceptance; the persisted brainAcked flag is only this phone's memory
+        // of what that authority last said.
+        if (!net.prok.proknet.core.BrainAck.anyWork(
+                inbox, jobs.map { Triple(it.activationId, it.demandId, it.state) })) return
         io.execute {
-            for (j in stillOffered) {
-                val o = inbox.items[j.demandId] ?: continue
-                if (!o.needsBrainAck() || o.brainActivationId != j.activationId) continue
-                DiagLog.i(tag, "re-sending an acceptance the network never received")
-                try {
-                    if (!node.networkSync.answer(j.activationId, true)) {
-                        // refused rather than unreachable: the job is over, so stop
-                        // showing it. The seller stays selling; only the card goes.
-                        synchronized(this) { inbox = ProviderInbox.remove(inbox, j.demandId) }
-                        saveInbox(); main.post { inboxChanged?.invoke() }
+            var changed = false
+            for (j in jobs) {
+                val o = synchronized(this) { inbox.items[j.demandId] }
+                when (net.prok.proknet.core.BrainAck.step(o, j.activationId, j.state)) {
+                    net.prok.proknet.core.BrainAck.Step.NOTHING -> {}
+                    net.prok.proknet.core.BrainAck.Step.MARK_ACKED -> {
+                        // the Brain already has it. Record that, so later polls do not
+                        // keep re-sending an answer that is settled.
+                        synchronized(this) { inbox = ProviderInbox.brainAcked(inbox, j.demandId, true) }
+                        changed = true
                     }
-                } catch (e: Exception) { DiagLog.w(tag, "retry: " + e.message) }
+                    net.prok.proknet.core.BrainAck.Step.RESEND -> {
+                        // still OFFERED: whatever this phone believed, the Brain does not
+                        // have it. This is THE recovery case, and build 70 could not
+                        // reach it - pollJobs returned early because the job list had not
+                        // changed, which is exactly the shape a stuck acceptance has.
+                        if (o != null && o.brainAcked) {
+                            synchronized(this) { inbox = ProviderInbox.brainAcked(inbox, j.demandId, false) }
+                            changed = true
+                        }
+                        DiagLog.i(tag, "re-sending an acceptance the network never received")
+                        val r = try { node.networkSync.answer(j.activationId, true) }
+                            catch (e: Exception) {
+                                DiagLog.w(tag, "retry: " + e.message)
+                                net.prok.proknet.core.BrainAnswer.unreachable()
+                            }
+                        when (net.prok.proknet.core.BrainAck.outcome(r, node.gateway.session != null)) {
+                            net.prok.proknet.core.BrainAck.Outcome.ACKED -> {
+                                synchronized(this) { inbox = ProviderInbox.brainAcked(inbox, j.demandId, true) }
+                                changed = true
+                            }
+                            // the network being down is not a refusal. Keep the card, the
+                            // acceptance, the activation id; keep selling; try again next
+                            // poll. Build 70 deleted the opportunity here.
+                            net.prok.proknet.core.BrainAck.Outcome.KEEP_AND_RETRY ->
+                                DiagLog.i(tag, net.prok.proknet.core.BrainAnswer.describe(r))
+                            net.prok.proknet.core.BrainAck.Outcome.DROP_CARD -> {
+                                // the activation is genuinely over, so the stale card
+                                // goes - and only the card. A live session is somebody
+                                // really using the Internet, and bookkeeping never cuts
+                                // that off; BrainAck.outcome refuses to drop one.
+                                synchronized(this) { inbox = ProviderInbox.remove(inbox, j.demandId) }
+                                changed = true
+                            }
+                        }
+                    }
+                }
             }
+            if (changed) { saveInbox(); main.post { inboxChanged?.invoke() } }
         }
     }
 
@@ -427,11 +463,19 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         // already agreed - the central failure of the whole product flow.
         inbox.items[id]?.brainActivationId?.takeIf { it.isNotEmpty() }?.let { act ->
             io.execute {
-                try {
-                    if (node.networkSync.answer(act, true))
-                        DiagLog.i(tag, "the network knows this phone accepted")
-                    else DiagLog.w(tag, "acceptance not delivered yet; it will be retried")
-                } catch (e: Exception) { DiagLog.w(tag, "acceptance: " + e.message) }
+                val r = try { node.networkSync.answer(act, true) }
+                    catch (e: Exception) {
+                        DiagLog.w(tag, "acceptance: " + e.message)
+                        net.prok.proknet.core.BrainAnswer.unreachable()
+                    }
+                DiagLog.i(tag, net.prok.proknet.core.BrainAnswer.describe(r))
+                // v0.17.3: only a real confirmation closes the retry. Anything else leaves
+                // the acceptance on disk exactly as it is, and the next job poll tries
+                // again - including after a restart, and without a second tap.
+                if (r == net.prok.proknet.core.BrainAnswer.Result.ACCEPTED) {
+                    synchronized(this) { inbox = ProviderInbox.brainAcked(inbox, id, true) }
+                    saveInbox(); main.post { inboxChanged?.invoke() }
+                }
             }
         }
         syncSoon("provider activated")
@@ -443,7 +487,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         val now = System.currentTimeMillis()
         val live = state.requests.filterValues { it.open && !it.expired(now) }.keys
         val before = inbox.items.size
-        inbox = ProviderInbox.State(inbox.items.filterKeys { it in live }.mapValues { (_, o) -> o.copy(accepted = false) },
+        inbox = ProviderInbox.State(inbox.items.filterKeys { it in live }.mapValues { (_, o) -> o.copy(accepted = false, brainAcked = false) },
             inbox.lastSuppressed, inbox.lastNotifiedAt, inbox.notifications)
         if (before != inbox.items.size) DiagLog.i(tag, "sharing stopped: inbox now " + inbox.items.size + " opportunity(ies)")
         saveInbox(); inboxChanged?.invoke()
