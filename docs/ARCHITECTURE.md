@@ -3815,3 +3815,141 @@ bytes, a Python signature, a signature captured from a real Kotlin run, and a wi
 with only the timestamp moved, which both sides must refuse. The timeline cases now
 carry each claim's format and include a mixed legacy/v2 history at, before and after
 the cooling boundary.
+
+## v0.17.0 the live network Brain
+
+Until now two phones had to find each other by themselves. ProkNet worked when they
+happened to be near each other with both apps open. v0.17 adds the part that lets a
+buyer who can see nobody say so, and a provider who could help be asked.
+
+```
+                        PROKNET BRAIN
+                              |
+              +---------------+---------------+
+              |               |               |
+           DEMAND         PRESENCE       ACTIVATION
+              |               |               |
+              +---------------+---------------+
+                              |
+                        NETWORK STATE
+                              |
+            +-----------------+-----------------+
+            |                                   |
+       BUYER PHONE                        PROVIDER PHONE
+       GET INTERNET                       GAGNER / PARTAGER
+            |                                   |
+            +--------- existing BLE/L2CAP ------+
+```
+
+**The Brain never carries anybody's Internet.** It coordinates who is willing, who
+needs, who was asked and what happened, then gets out of the way. The bytes go over
+the Bluetooth L2CAP path hardware-proven since v0.10.2, untouched.
+
+### Three rules it is built around
+
+**The local path stays first.** Order: a usable local source, then a locally visible
+ProkNet provider, then the Brain. Two phones that can already see each other never
+wait for a server, and with the Brain unreachable ProkNet behaves exactly as it did in
+v0.16.5. Nothing in the control plane is on the critical path of a session.
+
+**A zone is a hint, not a route.** `CoverageModel.zoneId` already gave roughly a
+neighbourhood - coarse on purpose, not an address - and it is reused rather than
+replaced. The phone computes the zone and the Brain receives it, so no raw GPS is sent.
+Two phones in one zone are *worth asking*; whether Bluetooth reaches is a question only
+the phones can answer.
+
+**Only the phones know what worked.** A status report is best-effort and advisory. A
+session that works while the report fails is still a working session, and no Brain
+status ever changes signed money, a settlement or a payment trust state.
+
+### What was reused rather than rebuilt
+
+The spec said not to create parallel versions of systems that exist, and most of the
+model layer already did:
+
+| v0.17 needs | already existed |
+|---|---|
+| a coarse zone id | `CoverageModel.zoneId`, cell 0.005 degrees |
+| a signed demand object | `NetRequest.Request` + `RequestGossip` |
+| a provider activation inbox | `ProviderInbox`, with `Source.BRAIN` since v0.13.3 |
+| provider eligibility | `ProviderActivation.eligibility` |
+| the activation notification | `NetworkNode.alertHook` |
+| zone colours | `Coverage.ZoneStatus` |
+| a signed request | `SignedApi`, hardened in v0.16.3 |
+
+So a Brain activation becomes a `ProviderInbox` opportunity exactly like a locally
+gossiped one, and the notification, the Gagner card and PARTAGER keep working as they
+do. `NetworkNode.originate` was already the one place meaning "ask the network", so the
+demand is created there - the buyer presses GET INTERNET once and ProkNet decides.
+
+### Honesty in the wording
+
+`core/NetworkAccess.kt` is the single state model every screen reads. The reason it
+exists rather than a few booleans: the answer now comes from three places at once, and
+`brainSearching`, `providerFound` and `localConnecting` spread through the UI would
+disagree with each other inside a week.
+
+It enforces the rule structurally rather than by discipline. `onDemandStatus` cannot
+produce CONNECTED from **any** server word - including the server's own "CONNECTED",
+which means somebody told the Brain a connection happened, not that this phone has one.
+Only `LinkEvent.INTERNET_UP`, from the transport, produces it. So a provider accepting
+reads "Un fournisseur se prépare", never "Internet disponible".
+
+The model has no field for a provider identity, which is the point: a buyer is told
+somebody is preparing, never which phone.
+
+### Matching
+
+Deterministic and deliberately readable: free, then sponsored, then the cheapest
+commercial offer; then reliability, freshness, spare capacity, and the provider id as a
+stable last tie-break. No randomness - a pilot has to be able to explain why a
+particular phone rang. A buyer who asked for free is never silently given a commercial
+provider. An unpriced commercial offer is not a candidate, because it cannot honestly be
+compared. A phone is never matched to itself.
+
+One activation at a time, at most three attempts per demand, and a cooldown after a
+cancellation. Twenty phones buzzing for one small request is how a network makes itself
+unwelcome.
+
+Network reliability is kept apart from v0.16 payment trust on purpose. Paying your debts
+and being reachable over Bluetooth are different facts about a person. A provider with no
+history scores 0.5 rather than 0, because a network that only suggests providers it has
+already used can never grow.
+
+### Independent failure domains
+
+`NetworkBrainSync` is its own class and its own failure domain, sharing only `SignedApi`
+and the HTTP shape with `PaymentSync` and `SettlementSync`.
+
+And a real bug this milestone fixed: settlements and payments ran only **after** a
+successful `/v1/sync`, so one hiccup in coverage gossip also stopped money reaching the
+server. v0.15.3 taught that lesson and v0.16.2 quietly re-introduced it.
+`runBrainSubsystems` now runs in a `finally`, outside the sync's own `try`, with each
+subsystem in its own `try/catch`.
+
+### Privacy
+
+A presence row holds a coarse zone, capability flags and an internal price hint. No
+Mobile Money number, no coordinates, nothing that identifies a house - asserted by a
+test that reads the table definition. There is deliberately **no way to list the
+providers in a zone**: the coverage answer is a colour and an `updatedAt`, because in a
+thin zone "1 provider" is one identifiable household.
+
+`/health` now says almost nothing. It used to report how many nodes, requests and
+sources the Brain knew about, which told anybody who asked how many people were using
+ProkNet and roughly where. The counts moved behind a signature.
+
+A client-supplied zone is a matching hint and **not security evidence**. A fake zone can
+waste an activation; it cannot move money, gain trust or bypass a payment check, because
+none of those read it.
+
+### Schema
+
+Brain migration **2**, numbered and recorded in `schema_version`, not another
+`CREATE TABLE IF NOT EXISTS`. Six tables: presence, demand, activation, reliability,
+events and a per-buyer cooldown. Presence is judged by its own TTL even after a restart,
+so old timestamps are never treated as fresh.
+
+The Android database is **unchanged at version 10**. Network control state is not
+financial and lives in the existing file-based pattern that `RequestGossip` and
+`ProviderInbox` already use, so there was no honest reason to bump it.

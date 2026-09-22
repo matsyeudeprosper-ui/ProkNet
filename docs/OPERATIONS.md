@@ -127,3 +127,81 @@ The Brain never reads `PROK_CONFIG_PRIVATE_KEY*`. That is asserted by a test.
 | A settlement id | not a secret, same reasoning. |
 | A seller's Mobile Money number | real-world identifying data. Readable only by somebody who actually owes that seller. |
 | Operator webhook secret | not configured yet, so no webhook can be verified and none may confirm a payment. |
+
+## v0.17.0 running the live Brain
+
+The control plane is what makes ProkNet a network rather than two phones that happen to
+meet, so from v0.17 the Brain is something that has to stay up.
+
+### Install once
+
+As Administrator, once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\install.ps1
+```
+
+That registers a Windows **Scheduled Task** called `ProkNetBrain` that starts at boot
+and restarts up to three times a minute apart if it dies. A Scheduled Task on purpose:
+it is built into Windows and needs no extra dependency, and this box also runs live
+services that a casually installed service wrapper could disturb.
+
+### Day to day
+
+| | |
+|---|---|
+| `start.ps1` | start it now (refuses if already running) |
+| `stop.ps1` | stop it, then **check** it actually stopped |
+| `status.ps1` | process, listening socket, and `/health` |
+| `backup.ps1` | a consistent snapshot, outside the repository |
+
+`status.ps1` checks the listening socket rather than trusting the process, because a
+python that is alive and not listening looks healthy and serves nobody. `stop.ps1`
+counts processes afterwards for the same reason.
+
+### Configuration
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `PROK_BRAIN_DB` | database file | `C:\ProkNetBrain\brain.db` |
+| `PROK_BRAIN_BIND` | interface | `127.0.0.1` |
+| `PROK_BRAIN_PORT` | port | `8080` |
+| `PROK_BRAIN_LOG` | rotating log file | console only |
+| `PROK_BRAIN_LOG_LEVEL` | log level | `INFO` |
+| `PROK_BRAIN_BACKUPS` | where backups go | `C:\ProkNetBrain\backups` |
+| `PROK_BRAIN_PUBLIC_URL` | for `status.ps1` | loopback |
+| `PROK_CONFIG_PUBLIC_KEY` | parser-rule key override | the pinned key |
+
+No credential is ever a command-line argument, and none is in git.
+
+### Backups
+
+`backup.ps1` uses SQLite's own online backup API, **not** a file copy. Copying
+`brain.db` while the server is writing gives you a file that opens and is quietly
+wrong - a torn page in the middle of a settlement is worse than no backup, because you
+would not find out until you needed it.
+
+One snapshot covers everything: the v0.16 financial tables and the v0.17 network tables
+share one file and one transaction boundary, so they must share one snapshot. The last
+30 are kept. Nothing secret is printed.
+
+### Logs
+
+`PROK_BRAIN_LOG` turns on a `RotatingFileHandler` capped at 8 MB with 5 backups. Logs
+that grow until they fill the disk have already cost this project a day on this very
+box.
+
+Logged: a demand created, an activation offered, accepted, declined or expired, a
+connection reported, presence expiring. Ids are cut to twelve characters - enough to
+follow one request, not enough to be a directory of who was where. Never logged: a
+Mobile Money number, an SMS body, a private key, a request signature, or a position.
+
+### TLS
+
+The Brain speaks plain HTTP and binds to loopback by default. **Anything public belongs
+behind an HTTPS reverse proxy** (Caddy or nginx), and it warns in the log if you bind it
+to anything else.
+
+Status: **deployment ready, TLS hostname pending.** There is no public hostname or
+certificate for the pilot yet, and no temporary insecure public HTTP has been hard-coded
+anywhere to paper over that.

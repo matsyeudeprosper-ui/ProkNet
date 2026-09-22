@@ -1,3 +1,206 @@
+# CLAUDE_REPORT - ProkNet v0.17.0 "the live Network Brain"
+
+Date: 2026-09-21
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.0, build 68. **611 Android tests, 287 server tests, all passing.**
+Baseline was 583 + 210; every one of those still passes untouched.
+
+Your spec arrived in two halves and the second was cut off mid-item-102, so items past
+~102 are not addressed. **Read section 12 first: three UI surfaces are built and tested
+as models but are not yet drawn on the screens.** I would rather say that plainly than
+have you find it on a phone.
+
+## 1. What I found before writing anything
+
+You asked me to inspect main first, and it changed the shape of the work. Most of the
+model layer already existed:
+
+| v0.17 needs | already there |
+|---|---|
+| a coarse zone id | `CoverageModel.zoneId`, 0.005 deg cells, returns `z?` with no location |
+| a signed demand | `NetRequest.Request` + `RequestGossip`, with TTL and tombstones |
+| a provider inbox | `ProviderInbox`, and it already had `Source.BRAIN` from v0.13.3 |
+| provider eligibility | `ProviderActivation.eligibility` |
+| the notification | `NetworkNode.alertHook` |
+| zone colours | `Coverage.ZoneStatus` |
+| demand + presence + job tables | `internet_requests`, `provider_availability`, `jobs` |
+| a matcher | `brain/matching.py` |
+
+So v0.17 became: make the durable control plane real and reachable over signed routes,
+give it TTLs and a deterministic matcher, and feed the existing client models - not a
+second network stack. Nothing parallel was created.
+
+## 2. Core architecture
+
+`server/brain/network.py`, as Brain migration **2** with a numbered `schema_version`.
+Six tables: presence, demand, activation, reliability, events, per-buyer cooldown.
+
+The Brain coordinates and never carries. Bulk Internet still goes over the L2CAP path
+hardware-proven since v0.10.2, which I did not touch.
+
+## 3. Local-first, and unchanged without the Brain
+
+Order is still: usable local source, then locally visible ProkNet provider, then the
+Brain. `NetworkNode.originate` was already the one place meaning "ask the network", so
+the demand is created there - no second button, and the buyer presses GET INTERNET once.
+
+With the Brain unreachable, ProkNet behaves exactly as in v0.16.5. Nothing in the control
+plane is on the critical path of a session, and `NetworkBrainSync` failing costs a log
+line and a backoff.
+
+## 4. Demand lifecycle, and nothing skipping
+
+CREATED -> SEARCHING -> PROVIDER_FOUND -> ACTIVATION_SENT -> PROVIDER_ACCEPTED ->
+WAITING_FOR_LOCAL_LINK -> CONNECTED, plus EXPIRED / CANCELLED / FAILED.
+
+`DEMAND_NEXT` is an explicit table and a move that is not in it is **refused rather than
+applied**, so nothing can report itself CONNECTED out of nowhere. A test walks every
+server word and asserts none of them produces CONNECTED on the phone.
+
+## 5. The honesty rule, enforced structurally
+
+`core/NetworkAccess.kt` is the one model every screen reads. `onDemandStatus` cannot
+produce CONNECTED from **any** server word - including the server's own "CONNECTED",
+which means somebody told the Brain a connection happened, not that this phone has one.
+Only `LinkEvent.INTERNET_UP`, from the transport, produces it.
+
+So a provider accepting reads "Un fournisseur se prépare", never "Internet disponible".
+A test sweeps every state's wording for "disponible maintenant" and for protocol words.
+The model has no field for a provider identity, which is the point.
+
+## 6. Matching
+
+Free, then sponsored, then cheapest commercial; then reliability, freshness, spare
+capacity, and the provider id as a stable last tie-break. No randomness - a test runs the
+same state five times and asserts the same order.
+
+A buyer asking for FREE is never given a commercial provider. An unpriced commercial
+offer is not a candidate because it cannot honestly be compared. A phone is never matched
+to itself. At capacity is excluded. Already-asked is excluded, so a decliner is not
+re-asked for the same request.
+
+One activation at a time; at most 3 attempts; a 60 s cooldown after a cancellation;
+presence TTL 120 s; activation TTL 75 s; demand TTL 10 min. All constants in one place.
+
+Network reliability is separate from payment trust, deliberately - a provider with poor
+signal is not a bad payer. A new provider scores 0.5, not 0.
+
+## 7. Privacy
+
+Presence holds a coarse zone, capability flags and an internal price hint. A test reads
+the table definition and asserts there is no column for a number or a position.
+
+**There is no route that lists providers in a zone.** Coverage answers a colour and an
+`updatedAt` only, because in a thin zone "1 provider" is one identifiable household. The
+buyer is told somebody is preparing and never which phone - asserted over HTTP.
+
+`/health` now returns `{ok, version, protocol, schema}` and nothing else. It used to
+report how many nodes, requests and sources the Brain knew about, which told anybody who
+asked how many people used ProkNet and roughly where. Counts moved behind a signature.
+
+A client-supplied zone is a matching hint, **not** security evidence. A fake zone can
+waste an activation; it cannot move money, gain trust or bypass a payment check.
+
+## 8. Authorization and identity ownership
+
+Every `/v1/network/*` route is signed with the hardened v0.16.3 form and
+`require_bound`. The verified identity is the only actor: a body field called `buyerId`
+or `providerId` is **not read at all**, so there is nothing for it to disagree with. A
+demand signed by A claiming to be B belongs to A, and B cannot read it - tested.
+
+Presence writes only the caller's own row. A provider inbox holds only its own jobs. Only
+the assigned provider may answer. Only the two parties may report. Anyone else: refused.
+
+## 9. Idempotency and rate limits
+
+Presence is an upsert. Demand is idempotent on a client-generated id. Accept twice is
+`duplicate: true` and counts once. Cancel twice is fine.
+
+One live demand per buyer - a second, different demand returns the existing one.
+Rate limits are per node **and per kind**, so a heartbeat budget cannot be exhausted by
+demand creation; 15 heartbeats in a row all pass.
+
+## 10. A deadlock I caused and hit
+
+`allow_network` took `STATE.lock` while the POST path already held it, and that lock is
+not reentrant. The first HTTP test **hung** rather than failed. The limiter now documents
+that the caller owns the lock.
+
+## 11. Ops, backup, logging
+
+`deploy/brain/{install,start,stop,status,backup}.ps1`.
+
+`install.ps1` registers a Scheduled Task `ProkNetBrain` - built into Windows, restarts at
+boot, no extra dependency on a box that runs live services.
+
+`status.ps1` checks the **listening socket**, not the process: a python that is alive and
+not listening looks healthy and serves nobody. `stop.ps1` counts processes afterwards.
+
+`backup.ps1` uses SQLite's **online backup API**, not a file copy, then runs
+`integrity_check`. I ran it against a real database with a settlement in it: 22 tables,
+schema 2, and the settlement row present in the copy.
+
+Logging is a `RotatingFileHandler`, 8 MB x 5. Ids cut to twelve characters. Never a
+number, an SMS body, a key, a signature or a position.
+
+## 12. What is NOT done - read this
+
+Three UI surfaces exist as tested models but are **not yet rendered**:
+
+- **Home status area** (items 41-45). `NetworkAccess.title/hint` produce the exact lines
+  you specified and are unit-tested, but no view shows them yet. The buyer today sees the
+  v0.16.5 sphere text.
+- **Map zone colours** (items 38-40). `NetworkAccess.zoneStatus/zoneLabel` and the
+  server's coverage route are done; `CoverageMapView` is not fed from them yet.
+- **Activité lines** (items 49-50). `NetworkAccess.eventLine` and `dedupKey` are done and
+  tested; nothing writes them into the history yet.
+
+The provider side **is** wired: a Brain job becomes a `ProviderInbox` opportunity, so the
+notification and the Gagner card work through the existing v0.13.3 path.
+
+Also not done: items past ~102, because your message was cut off there.
+
+## 13. Totals, version, artefacts
+
+| | |
+|---|---|
+| Android tests | **611** (was 583) |
+| Server tests | **287** (was 210) |
+| Version / build | **0.17.0 / 68** |
+| Brain schema | **2** |
+| Android DB | **10, unchanged** - network state is not financial |
+| APK SHA256 | `b1c57f633823170eef0bef235798f035dc6c047b0630c2f5ab2f171c0d56a4b7` |
+
+## 14. Hardware status - unchanged
+
+- **Hardware-proven:** Bluetooth/L2CAP Internet, VPN browsing, provider activation and
+  recovery, pricing and contracts, graceful stops, the signed final checkpoint.
+- **Software-proven only:** the whole Mobile Money payment stack, and all of v0.17.
+- Real MTN/Airtel message parsing stays unproven until you make an actual payment.
+- **No part of v0.17 has run on a phone.** TESTING 72 is the procedure, and it needs the
+  Brain deployed and reachable from both handsets.
+
+## 15. Remaining limitations
+
+- TLS: **deployment ready, hostname pending.** The Brain speaks plain HTTP, binds to
+  loopback, and warns if bound elsewhere. No temporary insecure public HTTP anywhere.
+- An accepted activation has no separate longer wait window yet (item 77): it expires
+  with the activation TTL, and the demand then tries another candidate.
+- Sponsored providers are modelled but nothing sets `sponsoredReady`.
+- Capacity is 0 or 1, because the gateway accepts one session.
+- The three UI surfaces in section 12.
+
+## 16. Definition of done
+
+Partly. The control plane is real, durable, authorised, deterministic and tested on both
+sides, and a provider does get woken through the existing notification. A buyer's screen
+does not yet *show* the new states, so on a phone today the flow works without being
+visible. That is the honest position, and section 12 is the list.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.16.5 "the cooling timestamp is signed"
 
 Date: 2026-09-21

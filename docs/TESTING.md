@@ -3078,3 +3078,91 @@ Re-run 70c and 70e.
 - Being asked to re-enter a number that was never changed.
 - A payment window refused only because it was uploaded late.
 - Any regression in sections 59 to 70.
+
+## 72. v0.17.0 the network finds a provider for you
+
+This is the first section that needs the Brain **running and reachable from both
+phones**. Without it, nothing in this section can be tested, and that must be
+reported as "could not be tested" rather than as a pass.
+
+Set it up once on the VPS:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\install.ps1
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\start.ps1
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\status.ps1
+```
+
+Then put the Brain URL into both phones under COPY NETWORK.
+
+### 72a. Nothing regressed when the phones are together
+
+Before anything else: put the two phones side by side and run section 67 end to end.
+
+Expected: exactly as before. The local path must not have changed at all.
+
+### 72b. The Brain finds a provider (THE test for this milestone)
+
+Set the OUKITEL up as a provider: Internet upstream working, PARTAGER on. Leave it
+somewhere in the same neighbourhood as the OnePlus but **out of Bluetooth range** to
+start with - a different room with a wall between, or a few tens of metres.
+
+On the OnePlus, tap GET INTERNET.
+
+Expected, in order:
+1. it searches locally first and finds nothing;
+2. the OUKITEL gets a notification: **Quelqu'un près de vous cherche Internet**;
+3. tapping **PARTAGER** on the OUKITEL makes it ready;
+4. now bring the two phones together;
+5. the existing Bluetooth path takes over and Internet works.
+
+**FAIL** if the OnePlus ever says Internet is available before it actually is.
+
+### 72c. With the Brain off, nothing changed
+
+Clear the Brain URL on both phones. Re-run 72a.
+
+Expected: identical. This is the section that matters most - the local network must
+never depend on the server.
+
+### 72d. A provider that goes away stops being offered
+
+Turn PARTAGER off on the OUKITEL, or close the app. Wait about two minutes.
+
+On the VPS: `status.ps1` should still report healthy. On the OnePlus, tap GET INTERNET
+again.
+
+Expected: no notification reaches the OUKITEL, and the OnePlus keeps searching rather
+than claiming to have found somebody.
+
+### 72e. Cancelling stops bothering the provider
+
+Start a request on the OnePlus, wait for the OUKITEL's notification, then cancel on the
+OnePlus without accepting.
+
+Expected: the request disappears from the OUKITEL's Gagner within a couple of minutes,
+and asking again immediately is refused for a minute.
+
+### 72f. The backup really backs up
+
+On the VPS, with the Brain running:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\backup.ps1
+```
+
+Expected: a `brain-<date>-<time>.db` outside the repository, with `integrity_check`
+passing and the table count and schema printed.
+
+### 72g. It comes back after a reboot
+
+Reboot the VPS. Then run `status.ps1`.
+
+Expected: listening, and `/health` answers with version 0.17.0.
+
+### What would make this a FAIL
+
+- Any regression in 72a or 72c.
+- The buyer being told Internet is available before the transport says so.
+- A provider that has stopped sharing still being woken.
+- Any section from 59 to 71 behaving differently.

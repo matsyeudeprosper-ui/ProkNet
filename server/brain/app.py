@@ -25,8 +25,11 @@ with an injected clock.
 """
 import argparse
 import json
+import logging
 import os
+import sys
 import threading
+from logging.handlers import RotatingFileHandler
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -41,6 +44,35 @@ from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
 VERSION = "0.17.0"
+
+LOG = logging.getLogger("proknet.brain")
+
+#: Logs must not grow until they fill the disk. That has already cost this project a day
+#: once, on this very box: a runaway file filled C: and took a live service with it.
+LOG_MAX_BYTES = 8 * 1024 * 1024
+LOG_BACKUPS = 5
+
+
+def setup_logging(path: str = "", level: str = "INFO"):
+    """Console always; a rotating file when a path is given.
+
+    RotatingFileHandler rather than anything date-based, because size is the failure mode
+    that actually bites - a quiet week and a noisy hour both end up bounded.
+    """
+    LOG.setLevel(getattr(logging, level.upper(), logging.INFO))
+    LOG.handlers[:] = []
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+    LOG.addHandler(console)
+    if path:
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        rot = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                                  encoding="utf-8")
+        rot.setFormatter(fmt)
+        LOG.addHandler(rot)
+    return LOG
+
 
 MAX_BODY = 256 * 1024
 #: How long an obligation may wait to be paid.
@@ -235,8 +267,13 @@ class Handler(BaseHTTPRequestHandler):
             if not STATE.allow_network(who, "demand", now):
                 raise network.NetworkError("too many requests; please wait a moment")
             out = STATE.net.put_demand(who, body, now)
+            audit("demand.created", buyer=who, demand=out.get("demandId", ""),
+                  zone=str(body.get("zone", ""))[:24])
             # match straight away: the buyer is standing there waiting
             served = STATE.net.serve(out["demandId"], now)
+            if "activationId" in served:
+                audit("activation.offered", demand=out["demandId"],
+                      activation=served["activationId"], candidates=served.get("candidates", 0))
             out["status"] = served.get("status", out.get("status"))
             if "activationId" in served:
                 out["activationId"] = served["activationId"]
@@ -244,6 +281,7 @@ class Handler(BaseHTTPRequestHandler):
             return out
 
         if p == "/v1/network/demand/cancel":
+            audit("demand.cancelled", buyer=who, demand=str(body.get("demandId", "")))
             return STATE.net.cancel_demand(str(body.get("demandId", "")), who, now)
 
         if p == "/v1/network/demand/poll":
@@ -260,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise network.NetworkError("too many answers")
             accept = p.endswith("accept")
             out = STATE.net.answer(str(body.get("activationId", "")), who, accept, now)
+            audit("activation.accepted" if accept else "activation.declined",
+                  provider=who, activation=str(body.get("activationId", "")))
             if not accept:
                 # do not leave the buyer waiting on somebody who said no
                 a = STATE.net.activation(str(body.get("activationId", "")))
@@ -271,8 +311,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/v1/network/jobs/state":
             if not STATE.allow_network(who, "activation", now):
                 raise network.NetworkError("too many reports")
-            return STATE.net.report(str(body.get("activationId", "")), who,
-                                    str(body.get("result", "")), now)
+            reported = STATE.net.report(str(body.get("activationId", "")), who,
+                                        str(body.get("result", "")), now)
+            audit("connection.reported", who=who,
+                  activation=str(body.get("activationId", "")),
+                  result=str(body.get("result", ""))[:24],
+                  corroborated=reported.get("corroborated", False))
+            return reported
 
         raise network.NetworkError("not found")
 
@@ -628,7 +673,7 @@ class Handler(BaseHTTPRequestHandler):
         raise paybox.PayError("not found")
 
     def log_message(self, fmt, *args):
-        print("%s %s" % (self.address_string(), fmt % args), flush=True)
+        LOG.info("%s %s", self.address_string(), fmt % args)
 
 
 def _webhook_signature_ok(header: str, body: dict, secret: str) -> bool:
@@ -646,6 +691,25 @@ def _webhook_signature_ok(header: str, body: dict, secret: str) -> bool:
     return hmac.compare_digest(expected, header.strip())
 
 
+#: What may never reach a log line, however convenient it would be while debugging.
+#: A Mobile Money number and an SMS body are somebody's private life; a signature and a
+#: private key are credentials; precise coordinates are an address.
+def audit(kind: str, **fields):
+    """One line per interesting control-plane event, with ids shortened.
+
+    Ids are cut to twelve characters: enough to follow one request through a log, not
+    enough to be a directory of who was where. Nothing here ever carries a number, a
+    message body, a signature or a position.
+    """
+    parts = []
+    for k, v in fields.items():
+        text = str(v)
+        if k.endswith("_id") or k in ("who", "provider", "buyer", "demand", "activation"):
+            text = text[:12]
+        parts.append("%s=%s" % (k, text))
+    LOG.info("%s %s", kind, " ".join(parts))
+
+
 def cleanup_loop(state: State, every_s: int):
     while True:
         time.sleep(every_s)
@@ -657,23 +721,36 @@ def cleanup_loop(state: State, every_s: int):
                 n["payment_windows_swept"] = state.pay.sweep(now_ms)
                 n.update(state.net.sweep(now_ms))
             if any(n.values()):
-                print("cleanup: %s" % n, flush=True)
+                LOG.info("cleanup %s", n)
         except Exception as e:  # never let the timer die
-            print("cleanup failed: %s" % e, flush=True)
+            LOG.warning("cleanup failed: %s", e)
 
 
 def main():
     global STATE
     ap = argparse.ArgumentParser(description="ProkNet Network Brain")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--db", default="brain.db")
+    # Every default comes from the environment first, so the deploy scripts configure the
+    # server without a command line full of paths. No credential is ever an argument.
+    ap.add_argument("--host", default=os.environ.get("PROK_BRAIN_BIND", "127.0.0.1"))
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("PROK_BRAIN_PORT", "8080")))
+    ap.add_argument("--db", default=os.environ.get("PROK_BRAIN_DB", "brain.db"))
+    ap.add_argument("--log", default=os.environ.get("PROK_BRAIN_LOG", ""),
+                    help="rotating log file; console only when empty")
+    ap.add_argument("--log-level", default=os.environ.get("PROK_BRAIN_LOG_LEVEL", "INFO"))
     ap.add_argument("--cleanup-every", type=int, default=60, help="seconds between TTL sweeps")
     a = ap.parse_args()
+    setup_logging(a.log, a.log_level)
     STATE = State(a.db)
+    LOG.info("ProkNet Brain %s starting, schema %d, db %s",
+             VERSION, STATE.brain.schema_version(), a.db)
     threading.Thread(target=cleanup_loop, args=(STATE, a.cleanup_every), daemon=True).start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
-    print("ProkNet Network Brain listening on http://%s:%d (db %s)" % (a.host, a.port, a.db), flush=True)
+    LOG.info("listening on http://%s:%d", a.host, a.port)
+    if a.host not in ("127.0.0.1", "localhost", "::1"):
+        # The Brain speaks plain HTTP. Anything public belongs behind a TLS proxy, and
+        # saying so once in the log is cheaper than discovering it later.
+        LOG.warning("bound to %s - put an HTTPS reverse proxy in front of this", a.host)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

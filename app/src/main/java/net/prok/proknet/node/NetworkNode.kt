@@ -114,9 +114,22 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     fun mine(id: String): NetRequest.Request? = state.requests[id]?.takeIf { id in state.mine }
 
     /** This phone asks the network. Signed, stored, handed to every peer in range, queued for the brain. */
+    /**
+     * This phone needs Internet and nothing local answered.
+     *
+     * v0.17.0 also tells the Brain, from here rather than from the screen, because this is
+     * already the one place that means "ask the network". The buyer presses GET INTERNET
+     * once and ProkNet decides: a usable local source, then a locally visible provider,
+     * then this. There is no second button.
+     *
+     * The demand id is the request id, so the two views of one need cannot drift apart and
+     * a retry after a lost connection is the same demand rather than a second provider
+     * being woken.
+     */
     fun originate(id: String, zone: String): NetRequest.Request {
         val now = System.currentTimeMillis()
         val r = NetRequest.sign(NetRequest.oneTap(id, node.identity.shortIdHex, node.identity.pubBytes.toHex(), now, zone), node.identity)
+        askTheNetwork(id)
         synchronized(this) { state = RequestGossip.originate(state, r) }
         DiagLog.i(tag, "REQUEST " + r.id + " created in " + zone + ", expires in " + ((r.expiresAt - now) / 60_000) + " min: asking the phones around")
         save(); forwardTo(node.peers(), "new request"); syncSoon("request created")
@@ -124,8 +137,33 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     }
 
     /** This phone ends its request: a signed tombstone replaces it and travels the same way. */
+    /**
+     * v0.17.0: ask the control plane too, off the main thread and best-effort.
+     *
+     * A failure here costs nothing: the local gossip request has already been created and
+     * carried, and the Brain's copy is simply absent until the next sync picks it up.
+     */
+    private fun askTheNetwork(id: String) {
+        if (!node.networkSync.configured) return
+        val budget = node.buyBudgetCentimes
+        io.execute {
+            try {
+                node.networkSync.createDemand(
+                    id, budget,
+                    // a buyer with nothing to spend is asking for free help, and must
+                    // never be quietly matched to somebody who charges
+                    if (budget <= 0) "FREE" else "COMMERCIAL")
+            } catch (e: Exception) { DiagLog.w(tag, "the network did not take the request: " + e.message) }
+        }
+    }
+
     fun end(id: String, terminal: NetRequest.State) {
         val now = System.currentTimeMillis()
+        // and close the Brain's copy, so a provider stops seeing a request nobody waits on
+        if (node.networkSync.demandId == id) io.execute {
+            try { node.networkSync.cancelDemand() }
+            catch (e: Exception) { DiagLog.w(tag, "cancel: " + e.message) }
+        }
         val next = synchronized(this) { RequestGossip.end(state, id, terminal, now, node.identity)?.also { state = it } } ?: return
         if (next.requests[id]?.tombstone == true) DiagLog.i(tag, "REQUEST " + id + " " + terminal + ": tombstone generation " + next.requests[id]!!.generation)
         save(); forwardTo(node.peers(), "tombstone"); cancelHook?.invoke(id); syncSoon("request ended")
