@@ -4319,3 +4319,115 @@ so the retry and restart tests exercise the code the phone runs.
 Brain schema stays **4**, Android DB stays **10**. This is bookkeeping, and an appended
 inbox field is the right size of change for it. Nothing in payment, settlement, trust,
 BLE, L2CAP, the VPN or the rendezvous timings was touched.
+
+## v0.17.4 being unable to charge is not an offer to give something away
+
+One product-rule bug, found by reading build 71. The activation loop was correct by then;
+this is about what the Brain was told the loop was *for*.
+
+### The bug
+
+`ProviderPresence.of` did:
+
+```kotlin
+val commercial = willing && mayOfferPaidSharing
+val free       = willing && !mayOfferPaidSharing
+offerClass     = if (mayOfferPaidSharing) COMMERCIAL else FREE
+```
+
+`mayOfferPaidSharing()` is the v0.16 paid-seller safety check: a valid payment
+destination, payment verification readiness, the seller not blocked. When it is false the
+true sentence is **"this seller cannot take money right now"**. Build 71 wrote down
+**"this seller is giving their Internet away"**. Those are different facts about different
+things, and one does not imply the other in either direction.
+
+So a seller who had opted in to earn money, had working Internet, and had simply not
+finished setting up their Mobile Money number was published to the whole zone as a FREE
+provider.
+
+Two things were wrong at once.
+
+It breaks the locked product rule that **FREE must be explicit**. Nobody offered
+anything; a missing configuration did.
+
+And it creates an economic mismatch the rest of the system cannot absorb. The Brain
+matches a buyer who asked for free help; the provider taps PARTAGER; and `Pricing` — which
+has never looked at `mayOfferPaidSharing` and never will — quotes a paid rate for that
+session from the seller's real source. The buyer was promised one contract and offered
+another at the moment of connection.
+
+### Three independent facts
+
+| | meaning | derived from |
+|---|---|---|
+| `willing` | you may ask this phone | opted in, validated upstream, a path it could offer — **unchanged from v0.17.3** |
+| `commercialReady` | a paid session could be completed | `willing && intent == COMMERCIAL && mayOfferPaidSharing()` |
+| `freeReady` | this Internet was genuinely offered as a gift | `willing && intent == FREE` |
+
+Capacity stays where v0.17.3 put it, in `currentLoad` / `maxBuyers`, which the Brain
+checks separately in both the matcher and `zone_status`.
+
+### What controls FREE
+
+`ProviderPresence.intentOf(source)`, which is `Pricing.isFree(source)` — `source.free` or
+`SourceKind.FREE_PUBLIC`. That is not a new opinion: it is the exact predicate the pricing
+engine has always used to decide the buyer pays nothing, now extracted into one function
+so the Brain's advertised class and the session's real price cannot disagree. `quote()`
+and `autoRate()` call the same function.
+
+No fake preference was invented to make this testable. `ProkNetNode.mySource()` produces
+`MOBILE_DATA`, `AUTHORIZED_HOME_WIFI` or `UNKNOWN` and never sets `free`, so **in
+production today every real provider is COMMERCIAL** and `freeReady` is false. That is the
+conservative answer and the honest one. When a real free source or a user-facing "give it
+away" setting exists, it arrives at `intentOf` and nowhere else.
+
+### The truth table
+
+| provider | commercialReady | freeReady | offerClass |
+|---|---|---|---|
+| commercial, payment ready | true | false | COMMERCIAL |
+| commercial, payment NOT ready | false | false | **COMMERCIAL** |
+| explicitly free source | false | true | FREE |
+| explicitly free and paid-capable | false | true | FREE |
+
+`offerClass` is the class being **offered**, always. A commercial seller that cannot
+charge stays COMMERCIAL and is excluded by its readiness being false — the server's
+`ready_for` returns false for every class when nothing is ready. Flipping the label to
+FREE instead would be a lie the matcher would then act on. `priceHintInternal` follows the
+same rule: 0 for a free source, because that is what `Pricing.autoRate` would produce, and
+the seller's real rate otherwise.
+
+The last row is a policy choice worth stating: an explicit offer of free Internet is not
+withdrawn by the seller also being *able* to charge. FREE stays explicit in both
+directions — never inferred from payment failure, never revoked by payment success.
+
+### The starvation this fix would otherwise have introduced
+
+Before v0.17.4 nearly every provider carried `free_ready = 1` at some point, because
+nearly every provider is at some moment unable to charge. So a FREE demand almost always
+found somebody. Now that FREE is explicit, a FREE demand in a zone with only commercial
+providers is genuinely unservable.
+
+`serve_zone` hands the oldest waiting demand to a provider that has just become useful.
+An unservable FREE demand sitting at the head of that queue would absorb every heartbeat
+for its full fifteen minutes, and the COMMERCIAL demands behind it would never be
+reconsidered — a buyer starved by a request nobody could have served.
+
+So `oldest_waiting_demand` takes an optional predicate and `serve_zone` takes the provider
+that triggered it, skipping demands that provider's `ready_for` refuses. Fairness is
+unchanged: still oldest first, among the demands this provider can actually take. The full
+matcher still runs afterwards, so this only chooses **which waiting buyer to try**, never
+who gets offered the job.
+
+### Readiness becoming true
+
+`put_presence` has called `serve_zone` since v0.17.1 whenever the heartbeat leaves the
+provider `ready_for(COMMERCIAL)` with capacity. That now does real work here: a seller who
+finishes setting up Mobile Money sends one heartbeat with `commercialReady = 1`, and a
+commercial demand that has been waiting in that zone is offered to them without the buyer
+asking again.
+
+### No schema change
+
+Brain schema stays **4**, Android DB stays **10**. Every field used here already existed;
+only the values are honest now.

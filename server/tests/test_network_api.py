@@ -276,7 +276,7 @@ class NetworkApiTest(unittest.TestCase):
             self.assertEqual(200, r.status)
             out = json.loads(r.read().decode("utf-8"))
         self.assertTrue(out["ok"])
-        self.assertEqual("0.17.3", out["version"])
+        self.assertEqual("0.17.4", out["version"])
         text = json.dumps(out)
         for leak in ("nodes", "requests", "sources", "settlements", "syncs", "db"):
             self.assertNotIn(leak, text, "a probe must not report how many people use ProkNet")

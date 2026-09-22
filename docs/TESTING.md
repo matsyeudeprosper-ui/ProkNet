@@ -3470,3 +3470,77 @@ tears down.
 - Any zone colour claiming Internet is available in 75e.
 - Any regression in 75g or 75h.
 - Any regression in sections 59 to 74.
+
+## 76. v0.17.4 the offer class is the truth
+
+Run section **75 first and unchanged** — v0.17.4 does not alter the activation loop. This
+section adds the checks that the class the Brain advertises is the class the session
+really creates.
+
+`status.ps1` must report `version=0.17.4` and `schema=4`.
+
+### 76a. A seller who cannot be paid is not a free provider
+
+On the OUKITEL, go to Gagner and **remove the Mobile Money number** (or leave a fresh
+install without one), so the phone cannot take money. Keep:
+
+- Internet working;
+- « Me prévenir quand quelqu'un cherche Internet » ON;
+- PARTAGER OFF.
+
+On the OnePlus, tap **GET INTERNET**.
+
+Expected: the OUKITEL gets **no notification**, and the OnePlus stays on **Recherche
+d'Internet…**.
+
+That is the correct outcome, and it is the whole point of this patch. In build 71 the
+OUKITEL would have been woken and offered as a FREE provider — and then, if the user had
+tapped PARTAGER, the local pricing would still have asked the buyer to pay.
+
+**FAIL** if the OUKITEL is woken, or if anything anywhere on either phone uses the word
+**gratuit** for this provider.
+
+### 76b. And it starts working the moment it can be paid
+
+Leave the OnePlus's request running (it lives fifteen minutes).
+
+On the OUKITEL, **enter a valid Mobile Money number** and let Gagner show the seller as
+ready.
+
+Expected, within about a minute and **without the OnePlus asking again**:
+
+1. the OUKITEL notification arrives;
+2. tapping PARTAGER starts the seller as normal;
+3. the OnePlus reaches **Un fournisseur se prépare**.
+
+This is the heartbeat re-offering a demand that was already waiting.
+
+**FAIL** if the buyer has to press GET INTERNET a second time.
+
+### 76c. The price the buyer is shown is the price they are charged
+
+Complete the session from 76b (carry the phones together, let the VPN come up).
+
+Expected: the buyer's wallet and the seller's Gagner both show a **paid** session, with
+the same amount, and nothing at any point described it as free.
+
+**FAIL** if the buyer was matched as free and then charged, or matched as paid and then
+given a zero-rate session.
+
+### 76d. Diagnostics tell the same story
+
+On the OUKITEL diagnostic screen, with the Mobile Money number removed again, find the
+network-brain line.
+
+Expected: it says the phone is **willing** and has **room for a buyer**, and the presence
+is still published — the zone is honestly covered — while the Brain still offers it no
+work.
+
+**FAIL** if the diagnostic claims the phone is offering anything free.
+
+### What would make this a FAIL
+
+- Any provider described as free because it could not be paid.
+- A buyer matched as FREE being charged, or vice versa.
+- The waiting buyer in 76b needing a second tap.
+- Any regression in sections 59 to 75.

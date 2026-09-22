@@ -47,6 +47,15 @@ class BrainAckTest {
     private fun request(id: String = "aa".repeat(8)): NetRequest.Request =
         NetRequest.sign(NetRequest.oneTap(id, buyer.shortId, buyer.pub.toHex(), now, zone), buyer.signer)
 
+    /** A normal commercial seller's source: mobile data it paid for. Never free. */
+    private val paidSource = Pricing.Source(Pricing.SourceKind.MOBILE_DATA, 100)
+
+    /** The only kind of source that is genuinely a gift. */
+    private val freeSource = Pricing.Source(Pricing.SourceKind.FREE_PUBLIC)
+
+    private val COMMERCIAL_INTENT = ProviderPresence.Intent.COMMERCIAL
+    private val FREE_INTENT = ProviderPresence.Intent.FREE
+
     /** The exact OUKITEL state in TESTING 75: opted in, Internet, Bluetooth, NOT sharing. */
     private fun idleProvider(optIn: Boolean = true, validated: Boolean = true,
                              bluetooth: Boolean = true, busy: Boolean = false,
@@ -61,7 +70,7 @@ class BrainAckTest {
     @Test fun an_idle_opted_in_provider_is_offered_to_the_brain() {
         // notifyOptIn = true, sellOn = FALSE, upstream validated, Bluetooth on, not busy
         val p = ProviderPresence.of(zone, idleProvider(), currentlySharing = false,
-            activeSessions = 0, mayOfferPaidSharing = true)
+            activeSessions = 0, mayOfferPaidSharing = true, intent = COMMERCIAL_INTENT)
         assertNotNull("an idle willing provider must produce a presence", p)
         p!!
         // build 70 sent sharingEnabled = optIn && sellOn, so this was false and the
@@ -79,23 +88,28 @@ class BrainAckTest {
 
     @Test fun readiness_describes_ability_and_not_the_gateway() {
         // item 4: "if the user accepts this request, can this phone serve it?"
-        val paid = ProviderPresence.of(zone, idleProvider(), false, 0, mayOfferPaidSharing = true)!!
+        //
+        // v0.17.4 CHANGED THE SECOND HALF OF THIS TEST. It used to assert that a seller
+        // who could not take money became freeReady, which is the bug v0.17.4 exists to
+        // remove: being unable to charge is not an offer to give anything away.
+        val paid = ProviderPresence.of(zone, idleProvider(), false, 0,
+            mayOfferPaidSharing = true, intent = COMMERCIAL_INTENT)!!
         assertTrue("a paid-ready seller is commercially ready before it starts", paid.commercialReady)
         assertFalse(paid.freeReady)
         assertEquals(ProviderPresence.COMMERCIAL, paid.offerClass)
+        assertFalse("and it is not sharing yet", paid.currentlySharing)
 
-        val free = ProviderPresence.of(zone, idleProvider(), false, 0, mayOfferPaidSharing = false)!!
-        assertFalse("v0.16 payment safety is untouched", free.commercialReady)
-        assertTrue(free.freeReady)
-        assertEquals(ProviderPresence.FREE, free.offerClass)
-        // and neither of them is sharing yet
-        assertFalse(paid.currentlySharing); assertFalse(free.currentlySharing)
+        val cannotCharge = ProviderPresence.of(zone, idleProvider(), false, 0,
+            mayOfferPaidSharing = false, intent = COMMERCIAL_INTENT)!!
+        assertFalse("v0.16 payment safety is untouched", cannotCharge.commercialReady)
+        assertFalse("and it is NOT silently turned into a gift", cannotCharge.freeReady)
+        assertEquals("nor relabelled", ProviderPresence.COMMERCIAL, cannotCharge.offerClass)
     }
 
     // ===================== item 7: opt-in is still required =====================
 
     @Test fun a_phone_that_never_opted_in_is_never_a_provider() {
-        val p = ProviderPresence.of(zone, idleProvider(optIn = false), false, 0, true)!!
+        val p = ProviderPresence.of(zone, idleProvider(optIn = false), false, 0, true, COMMERCIAL_INTENT)!!
         assertFalse("no silent sharing, paid or free", p.willing)
         assertFalse(p.availableForActivation)
         assertFalse("and the presence is withdrawn rather than left stale", p.shouldPublish)
@@ -104,14 +118,14 @@ class BrainAckTest {
 
     @Test fun willingness_needs_real_internet_and_a_real_path() {
         // unvalidated Internet is not Internet
-        assertFalse(ProviderPresence.of(zone, idleProvider(validated = false), false, 0, true)!!.willing)
+        assertFalse(ProviderPresence.of(zone, idleProvider(validated = false), false, 0, true, COMMERCIAL_INTENT)!!.willing)
         // home Wi-Fi with Bluetooth off has no local path to offer at all
-        val noPath = ProviderPresence.of(zone, idleProvider(bluetooth = false), false, 0, true)!!
+        val noPath = ProviderPresence.of(zone, idleProvider(bluetooth = false), false, 0, true, COMMERCIAL_INTENT)!!
         assertFalse(noPath.willing)
         assertFalse(noPath.upstreamAvailable)
         // and without a zone there is no presence to publish
-        assertNull(ProviderPresence.of("", idleProvider(), false, 0, true))
-        assertNull(ProviderPresence.of(CoverageModel.NO_ZONE, idleProvider(), false, 0, true))
+        assertNull(ProviderPresence.of("", idleProvider(), false, 0, true, COMMERCIAL_INTENT))
+        assertNull(ProviderPresence.of(CoverageModel.NO_ZONE, idleProvider(), false, 0, true, COMMERCIAL_INTENT))
     }
 
     @Test fun build_70s_own_expression_would_have_published_nothing_for_this_phone() {
@@ -125,7 +139,7 @@ class BrainAckTest {
         assertFalse("build 70 published nothing here", build70SharingEnabled)
 
         val p = ProviderPresence.of(zone, e, currentlySharing = sellOn,
-            activeSessions = 0, mayOfferPaidSharing = true)!!
+            activeSessions = 0, mayOfferPaidSharing = true, intent = COMMERCIAL_INTENT)!!
         assertTrue("and build 71 publishes", p.shouldPublish)
         assertTrue("and says it may be asked", p.availableForActivation)
         // the two answers genuinely differ - this test would be worthless otherwise
@@ -149,7 +163,8 @@ class BrainAckTest {
 
     @Test fun a_provider_already_serving_somebody_stays_visible_but_gets_no_second_buyer() {
         val p = ProviderPresence.of(zone, idleProvider(sharing = true, busy = true),
-            currentlySharing = true, activeSessions = 1, mayOfferPaidSharing = true)!!
+            currentlySharing = true, activeSessions = 1, mayOfferPaidSharing = true,
+            intent = COMMERCIAL_INTENT)!!
         // it is still willing, and still publishes - a busy provider is a real provider
         // and its zone is genuinely covered
         assertTrue(p.willing)
@@ -163,9 +178,10 @@ class BrainAckTest {
 
     @Test fun capacity_is_reported_and_never_invented() {
         // the server clamps these anyway; the phone must not send nonsense in the first place
-        val neg = ProviderPresence.of(zone, idleProvider(), false, -4, true)!!
+        val neg = ProviderPresence.of(zone, idleProvider(), false, -4, true, COMMERCIAL_INTENT)!!
         assertEquals(0, neg.currentLoad)
-        val silly = ProviderPresence.of(zone, idleProvider(), false, 0, true, maxBuyers = 0)!!
+        val silly = ProviderPresence.of(zone, idleProvider(), false, 0, true, COMMERCIAL_INTENT,
+            maxBuyers = 0)!!
         assertEquals(1, silly.maxBuyers)
     }
 
