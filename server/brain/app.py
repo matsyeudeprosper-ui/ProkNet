@@ -11,6 +11,10 @@ Routes:
     POST /v1/payments/webhook -> a rail reports an outcome; only a VERIFIED one may confirm
     GET  /v1/wallet?node=     -> what one node owes and is owed
 
+v0.17.0 adds the live control plane under /v1/network/ - presence, demand, activation and
+zone colour. It coordinates; it never carries anybody's Internet, and it never changes
+signed money. See network.py.
+
 The settlement routes are JSON. Nothing a phone says is taken as payment: only a webhook
 whose signature this server verified may move an obligation to CONFIRMED. See
 settlement.py for the three rules the service exists to enforce.
@@ -27,6 +31,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import evidence
+from . import network
 from . import paybox
 from . import protocol
 from . import ruleconfig
@@ -34,9 +39,19 @@ from . import settlement
 from . import signed_request
 from .db import Brain
 
+#: Reported by /health, so an operator can see which build is actually running.
+VERSION = "0.17.0"
+
 MAX_BODY = 256 * 1024
 #: How long an obligation may wait to be paid.
 SETTLEMENT_TTL_MS = 30 * 24 * 3600 * 1000
+
+#: v0.17.0: how many control-plane requests one node may make per minute, per kind.
+#: Presence is a heartbeat every thirty to sixty seconds and must never be throttled into
+#: uselessness; creating a demand is rare and is where abuse would show up. Generous
+#: enough that ordinary retry and recovery never trips it.
+NETWORK_RATE = {"presence": 20, "demand": 10, "activation": 60, "read": 120}
+NETWORK_RATE_WINDOW_MS = 60_000
 
 #: A changed destination waits before it is used, so a stolen phone cannot redirect
 #: payments instantly. Must match DestinationClaim.CHANGE_COOLING_MS on the phones.
@@ -65,9 +80,13 @@ class State:
         self.brain = Brain(db_path)
         self.settlements = settlement.Settlements(db_path)
         self.pay = paybox.PayBox(db_path)
+        # v0.17.0: the control plane shares the Brain's own connection, because its tables
+        # are part of the Brain's schema and its sweep runs on the Brain's timer.
+        self.net = network.NetworkPlane(self.brain.db)
         self.rules = ruleconfig.RuleStore(self.pay.db, CONFIG_PUBLIC_KEY)
         self.lock = threading.Lock()
         self.rate = {}          # node_id -> [timestamps]
+        self.netrate = {}       # (node_id, kind) -> [timestamps]
         self.started = int(time.time() * 1000)
         # No operator signing secret ships in this repository, so no webhook can be
         # verified here yet and none may therefore confirm a payment. Set it from the
@@ -78,6 +97,23 @@ class State:
         self.nonces = signed_request.Nonces(self.pay.db)
         self.syncs = 0
         self.rejected = 0
+
+    def allow_network(self, node_id: str, kind: str, now: int) -> bool:
+        """Per node, per kind of control-plane request.
+
+        Separate from the /v1/sync limiter on purpose: a provider heartbeat and a buyer
+        asking for Internet are different budgets, and one must never exhaust the other.
+        """
+        cap = NETWORK_RATE.get(kind, 30)
+        with self.lock:
+            key = (node_id, kind)
+            hits = [t for t in self.netrate.get(key, []) if now - t < NETWORK_RATE_WINDOW_MS]
+            if len(hits) >= cap:
+                self.netrate[key] = hits
+                return False
+            hits.append(now)
+            self.netrate[key] = hits
+            return True
 
     def allow(self, node_id: str, now: int) -> bool:
         with self.lock:
@@ -104,6 +140,138 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Prok-Protocol", "prok-sync/%d" % protocol.VERSION)
         self.end_headers()
         self.wfile.write(data)
+
+    def _network_get(self, who: str, now: int):
+        """Reads. Each one answers about the caller and nobody else.
+
+        There is deliberately no "list the providers near me": a consumer map needs a
+        zone's colour, not the identities of the households in it.
+        """
+        p = self.path
+
+        if p.startswith("/v1/network/presence/me"):
+            row = STATE.net.presence(who)
+            self._json(200, {"presence": None if row is None else {
+                "zone": row.zone, "updatedAt": int(row.updated_at),
+                "expiresAt": int(row.expires_at), "fresh": row.fresh(now),
+                "sharingEnabled": bool(int(row.sharing_enabled)),
+                "currentLoad": int(row.current_load), "maxBuyers": int(row.max_buyers)}})
+            return
+
+        if p.startswith("/v1/network/demand"):
+            # a buyer reads its own, by id or simply "whatever I have live"
+            wanted = self._query("id")
+            d = STATE.net.demand(wanted) if wanted else STATE.net.active_demand_for(who)
+            if d is None:
+                self._json(404, {"error": "no such request"})
+                return
+            if d["buyer_id"] != who:
+                self._json(403, {"error": "that request belongs to somebody else"})
+                return
+            act = STATE.net.live_activation_for(d["demand_id"])
+            self._json(200, {"demand": {
+                "demandId": d["demand_id"], "status": d["status"], "zone": d["zone"],
+                "createdAt": int(d["created_at"]), "expiresAt": int(d["expires_at"]),
+                "updatedAt": int(d["updated_at"]), "attempts": int(d["attempts"]),
+                "requestedClass": d["requested_class"]},
+                # the buyer learns that SOMEBODY is preparing, not who. A provider's
+                # identity is not part of the buyer's screen.
+                "activation": None if act is None else {
+                    "activationId": act["activation_id"], "state": act["state"],
+                    "expiresAt": int(act["expires_at"])}})
+            return
+
+        if p.startswith("/v1/network/jobs"):
+            # a provider's own inbox, and only its own
+            self._json(200, {"jobs": [{
+                "activationId": j["activation_id"], "demandId": j["demand_id"],
+                "zone": j["zone"], "state": j["state"],
+                "createdAt": int(j["created_at"]), "expiresAt": int(j["expires_at"]),
+            } for j in STATE.net.jobs_for_provider(who, now)]})
+            return
+
+        if p.startswith("/v1/network/coverage"):
+            # zone colour only. Counts are omitted from the consumer answer because in a
+            # thin zone "1 provider" is one identifiable household.
+            zone = self._query("zone")
+            if not zone:
+                self._json(400, {"error": "name a zone"})
+                return
+            z = STATE.net.zone_status(zone, now)
+            self._json(200, {"zone": z["zone"], "state": z["status"], "updatedAt": now})
+            return
+
+        if p.startswith("/v1/network/diagnostics"):
+            # what /health used to leak, now behind a signature
+            self._json(200, {"network": STATE.net.counts(),
+                             "brain": STATE.brain.counts(),
+                             "schema": STATE.brain.schema_version(),
+                             "syncs": STATE.syncs, "rejected": STATE.rejected,
+                             "uptimeS": (now - STATE.started) // 1000})
+            return
+
+        self._json(404, {"error": "not found"})
+
+    def _network_post(self, body: dict, who: str, now: int) -> dict:
+        """Writes. The verified identity is authoritative; the body never names the actor.
+
+        A demand signed by A that says `buyerId: B` is A trying to act as B, so the field
+        is not read at all rather than checked - there is nothing for it to disagree with.
+        """
+        p = self.path
+
+        if p == "/v1/network/presence":
+            if not STATE.allow_network(who, "presence", now):
+                raise network.NetworkError("too many heartbeats")
+            return STATE.net.put_presence(who, body, now)
+
+        if p == "/v1/network/presence/stop":
+            return STATE.net.drop_presence(who, now)
+
+        if p == "/v1/network/demand":
+            if not STATE.allow_network(who, "demand", now):
+                raise network.NetworkError("too many requests; please wait a moment")
+            out = STATE.net.put_demand(who, body, now)
+            # match straight away: the buyer is standing there waiting
+            served = STATE.net.serve(out["demandId"], now)
+            out["status"] = served.get("status", out.get("status"))
+            if "activationId" in served:
+                out["activationId"] = served["activationId"]
+            out["candidates"] = served.get("candidates", 0)
+            return out
+
+        if p == "/v1/network/demand/cancel":
+            return STATE.net.cancel_demand(str(body.get("demandId", "")), who, now)
+
+        if p == "/v1/network/demand/poll":
+            # the buyer nudges the matcher: used when a provider declined or went quiet
+            d = STATE.net.demand(str(body.get("demandId", "")))
+            if d is None:
+                raise network.NetworkError("unknown demand")
+            if d["buyer_id"] != who:
+                raise network.NetworkError("that request belongs to somebody else")
+            return STATE.net.serve(d["demand_id"], now)
+
+        if p == "/v1/network/jobs/accept" or p == "/v1/network/jobs/decline":
+            if not STATE.allow_network(who, "activation", now):
+                raise network.NetworkError("too many answers")
+            accept = p.endswith("accept")
+            out = STATE.net.answer(str(body.get("activationId", "")), who, accept, now)
+            if not accept:
+                # do not leave the buyer waiting on somebody who said no
+                a = STATE.net.activation(str(body.get("activationId", "")))
+                if a is not None:
+                    STATE.net.set_demand_status(a["demand_id"], network.SEARCHING, now, "declined")
+                    STATE.net.serve(a["demand_id"], now)
+            return out
+
+        if p == "/v1/network/jobs/state":
+            if not STATE.allow_network(who, "activation", now):
+                raise network.NetworkError("too many reports")
+            return STATE.net.report(str(body.get("activationId", "")), who,
+                                    str(body.get("result", "")), now)
+
+        raise network.NetworkError("not found")
 
     def _owes(self, who: str, seller: str) -> bool:
         """May `who` see where `seller` is paid?
@@ -218,6 +386,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
 
+        # ---- v0.17.0: the live control plane --------------------------------------
+        if self.path.startswith("/v1/network/"):
+            who = self._who()
+            if who is None:
+                self._json(401, {"error": "this endpoint requires a signed request"})
+                return
+            if not STATE.allow_network(who, "read", int(time.time() * 1000)):
+                self._json(429, {"error": "too many requests"})
+                return
+            now = int(time.time() * 1000)
+            try:
+                with STATE.lock:
+                    self._network_get(who, now)
+            except network.NetworkError as e:
+                self._json(400, {"error": str(e)})
+            return
+
         if self.path.startswith("/v1/settlements/"):
             # v0.16.3: this used to be open. A settlement id is not a secret - it is
             # derived from signed session bytes and both phones hold it - so knowing one
@@ -256,16 +441,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, STATE.settlements.wallet(node))
             return
         if self.path == "/health":
-            c = STATE.brain.counts()
-            lines = ["ok", "protocol prok-sync/%d" % protocol.VERSION, "uptime_s %d" % ((int(time.time() * 1000) - STATE.started) // 1000),
-                     "syncs %d" % STATE.syncs, "rejected %d" % STATE.rejected] + ["%s %d" % (k, v) for k, v in c.items()]
-            self._send(200, "\n".join(lines) + "\n")
+            # v0.17.0: deliberately almost empty, and unauthenticated. It used to report
+            # how many nodes, requests and sources the Brain knew about, which told anybody
+            # who asked how many people were using ProkNet and where. A liveness probe does
+            # not need that. Counts moved to /v1/network/diagnostics, which is signed.
+            self._json(200, {"ok": True, "version": VERSION,
+                             "protocol": "prok-sync/%d" % protocol.VERSION,
+                             "schema": STATE.brain.schema_version()})
         else:
             self._send(404, "not found\n")
 
     def do_POST(self):
         if (self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments")
-                or self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/")):
+                or self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/")
+                or self.path.startswith("/v1/network/")):
             self._settlement_post()
             return
         if self.path != "/v1/sync":
@@ -346,6 +535,17 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("rail", "NONE"), body.get("operator_ref", ""),
                     submitter, body.get("seller_id", ""),
                     int(body.get("amount", 0)), allocations, now, body.get("destination", "")))
+                return
+
+            # ---- v0.17.0: the live control plane ----
+            #
+            # A separate module and a separate failure domain: a control-plane fault must
+            # not stop a payment reaching the Brain, and vice versa.
+            if self.path.startswith("/v1/network/"):
+                try:
+                    self._json(200, self._network_post(body, submitter, now))
+                except network.NetworkError as e:
+                    self._json(400, {"error": str(e)})
                 return
 
             # ---- v0.16.2: the Brain as a carrier for signed payment objects ----
@@ -452,6 +652,7 @@ def cleanup_loop(state: State, every_s: int):
                 now_ms = int(time.time() * 1000)
                 n["settlements_expired"] = state.settlements.expire(now_ms)
                 n["payment_windows_swept"] = state.pay.sweep(now_ms)
+                n.update(state.net.sweep(now_ms))
             if any(n.values()):
                 print("cleanup: %s" % n, flush=True)
         except Exception as e:  # never let the timer die

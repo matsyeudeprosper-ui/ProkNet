@@ -9,6 +9,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import matching
+from . import network
 from .protocol import Availability, Coverage, Request, verify_request
 
 MIGRATIONS = [
@@ -39,6 +40,12 @@ MIGRATIONS = [
         state TEXT NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS sync_receipts (node_id TEXT NOT NULL, ts INTEGER NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY (node_id, ts));
     """,
+    # 2: v0.17.0, the live control plane. Presence, demand, activation, reliability and an
+    # audit trail, all durable - a phone that asks for Internet and then loses signal must
+    # still be findable, and a Brain restart must not lose who is waiting for whom. Added
+    # as a numbered migration rather than another CREATE IF NOT EXISTS, so the server can
+    # always say which schema it is on.
+    network.SCHEMA,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000
@@ -237,6 +244,11 @@ class Brain:
         return n
 
     # ---- views for /health and tests -------------------------------------------------------------------------------------------------------
+
+    def schema_version(self) -> int:
+        """Which numbered migration this database is on. For /health and for operators."""
+        row = self.db.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+        return int(row["v"] or 0)
 
     def counts(self) -> dict:
         cur = self.db.cursor()
