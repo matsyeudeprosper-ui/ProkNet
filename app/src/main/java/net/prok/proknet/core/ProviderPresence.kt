@@ -46,6 +46,47 @@ object ProviderPresence {
     const val COMMERCIAL = "COMMERCIAL"
     const val FREE = "FREE"
 
+    /**
+     * v0.17.4: what this phone is OFFERING, which is not the same as what it is able to
+     * complete right now.
+     *
+     * THE BUG THIS EXISTS FOR. Build 71 did:
+     *
+     *     commercialReady = willing && mayOfferPaidSharing
+     *     freeReady       = willing && !mayOfferPaidSharing
+     *     offerClass      = if (mayOfferPaidSharing) COMMERCIAL else FREE
+     *
+     * `mayOfferPaidSharing` false means "this seller cannot currently take money" - no
+     * payment destination, verification not ready, seller blocked. Build 71 read that as
+     * "this seller has volunteered to give their Internet away", which is a completely
+     * different sentence. A seller whose Mobile Money number was missing was advertised
+     * to the whole zone as FREE.
+     *
+     * Two things were wrong with that at once. It breaks the locked product rule that
+     * FREE must be explicit. And it creates an economic mismatch: the Brain matches a
+     * buyer who asked for free, the provider taps PARTAGER, and the local pricing engine
+     * - which has never looked at `mayOfferPaidSharing` - quotes a paid rate for the
+     * same session.
+     *
+     * So intent comes from the SOURCE, using the same [Pricing.isFree] test the pricing
+     * engine itself uses to decide the buyer pays nothing. Inability to charge can make a
+     * provider unavailable. It can never change what it was offering.
+     */
+    enum class Intent { COMMERCIAL, FREE }
+
+    /**
+     * The only way a provider becomes FREE.
+     *
+     * Reuses the pricing engine's own predicate rather than inventing a second opinion:
+     * an explicitly free source (`free = true`) or a FREE_PUBLIC one. No phone today has
+     * a way to set either, so in production this is false and every real provider is
+     * COMMERCIAL - which is the conservative answer and the honest one. When a real free
+     * source or a user-facing "give it away" setting exists, it arrives here and nowhere
+     * else.
+     */
+    fun intentOf(source: Pricing.Source): Intent =
+        if (Pricing.isFree(source)) Intent.FREE else Intent.COMMERCIAL
+
     data class State(
         val zone: String,
         /** Opted in, has usable Internet, has a path it could offer. NOT "is sharing". */
@@ -82,6 +123,9 @@ object ProviderPresence {
      * @param activeSessions live seller sessions, 0 or 1 in the pilot.
      * @param mayOfferPaidSharing every v0.16 paid-seller safety condition, unchanged:
      *   a valid payment destination, payment verification readiness, seller not blocked.
+     *   v0.17.4: this may make a provider UNAVAILABLE. It may never reclassify it.
+     * @param intent what this phone is offering, from [intentOf] and therefore from the
+     *   source the pricing engine will actually quote on.
      * @return null when there is no zone, because a presence without a place is useless.
      */
     fun of(zone: String,
@@ -89,6 +133,7 @@ object ProviderPresence {
            currentlySharing: Boolean,
            activeSessions: Int,
            mayOfferPaidSharing: Boolean,
+           intent: Intent,
            maxBuyers: Int = MAX_BUYERS): State? {
         if (zone.isEmpty() || zone == CoverageModel.NO_ZONE) return null
         val e = eligibility
@@ -98,8 +143,13 @@ object ProviderPresence {
         // readiness is an ABILITY - "if the user accepts this, can this phone serve it?" -
         // and not a report on the gateway. Deriving it from `sellOn` is the same mistake
         // as deriving presence from `sellOn`.
-        val commercial = willing && mayOfferPaidSharing
-        val free = willing && !mayOfferPaidSharing
+        // v0.17.4: three independent facts. Intent says what is on offer; readiness says
+        // whether it can be completed; capacity says whether there is room. A provider
+        // that cannot charge is simply UNAVAILABLE - both flags false - and the Brain
+        // then matches it for nothing, which is the correct outcome. It is never
+        // reclassified as a gift.
+        val commercial = willing && intent == Intent.COMMERCIAL && mayOfferPaidSharing
+        val free = willing && intent == Intent.FREE
         return State(
             zone = zone,
             willing = willing,
@@ -113,7 +163,13 @@ object ProviderPresence {
             sponsoredReady = false,
             currentLoad = load,
             maxBuyers = cap,
-            offerClass = if (mayOfferPaidSharing) COMMERCIAL else FREE,
-            priceHintInternal = e.sellPriceCentimesPerMb)
+            // the class it is OFFERING, always - a commercial seller that cannot charge
+            // stays COMMERCIAL and is excluded by its readiness being false. Flipping the
+            // class instead would be a lie the matcher would act on.
+            offerClass = if (intent == Intent.FREE) FREE else COMMERCIAL,
+            // and the hint matches the contract the session would really create:
+            // Pricing.autoRate is 0 for a free source, so claiming a per-MB figure for
+            // one would be the same mismatch in a different field
+            priceHintInternal = if (intent == Intent.FREE) 0 else e.sellPriceCentimesPerMb)
     }
 }

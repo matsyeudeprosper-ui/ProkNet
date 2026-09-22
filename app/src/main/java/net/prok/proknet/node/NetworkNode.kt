@@ -278,7 +278,11 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
                 // the gateway accepts one session at a time, so load is 0 or 1. The
                 // server clamps these anyway: a provider cannot claim impossible capacity.
                 activeSessions = if (node.gateway.session != null) 1 else 0,
-                mayOfferPaidSharing = node.mayOfferPaidSharing())
+                mayOfferPaidSharing = node.mayOfferPaidSharing(),
+                // v0.17.4: what this phone is OFFERING, from the same source the pricing
+                // engine will quote on. Build 71 inferred FREE from being unable to take
+                // money, which advertised a seller with no Mobile Money number as a gift.
+                intent = net.prok.proknet.core.ProviderPresence.intentOf(node.mySource()))
         }
 
         node.networkSync.onJobs = { jobs ->

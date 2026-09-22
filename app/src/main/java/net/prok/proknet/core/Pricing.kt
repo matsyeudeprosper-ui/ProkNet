@@ -96,6 +96,19 @@ object Pricing {
 
     data class Source(val kind: SourceKind, val declaredCostCentimesPerMb: Int = -1, val free: Boolean = false)
 
+    /**
+     * v0.17.4: is this Internet genuinely free to give away?
+     *
+     * The single definition. [quote] and [autoRate] have always used exactly this test to
+     * decide the buyer pays nothing, and from v0.17.4 the Network Brain presence uses it
+     * too - so the class the Brain advertises and the price the local session actually
+     * produces can never disagree.
+     *
+     * It is deliberately narrow. Being UNABLE to charge is not the same fact as having
+     * OFFERED to give something away, and only this says the second one.
+     */
+    fun isFree(source: Source): Boolean = source.free || source.kind == SourceKind.FREE_PUBLIC
+
     // ---- the rate ---------------------------------------------------------------------------------------
 
     /** What the seller must keep, per MB, for the deal to be worth doing. */
@@ -190,7 +203,7 @@ object Pricing {
         val cost = sourceCostPerMb(source.kind, source.declaredCostCentimesPerMb, policy)
 
         // 1. Internet that costs nobody anything is free, whatever the buyer was prepared to spend.
-        if (source.free || source.kind == SourceKind.FREE_PUBLIC) {
+        if (isFree(source)) {
             val bytes = bytesForBudget(0, 0)
             return Quote(true, "free source: the buyer pays nothing", 0, bytes, budgetCentimes, 0, 0, costClass, Payer.BUYER, true,
                 0, 0, 0, 0, 0, 0)
@@ -253,7 +266,7 @@ object Pricing {
 
     /** The seller's automatic price, from its source and what it wants to earn. */
     fun autoRate(source: Source, sellerPolicy: SellerPolicy, policy: Policy = DEFAULT): Int =
-        if (source.free || source.kind == SourceKind.FREE_PUBLIC) 0 else rateForFloor(sellerFloorPerMb(source, sellerPolicy, policy), policy)
+        if (isFree(source)) 0 else rateForFloor(sellerFloorPerMb(source, sellerPolicy, policy), policy)
 
     private fun economics(ok: Boolean, reason: String, rate: Int, bytes: Long, buyerBudget: Long, costPerMb: Int, floorPerMb: Int,
                           costClass: Coverage.Kind, payer: Payer, policy: Policy, sponsor: Long): Quote {
