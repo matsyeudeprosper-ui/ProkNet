@@ -103,17 +103,20 @@ class State:
 
         Separate from the /v1/sync limiter on purpose: a provider heartbeat and a buyer
         asking for Internet are different budgets, and one must never exhaust the other.
+
+        **The caller must already hold `self.lock`.** This does not take it: the POST path
+        checks the budget inside the transaction that will do the work, and a second
+        acquisition of a non-reentrant lock is a deadlock, not a slow request.
         """
         cap = NETWORK_RATE.get(kind, 30)
-        with self.lock:
-            key = (node_id, kind)
-            hits = [t for t in self.netrate.get(key, []) if now - t < NETWORK_RATE_WINDOW_MS]
-            if len(hits) >= cap:
-                self.netrate[key] = hits
-                return False
-            hits.append(now)
+        key = (node_id, kind)
+        hits = [t for t in self.netrate.get(key, []) if now - t < NETWORK_RATE_WINDOW_MS]
+        if len(hits) >= cap:
             self.netrate[key] = hits
-            return True
+            return False
+        hits.append(now)
+        self.netrate[key] = hits
+        return True
 
     def allow(self, node_id: str, now: int) -> bool:
         with self.lock:
@@ -392,12 +395,12 @@ class Handler(BaseHTTPRequestHandler):
             if who is None:
                 self._json(401, {"error": "this endpoint requires a signed request"})
                 return
-            if not STATE.allow_network(who, "read", int(time.time() * 1000)):
-                self._json(429, {"error": "too many requests"})
-                return
             now = int(time.time() * 1000)
             try:
                 with STATE.lock:
+                    if not STATE.allow_network(who, "read", now):
+                        self._json(429, {"error": "too many requests"})
+                        return
                     self._network_get(who, now)
             except network.NetworkError as e:
                 self._json(400, {"error": str(e)})
