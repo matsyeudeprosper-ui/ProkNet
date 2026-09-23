@@ -33,6 +33,7 @@ import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.ActivityUi
 import net.prok.proknet.core.Coverage
 import net.prok.proknet.core.CoverageModel
+import net.prok.proknet.core.LocationGate
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.DestinationClaim
 import net.prok.proknet.core.EarnUi
@@ -92,6 +93,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private var request: InternetRequest.Request? = null
     private var requestStartedAt = 0L
     private var locationAsked = false
+
+    /** v0.17.5: what to do once a zone becomes possible, if anything. */
+    private var pendingAfterLocation: (() -> Unit)? = null
     private val money by lazy { getSharedPreferences("proknet_money", Context.MODE_PRIVATE) }
     /** v0.15.1: Activité answers "what happened"; Wallet answers "what needs my attention". */
     private var walletTab = false
@@ -129,7 +133,14 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         node = ProkNetApp.node(this)
         cover = ProkNetApp.coverage(this)
         network = ProkNetApp.network(this)
-        v<Switch>(R.id.switchNotify).setOnClickListener { network.notifyOptIn = v<Switch>(R.id.switchNotify).isChecked; refresh() }
+        v<Switch>(R.id.switchNotify).setOnClickListener {
+            network.notifyOptIn = v<Switch>(R.id.switchNotify).isChecked
+            // v0.17.5: opting in to be woken is exactly the moment the zone starts to
+            // matter - without one this phone publishes no presence and is never offered
+            // a buyer, however willing it is.
+            if (network.notifyOptIn && LocationGate.blocked(locationNeed())) ensureLocation(null)
+            refresh()
+        }
         v<Switch>(R.id.switchShareCoverage).setOnClickListener { network.shareCoverage = v<Switch>(R.id.switchShareCoverage).isChecked; refresh() }
 
         v<View>(R.id.navHome).setOnClickListener { select(Tab.HOME) }
@@ -231,6 +242,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private fun getInternet() {
         if (node.sellOn) { toast(getString(R.string.toast_stop_sharing_first)); return }
         if (request?.active == true) return
+        // v0.17.5: without a zone the Brain cannot create a demand at all, so ask here
+        // rather than letting the buyer watch "Recherche" for ever.
+        if (LocationGate.blocked(locationNeed())) { ensureLocation { getInternet() }; return }
         // v0.14: one tap, but never a surprise bill. The first paid session is confirmed once.
         if (!budgetConfirmed) { confirmBudgetThenGo(); return }
         ensureRunning {
@@ -533,7 +547,14 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val waiting = ProviderInbox.active(network.inbox, now).count { !it.accepted }
         v<TextView>(R.id.rowShareBadge).text = if (waiting == 1) getString(R.string.inbox_badge_one) else getString(R.string.inbox_badge_many, waiting)
         show(R.id.rowShareBadge, waiting > 0)
-        text(R.id.homeNote, if (running && !node.isBluetoothOn()) getString(R.string.home_bluetooth_off) else "")
+        // v0.17.5: Bluetooth off and zone unknown are both reasons nothing is happening,
+        // and both used to be invisible. Bluetooth first: it stops even the local path.
+        val locNote = LocationGate.note(locationNeed())
+        text(R.id.homeNote, when {
+            running && !node.isBluetoothOn() -> getString(R.string.home_bluetooth_off)
+            locNote.isNotEmpty() -> locNote
+            else -> ""
+        })
     }
 
     private fun refreshInternet(b: ProductState.Buyer) {
@@ -695,11 +716,82 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         AlertDialog.Builder(this).setTitle(CoverageModel.cellWord(cell?.status ?: Coverage.ZoneStatus.RED)).setMessage(msg).setPositiveButton(R.string.close, null).show()
     }
 
-    private fun askLocation() {
-        locationAsked = true
-        AlertDialog.Builder(this).setTitle(R.string.map_location_title).setMessage(R.string.map_location_explain)
-            .setPositiveButton(R.string.continue_btn) { _, _ -> requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), 7) }
-            .setNegativeButton(R.string.close, null).show()
+    private fun askLocation() = ensureLocation(null)
+
+    // ---- v0.17.5: the zone, asked for wherever it is actually needed ------------------
+    //
+    // Until build 72 this dialog existed only on the map tab. The whole Network Brain is
+    // gated on the zone - no presence, no demand, no coverage without one - so a user who
+    // never opened the map had the entire network layer switched off and was never told.
+    // On the pilot phone that is exactly what happened.
+
+    /** Has Android's permission dialog been used up? Asked once, remembered on disk. */
+    private fun locationPrefs() = getSharedPreferences("proknet_ui", Context.MODE_PRIVATE)
+
+    private fun canAskLocationInApp(): Boolean =
+        !locationPrefs().getBoolean("location_asked", false) ||
+            shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+    private fun locationServicesOn(): Boolean = try {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        when {
+            lm == null -> true                       // cannot tell; do not invent a problem
+            Build.VERSION.SDK_INT >= 28 -> lm.isLocationEnabled
+            else -> lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        }
+    } catch (e: Exception) { true }
+
+    fun locationNeed(): LocationGate.Need = LocationGate.need(
+        hasPermission = cover.hasLocationPermission(),
+        locationServicesOn = locationServicesOn(),
+        canAskInApp = canAskLocationInApp())
+
+    /**
+     * Run [then] once a zone is possible, asking for whatever is missing first.
+     *
+     * One tap in every case. The permission dialog is the normal answer; the settings
+     * screens are opened DIRECTLY, and only when Android will no longer show that dialog,
+     * because "go into Settings and find it" is not an instruction most people can follow.
+     */
+    private fun ensureLocation(then: (() -> Unit)?) {
+        val need = locationNeed()
+        if (need == LocationGate.Need.NONE) { then?.invoke(); return }
+        pendingAfterLocation = then
+        DiagLog.i(tag, "location gate: " + LocationGate.diag(need))
+        AlertDialog.Builder(this)
+            .setTitle(LocationGate.title(need))
+            .setMessage(LocationGate.message(need))
+            .setPositiveButton(LocationGate.button(need)) { _, _ -> actOnLocationNeed(need) }
+            .setNegativeButton(R.string.close) { _, _ ->
+                // refused, and the screen says so from now on rather than going quiet
+                pendingAfterLocation = null; refresh()
+            }
+            .show()
+    }
+
+    private fun actOnLocationNeed(need: LocationGate.Need) {
+        when (need) {
+            LocationGate.Need.ASK_PERMISSION -> {
+                locationPrefs().edit().putBoolean("location_asked", true).apply()
+                locationAsked = true
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.ACCESS_FINE_LOCATION), 7)
+            }
+            LocationGate.Need.OPEN_SETTINGS -> openSettings(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", packageName, null)))
+            LocationGate.Need.TURN_ON_LOCATION -> openSettings(
+                Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            LocationGate.Need.NONE -> {}
+        }
+    }
+
+    private fun openSettings(intent: Intent) {
+        try { startActivity(intent) } catch (e: Exception) {
+            DiagLog.w(tag, "could not open settings: " + e.message)
+            toast(LocationGate.note(locationNeed()))
+        }
     }
 
     // ---- earn ------------------------------------------------------------------------------------------
@@ -724,7 +816,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
         text(R.id.earnHeroTitle, hero.title)
         text(R.id.earnHeroSub, hero.subtitle)
-        text(R.id.earnFootnote, hero.footnote); show(R.id.earnFootnote, hero.footnote.isNotEmpty())
+        // v0.17.5: a provider with no zone publishes no presence and is offered no buyer,
+        // however willing it is. That was invisible on Gagner until build 72.
+        val earnNote = LocationGate.note(locationNeed()).ifEmpty { hero.footnote }
+        text(R.id.earnFootnote, earnNote); show(R.id.earnFootnote, earnNote.isNotEmpty())
         show(R.id.btnEarnAction, hero.button.isNotEmpty())
         v<Button>(R.id.btnEarnAction).text = hero.button
         // stopping is completely reversible, so it gets a calm secondary treatment rather
@@ -1329,7 +1424,18 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 7) { cover.onForeground(); refresh(); return }
+        if (requestCode == 7) {
+            cover.onForeground()
+            val granted = cover.hasLocationPermission()
+            DiagLog.i(tag, "location permission " + (if (granted) "GRANTED" else "denied"))
+            val go = pendingAfterLocation
+            pendingAfterLocation = null
+            refresh()
+            // v0.17.5: carry on with what the user actually pressed. Granting a permission
+            // and then having nothing happen reads as a broken app.
+            if (granted) { network.syncNow("location granted"); go?.invoke() }
+            return
+        }
         val denied = permissions.filterIndexed { i, _ -> grantResults.getOrNull(i) != PackageManager.PERMISSION_GRANTED }
         if (requestCode == 3) { if (denied.isNotEmpty()) DiagLog.w(tag, "notification permission denied"); pendingAction?.let { ensureRunning(it) }; return }
         val bluetoothDenied = denied.filter { it.contains("BLUETOOTH") || (Build.VERSION.SDK_INT < 31 && it.contains("LOCATION")) }
