@@ -16,12 +16,21 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <!-- Android 8-11: BLE scan results need location. Android 8-12: the local-only
-         Wi-Fi hotspot needs fine location. Android 13+ uses NEARBY_WIFI_DEVICES instead. -->
+    <!-- FINE was only ever needed by the old radios: Android 8-11 BLE scan results, and
+         the Android 8-12 local-only Wi-Fi hotspot. Android 13+ uses NEARBY_WIFI_DEVICES
+         and BLUETOOTH_SCAN/neverForLocation instead, so FINE stays capped - ProkNet does
+         not want, and must never ask for, an exact position on a modern phone. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="32" />
+    <!-- v0.17.6 ROOT CAUSE FIX. COARSE used to carry the same cap, for the same old-radio
+         reason. But v0.13 made the coarse ZONE the thing the entire Network Brain runs on
+         - no zone, no presence, no demand, no coverage - and nobody lifted the cap. So on
+         Android 13, 14 and 15 this permission was NOT DECLARED AT ALL: checkSelfPermission
+         could only ever return DENIED and requestPermissions could only ever do nothing.
+         The pilot OUKITEL is Android 15, which is why it was invisible to the Brain for a
+         whole day and why no amount of granting in settings would have helped. A 500 m
+         cell is all ProkNet ever needs, and now it is all it asks for. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="tiramisu" />
@@ -36,6 +45,12 @@
     <!-- Milestone 2B: foreground service with a persistent notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- v0.17.6: the foreground service keeps the coarse zone alive while the app is
+         closed. This is what makes an IDLE provider discoverable, which is the whole
+         point of v0.17.3. Deliberately NOT ACCESS_BACKGROUND_LOCATION: a foreground
+         service declaring the location type may receive updates on the ordinary coarse
+         permission, so nobody is ever sent into system settings for it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -107,7 +122,7 @@
         <service
             android:name=".service.ProkNetService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice"
+            android:foregroundServiceType="connectedDevice|location"
             android:stopWithTask="false" />
 
         <!--

@@ -61,11 +61,14 @@ class CoverageEngine(private val context: Context) : ProkNetNode.Listener {
 
     companion object {
         const val SIGHTING_THROTTLE_MS = 60_000L
-        const val LOCATION_MAX_AGE_MS = 30 * 60_000L
+        // v0.17.6: one definition, shared with the tests. MIN_DISTANCE is 0 on purpose -
+        // see ZoneWatch: 300 m meant a phone that had not moved never refreshed, so the
+        // fix expired under exactly the stationary provider we want to keep discoverable.
+        const val LOCATION_MAX_AGE_MS = net.prok.proknet.core.ZoneWatch.MAX_AGE_MS
         const val WIFI_PERIOD_MS = 5 * 60_000L
         const val SAVE_DELAY_MS = 20_000L
-        const val LOCATION_MIN_TIME_MS = 5 * 60_000L
-        const val LOCATION_MIN_DISTANCE_M = 300f
+        const val LOCATION_MIN_TIME_MS = net.prok.proknet.core.ZoneWatch.MIN_TIME_MS
+        const val LOCATION_MIN_DISTANCE_M = net.prok.proknet.core.ZoneWatch.MIN_DISTANCE_M
     }
 
     init { load() }
@@ -111,19 +114,64 @@ class CoverageEngine(private val context: Context) : ProkNetNode.Listener {
     fun onForeground() {
         foreground = true
         refreshLocation()
-        if (hasLocationPermission()) try {
-            lm?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, LOCATION_MIN_TIME_MS, LOCATION_MIN_DISTANCE_M, locListener, Looper.getMainLooper())
-        } catch (e: Exception) { DiagLog.w(tag, "location updates: " + e.message) }
         observeWifi("app in front")
         main.removeCallbacks(periodic); main.postDelayed(periodic, WIFI_PERIOD_MS)
     }
 
     fun onBackground() {
         foreground = false
-        try { lm?.removeUpdates(locListener) } catch (_: Exception) {}
+        // v0.17.6: the Wi-Fi sweep stops with the screen, the ZONE does not. Cancelling
+        // location here is what made an idle provider invisible overnight.
         main.removeCallbacks(periodic)
         flush()
     }
+
+    // ---- v0.17.6: the zone, kept by the SERVICE and only while it is needed ------------
+
+    @Volatile private var watching = false
+    @Volatile var watchWhy: net.prok.proknet.core.ZoneWatch.Why =
+        net.prok.proknet.core.ZoneWatch.Why.NOT_NEEDED
+        private set
+
+    /** When the last real fix arrived, for the diagnostic. 0 = never. */
+    val lastFixAt: Long get() = lastLocationAt
+
+    /**
+     * Start or stop holding a coarse position, from the foreground service.
+     *
+     * Called whenever anything that could change the answer changes: the node starting,
+     * sharing switching on or off, the notify opt-in, a request beginning or ending.
+     * Idempotent, so callers may call it freely.
+     *
+     * Not tied to the screen. That was the bug: a provider who left the phone in a pocket
+     * had no zone half an hour later, so it published no presence and could never be
+     * offered the buyer it had opted in to serve.
+     */
+    fun updateZoneWatch(optedInToShare: Boolean, sharing: Boolean, looking: Boolean) {
+        val why = net.prok.proknet.core.ZoneWatch.why(optedInToShare, sharing, looking)
+        val want = why != net.prok.proknet.core.ZoneWatch.Why.NOT_NEEDED && hasLocationPermission()
+        if (why != watchWhy) {
+            watchWhy = why
+            DiagLog.i(tag, "zone watch: " + net.prok.proknet.core.ZoneWatch.diag(why))
+        }
+        if (want == watching) return
+        watching = want
+        if (want) {
+            refreshLocation()
+            try {
+                lm?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,
+                    LOCATION_MIN_TIME_MS, LOCATION_MIN_DISTANCE_M, locListener, Looper.getMainLooper())
+                DiagLog.i(tag, "holding a coarse position (one fix per " +
+                    (LOCATION_MIN_TIME_MS / 60_000) + " min, network provider only)")
+            } catch (e: Exception) { watching = false; DiagLog.w(tag, "location updates: " + e.message) }
+        } else {
+            try { lm?.removeUpdates(locListener) } catch (_: Exception) {}
+            DiagLog.i(tag, "released the position: it is no longer needed")
+        }
+    }
+
+    /** Sharing, looking and the opt-in all stopped: forget the position entirely. */
+    fun stopZoneWatch() = updateZoneWatch(false, false, false)
 
     private val periodic = object : Runnable { override fun run() { if (!foreground) return; observeWifi("periodic"); main.postDelayed(this, WIFI_PERIOD_MS) } }
 
@@ -278,6 +326,15 @@ class CoverageEngine(private val context: Context) : ProkNetNode.Listener {
         val now = System.currentTimeMillis()
         val sb = StringBuilder("coverage:\n")
         sb.append("  zone: ").append(zone()).append(if (hasLocationPermission()) "" else " (no location permission)").append(if (hasFineLocation()) " fine" else " coarse-only").append("\n")
+        // v0.17.6: a stale zone must be visibly stale, and whether the service is
+        // holding a position at all must be obvious - it used to stop with the screen
+        // and say nothing.
+        val nowFix = System.currentTimeMillis()
+        sb.append("  zone watch: ").append(net.prok.proknet.core.ZoneWatch.diag(watchWhy))
+            .append(if (lastFixAt == 0L) " | no fix yet"
+                else " | last fix " + CoverageModel.ageWord(nowFix - lastFixAt) +
+                    ", good for " + net.prok.proknet.core.ZoneWatch.minutesLeft(lastFixAt, nowFix) + " min")
+            .append("\n")
         sb.append("  sources: ").append(state.sources.size).append(" | observations: ").append(state.observations.size).append(" | requests: ").append(state.requests.size).append("\n")
         sb.append("  last wifi observation: ").append(lastWifiObservation.ifEmpty { "-" }).append("\n")
         sb.append("  last successful source: ").append(state.lastSuccessfulSourceId ?: "-").append("\n")

@@ -139,6 +139,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             // matter - without one this phone publishes no presence and is never offered
             // a buyer, however willing it is.
             if (network.notifyOptIn && LocationGate.blocked(locationNeed())) ensureLocation(null)
+            // v0.17.6: opting in is a promise to be woken with the app closed, so the
+            // service must start holding a coarse zone - and opting out releases it.
+            ProkNetService.refreshZoneWatch(this, "notify opt-in changed")
             refresh()
         }
         v<Switch>(R.id.switchShareCoverage).setOnClickListener { network.shareCoverage = v<Switch>(R.id.switchShareCoverage).isChecked; refresh() }
@@ -775,8 +778,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             LocationGate.Need.ASK_PERMISSION -> {
                 locationPrefs().edit().putBoolean("location_asked", true).apply()
                 locationAsked = true
-                requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION), 7)
+                // v0.17.6: COARSE only. FINE is capped at API 32 in the manifest and is
+                // not wanted anyway - the promise in the dialog is a 500 m cell, so
+                // asking for an exact position would be asking for more than we said.
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), 7)
             }
             LocationGate.Need.OPEN_SETTINGS -> openSettings(
                 Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -1433,7 +1438,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             refresh()
             // v0.17.5: carry on with what the user actually pressed. Granting a permission
             // and then having nothing happen reads as a broken app.
-            if (granted) { network.syncNow("location granted"); go?.invoke() }
+            if (granted) {
+                ProkNetService.refreshZoneWatch(this, "location granted")
+                network.syncNow("location granted"); go?.invoke()
+            }
             return
         }
         val denied = permissions.filterIndexed { i, _ -> grantResults.getOrNull(i) != PackageManager.PERMISSION_GRANTED }

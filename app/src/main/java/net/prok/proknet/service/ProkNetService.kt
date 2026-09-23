@@ -84,7 +84,17 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         val notif = buildNotification(getString(R.string.notif_starting))
         try {
             if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                // v0.17.6: the LOCATION type is what lets this service keep a coarse zone
+                // while the app is closed, on the ordinary coarse permission and with no
+                // ACCESS_BACKGROUND_LOCATION - so nobody is ever sent into system
+                // settings for it. Added only when the permission is actually held: a
+                // service that declares a type it has no permission for is refused
+                // outright on Android 14, and refusing to start would take the whole node
+                // down rather than just the zone.
+                var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                if (Build.VERSION.SDK_INT >= 30 && ProkNetApp.coverage(this).hasLocationPermission())
+                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                startForeground(NOTIF_ID, notif, types)
             } else {
                 startForeground(NOTIF_ID, notif)
             }
@@ -110,8 +120,22 @@ class ProkNetService : Service(), ProkNetNode.Listener {
         net.clearAlertHook = { main.post { clearAlert() } }
         net.cancelHook = { _ -> main.post { if (net_prok_inboxEmpty()) clearAlert() } }
         main.removeCallbacks(periodicSync); main.postDelayed(periodicSync, 60_000)
+        refreshZoneWatch("service started")
         updateNotification(consumerStatus())
     }
+
+    /**
+     * v0.17.6: hold a coarse position while - and only while - this phone is taking part.
+     *
+     * Driven by the SERVICE, because the product promise is "leave the app closed and we
+     * will wake you when somebody needs Internet", and until build 73 the position was
+     * dropped the moment the screen went off. Half an hour later the zone expired, the
+     * presence heartbeat stopped, and the idle provider v0.17.3 exists for became
+     * invisible.
+     *
+     * Somebody who is neither offering nor looking has no position tracked at all.
+     */
+    fun refreshZoneWatch(why: String) = Companion.refreshZoneWatch(this, why)
 
     private fun net_prok_inboxEmpty(): Boolean =
         net.prok.proknet.core.ProviderInbox.active(ProkNetApp.network(this).inbox, System.currentTimeMillis()).isEmpty()
@@ -131,6 +155,9 @@ class ProkNetService : Service(), ProkNetNode.Listener {
 
     override fun onDestroy() {
         running = false
+        // v0.17.6: the service is the only thing holding a position. When it goes, the
+        // position goes with it - never left running behind a stopped node.
+        try { ProkNetApp.coverage(this).stopZoneWatch() } catch (_: Exception) {}
         node.removeListener(this)
         if (screenReceiverRegistered) { try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}; screenReceiverRegistered = false }
         if (node.isRunning) {
@@ -196,6 +223,9 @@ class ProkNetService : Service(), ProkNetNode.Listener {
             val net = ProkNetApp.network(this@ProkNetService)
             net.sweep()
             net.syncNow("periodic")
+            // v0.17.6: self-correcting. Every explicit caller makes the zone watch react
+            // at once; this makes sure it is right within a minute even if one is missed.
+            refreshZoneWatch("periodic")
             main.postDelayed(this, NetworkNode.PERIODIC_MS)
         }
     }
@@ -286,6 +316,27 @@ class ProkNetService : Service(), ProkNetNode.Listener {
     }
 
     companion object {
+        /**
+         * v0.17.6: hold a coarse position while - and only while - this phone is taking
+         * part, and drop it otherwise.
+         *
+         * Static because every caller that can change the answer (the notify switch,
+         * sharing starting or stopping, a request beginning or ending, the permission
+         * being granted) has a Context but not the service object. Idempotent, so the
+         * periodic sweep can call it every minute and make the whole thing
+         * self-correcting rather than depending on catching every call site.
+         */
+        fun refreshZoneWatch(context: Context, why: String) {
+            try {
+                val net = ProkNetApp.network(context)
+                val n = ProkNetApp.node(context)
+                ProkNetApp.coverage(context).updateZoneWatch(
+                    optedInToShare = net.notifyOptIn,
+                    sharing = n.sellOn,
+                    looking = n.networkSync.demandId.isNotEmpty() || net.state.mine.isNotEmpty())
+            } catch (e: Exception) { DiagLog.w("SERVICE", "zone watch (" + why + "): " + e.message) }
+        }
+
         const val ACTION_START = "net.prok.proknet.START"
         const val ACTION_STOP = "net.prok.proknet.STOP"
         const val CHANNEL_ID = "proknet_node"
