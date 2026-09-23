@@ -80,10 +80,24 @@ class LocationGateTest {
             if (n == LocationGate.Need.NONE) continue
             assertTrue(n.name + " needs a title", LocationGate.title(n).isNotEmpty())
             assertTrue(n.name + " needs a message", LocationGate.message(n).length > 40)
-            assertTrue(n.name + " needs a button", LocationGate.button(n).isNotEmpty())
             assertTrue(n.name + " needs a note", LocationGate.note(n).isNotEmpty())
             assertTrue(n.name + " needs a diagnostic line", LocationGate.diag(n).isNotEmpty())
         }
+    }
+
+    @Test fun a_button_appears_exactly_when_there_is_something_to_tap() {
+        // v0.17.7 refined this. Every blocked state must still SAY something - that is
+        // the rule above, and it is unchanged - but only a state the user can act on
+        // gets a button. NOT_IN_BUILD is fixed by a new APK and by nothing the user can
+        // do, so offering a button would send them somewhere useless. Build 73 did
+        // exactly that, and the dead end is what left Mike stuck.
+        for (n in LocationGate.Need.values()) {
+            val wanted = n != LocationGate.Need.NONE && n != LocationGate.Need.NOT_IN_BUILD
+            assertEquals(n.name, wanted, LocationGate.button(n).isNotEmpty())
+        }
+        // and the state with no button still explains itself fully
+        assertTrue(LocationGate.message(LocationGate.Need.NOT_IN_BUILD).length > 40)
+        assertTrue(LocationGate.note(LocationGate.Need.NOT_IN_BUILD).isNotEmpty())
     }
 
     @Test fun the_note_explains_the_consequence_and_not_just_the_setting() {
@@ -104,6 +118,56 @@ class LocationGateTest {
         assertTrue(m.contains("500 m"))
         assertTrue(m.contains("Jamais votre position exacte"))
         assertTrue(m.contains("Jamais l'historique"))
+    }
+
+    // ================= v0.17.7: a build that cannot ask =================
+
+    @Test fun a_build_without_the_permission_says_so_instead_of_pointing_at_settings() {
+        // THE trap of 2026-09-23. Build 73 capped ACCESS_COARSE_LOCATION at API 32, so on
+        // Android 13+ there was no dialog AND no Position entry in settings. Telling
+        // somebody to "open settings and choose Position" sent them to a dead end, and
+        // they concluded the app was broken. Nothing the user can do fixes it.
+        val n = LocationGate.need(hasPermission = false, locationServicesOn = true,
+            canAskInApp = false, declaredInBuild = false)
+        assertEquals(LocationGate.Need.NOT_IN_BUILD, n)
+        assertNotEquals("never send them to a page with nothing on it",
+            LocationGate.Need.OPEN_SETTINGS, n)
+        // and there is NO button, because there is nothing to open
+        assertEquals("", LocationGate.button(n))
+        assertTrue(LocationGate.message(n).contains("dernière version"))
+        assertTrue("it must not blame the phone",
+            LocationGate.message(n).contains("Ce n'est pas votre téléphone"))
+    }
+
+    @Test fun a_missing_declaration_outranks_every_other_answer() {
+        // if the permission is not in the build, no other diagnosis can be true
+        for (canAsk in listOf(true, false))
+            for (servicesOn in listOf(true, false))
+                assertEquals("canAsk=$canAsk servicesOn=$servicesOn",
+                    LocationGate.Need.NOT_IN_BUILD,
+                    LocationGate.need(hasPermission = false, locationServicesOn = servicesOn,
+                        canAskInApp = canAsk, declaredInBuild = false))
+    }
+
+    @Test fun a_declared_build_behaves_exactly_as_before() {
+        // the new parameter defaults to true and changes nothing for a correct build
+        assertEquals(LocationGate.need(false, true, true),
+            LocationGate.need(false, true, true, declaredInBuild = true))
+        assertEquals(LocationGate.Need.ASK_PERMISSION,
+            LocationGate.need(false, true, true, declaredInBuild = true))
+        assertEquals(LocationGate.Need.OPEN_SETTINGS,
+            LocationGate.need(false, true, false, declaredInBuild = true))
+    }
+
+    @Test fun a_granted_permission_is_never_NOT_IN_BUILD() {
+        // it cannot be granted if it is not declared, but the ordering must not depend on
+        // that being impossible
+        assertEquals(LocationGate.Need.NONE,
+            LocationGate.need(hasPermission = true, locationServicesOn = true,
+                canAskInApp = false, declaredInBuild = false))
+        assertEquals(LocationGate.Need.TURN_ON_LOCATION,
+            LocationGate.need(hasPermission = true, locationServicesOn = false,
+                canAskInApp = false, declaredInBuild = false))
     }
 
     // ================= the regression this file exists for =================

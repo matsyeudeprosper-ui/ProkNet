@@ -3743,3 +3743,66 @@ diagnostic still says `service: RUNNING`.
 - A last fix older than 30 minutes at any point while tracking.
 - A position still held when nothing is offered and nothing is wanted.
 - The Brain having no fresh presence row for an idle, opted-in provider.
+
+## 79. v0.17.7 the app can always ask
+
+Short, and it belongs with 77. It exists because build 74 shipped the manifest fix and the
+pilot phone was still stuck on "Android ne peut plus poser la question ici" — the app had
+inherited a note saying it had already asked, for a question that had never actually been
+put.
+
+### 79a. An upgrade never leaves the app unable to ask
+
+This is the exact state the pilot was in.
+
+1. Deny location to ProkNet (Settings → Apps → ProkNet → Autorisations → Position →
+   Refuser), then force-stop and reopen.
+2. Press **OBTENIR INTERNET** and press **FERMER** on ProkNet's dialog.
+3. Install a newer build over the top.
+4. Press **OBTENIR INTERNET** again.
+
+Expected: you get the **Autoriser** dialog, then Android's own Allow/Deny — **not** the
+"Ouvrir / settings" version.
+
+**FAIL** if it offers settings without ever showing Android's dialog. That is build 74's
+bug: a verdict reached under an older manifest must never survive into a new build.
+
+### 79b. Settings are offered only after a real refusal
+
+1. Press **OBTENIR INTERNET**, tap **Autoriser**, and on Android's dialog choose
+   **Ne pas autoriser**.
+2. Press **OBTENIR INTERNET** again → you should get **Autoriser** once more (Android
+   allows a second ask).
+3. Refuse a second time.
+4. Press **OBTENIR INTERNET** again.
+
+Expected: only **now** does the dialog change to the **Ouvrir** version, and tapping it
+lands directly on ProkNet's permission page with **Position** present.
+
+**FAIL** if the settings version appears before you have genuinely refused twice, or if
+Position is missing from that page.
+
+### 79c. Granting clears everything
+
+After granting from that settings page, return to ProkNet.
+
+Expected: no dialog, no note on Accueil or Gagner, and the diagnostic shows a real zone.
+Refusing later must be able to ask again — the app must not stay permanently in
+"settings only".
+
+### 79d. A build that cannot ask says so
+
+Only testable by installing **build 73 or earlier** on an Android 13+ phone, so treat it
+as optional and reinstall the newest build afterwards.
+
+Expected on that old build: the dialog says **« Cette version ne peut pas demander votre
+zone »**, explains it is not the phone's fault, and offers **no button at all**.
+
+**FAIL** if an old build still offers **Ouvrir** and sends you to a page with no Position
+entry. That dead end is the thing this section exists to prevent.
+
+### What would make this a FAIL
+
+- An upgrade leaving the app unable to show Android's dialog.
+- The settings route offered before the user has actually refused.
+- A build without the permission pretending settings will help.

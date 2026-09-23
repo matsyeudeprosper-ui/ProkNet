@@ -4645,3 +4645,84 @@ A stale zone is now visibly a stale zone.
 ### Not changed
 
 No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.
+
+## v0.17.7 evidence, not a memory of having asked
+
+Build 74 shipped the manifest fix and the pilot phone was **still stuck** on the same
+screen. That one was mine, and it is a clean example of a guess standing in for a fact.
+
+### The bug
+
+```kotlin
+canAskLocationInApp() =
+    !prefs.getBoolean("location_asked") || shouldShowRequestPermissionRationale(COARSE)
+```
+
+Build 73 set `location_asked` the first time the user tapped **Autoriser**. But on build
+73 the permission was not in the manifest, so that request **went nowhere**. Build 74 then
+inherited a flag saying "already asked" for a question that had never actually been put.
+
+`shouldShowRequestPermissionRationale` returns false for **both** "never asked" and
+"denied for ever". So the two together concluded the dialog was exhausted, and the app
+offered a settings page instead of ever trying — on the build that had just fixed the
+underlying problem.
+
+### The rule
+
+**A memory of having asked is a guess. Only the answer is evidence.**
+
+The flag is now written solely from what a real request returned:
+
+| outcome | meaning | flag |
+|---|---|---|
+| granted | done | cleared |
+| denied, rationale owed | Android will ask again | cleared |
+| denied, no rationale owed | "don't ask again" | **set** |
+
+Nothing is assumed in advance. When in doubt, try the dialog: an unnecessary dialog costs
+one tap, and a wrongly-offered settings page costs the user the entire feature.
+
+It is also **scoped to the build that observed it**. A new build may declare different
+permissions — build 74 did exactly that — so a verdict reached under an older manifest
+means nothing. That alone would have unstuck the pilot phone.
+
+### A fifth state: `NOT_IN_BUILD`
+
+The app now asks the package manager whether `ACCESS_COARSE_LOCATION` is in **its own**
+manifest:
+
+```kotlin
+packageManager.getPackageInfo(packageName, GET_PERMISSIONS)
+    .requestedPermissions?.contains(ACCESS_COARSE_LOCATION)
+```
+
+When it is not, the dialog says so plainly and shows **no button**, because there is
+nothing for the user to open. A settings page with no Position entry is a dead end, and
+that dead end is what left the pilot tapping *Ouvrir* and finding nothing:
+
+> Cette version de ProkNet ne contient pas l'autorisation de position… Ce n'est pas votre
+> téléphone : installez la dernière version de ProkNet.
+
+A missing declaration **outranks every other diagnosis**, because if the permission is not
+in the build then no other answer can be true. A test asserts that ordering across every
+combination.
+
+This turns the whole class of build-time permission mistakes — the class that cost a full
+day — from silence into one sentence on the screen.
+
+### The test that caught the design
+
+`every_blocked_state_says_something_the_user_can_act_on` failed on the first build, with
+*"NOT_IN_BUILD needs a button"*. The rule it protects is still right — every blocked state
+must say something — so it was split rather than weakened:
+
+- every blocked state has a title, a message, a note and a diagnostic line;
+- a **button** appears exactly when there is something to tap, which is every state except
+  `NOT_IN_BUILD`.
+
+The test was encoding a real decision, so the decision got written down instead of the
+assertion being relaxed.
+
+### Not changed
+
+No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.

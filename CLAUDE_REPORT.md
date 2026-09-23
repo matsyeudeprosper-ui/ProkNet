@@ -1,3 +1,109 @@
+# CLAUDE_REPORT - ProkNet v0.17.7 "evidence, not a memory of having asked"
+
+Date: 2026-09-23
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.7, build 75. ****721 Android tests, 360 server tests, all passing.****
+Floor was 716 + 360; every one of those still passes, none removed.
+
+Build 74 shipped the manifest fix and the pilot phone was **still stuck on the same
+screen**. That one was mine, and it is the third time in two days that a guess stood in
+for a fact.
+
+## 1. The bug
+
+```kotlin
+canAskLocationInApp() =
+    !prefs.getBoolean("location_asked") || shouldShowRequestPermissionRationale(COARSE)
+```
+
+Build 73 set `location_asked` the first time Mike tapped **Autoriser**. On build 73 the
+permission was not in the manifest, so that request **went nowhere**. Build 74 then
+inherited a flag saying "already asked" for a question that had never been put.
+
+`shouldShowRequestPermissionRationale` is false for **both** "never asked" and "denied for
+ever". The two together concluded the dialog was used up, so the app offered a settings
+page and never tried — on the very build that had fixed the underlying problem.
+
+## 2. The rule
+
+**A memory of having asked is a guess. Only the answer is evidence.**
+
+The flag is now written solely from what a real request returned: granted clears it,
+denied-with-rationale clears it (Android will ask again), denied-without-rationale sets it
+— which is precisely "don't ask again" and the only case where settings is the right
+answer.
+
+Nothing is assumed in advance. When uncertain, **try the dialog**: an unnecessary dialog
+costs one tap; a wrongly-offered settings page costs the user the whole feature.
+
+It is also **scoped to the build that observed it**. A new build may declare different
+permissions — build 74 did — so a verdict reached under an older manifest means nothing.
+That alone would have unstuck the phone.
+
+## 3. A fifth state: `NOT_IN_BUILD`
+
+The app now asks the package manager whether `ACCESS_COARSE_LOCATION` is in its own
+manifest. When it is not, it says so plainly and shows **no button**, because there is
+nothing to open — a settings page with no Position entry is a dead end, and that dead end
+is exactly what left Mike tapping *Ouvrir* and finding nothing.
+
+> Ce n'est pas votre téléphone : installez la dernière version de ProkNet.
+
+A missing declaration **outranks every other diagnosis**: if the permission is not in the
+build, no other answer can be true. A test pins that ordering across every combination.
+
+This turns the class of build-time permission mistake that cost us a day from silence into
+one sentence on screen.
+
+## 4. The test that caught the design
+
+The first build 75 **failed**, on my own assertion:
+
+```
+every_blocked_state_says_something_the_user_can_act_on
+  FAILED: NOT_IN_BUILD needs a button
+```
+
+The rule it protects is still right — every blocked state must say something — so I split
+it rather than weakening it: every blocked state has a title, message, note and diagnostic
+line; a **button** appears exactly when there is something to tap, which is every state
+except `NOT_IN_BUILD`. The test was encoding a real decision, so the decision got written
+down.
+
+Worth noting the build gate did its job: one failing test, no APK produced.
+
+## 5. Numbers
+
+- Android **721**, server **360**
+- Brain schema **4**, Android DB **10**, no migration
+- v0.17.7 / build 75
+
+## 6. Hardware status
+
+**Software-proven only.** Nothing in v0.16 or v0.17 has completed on a phone yet.
+
+TESTING **79** is new and short: an upgrade must never leave the app unable to ask;
+settings are offered only after a genuine refusal; and a build that cannot ask says so
+without a button.
+
+## 7. What this run has actually cost, honestly
+
+Three milestones in two days to get one permission granted, because I kept explaining away
+a contradiction instead of chasing it:
+
+1. **v0.17.5** — the app never asked outside the map tab. Real, but not the blocker.
+2. **v0.17.6** — the permission was capped at API 32 and did not exist on Android 13+.
+   That was the blocker, and I found it only when I dumped the **built APK**.
+3. **v0.17.7** — my own "have we asked" flag then kept the fixed build from ever asking.
+
+The through-line: each time, the phone was telling me the truth and I trusted my model of
+the code instead. The diagnostic said *no location permission* while the manifest plainly
+declared it — that contradiction was the whole answer on day one.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.6 "the permission that did not exist"
 
 Date: 2026-09-23
