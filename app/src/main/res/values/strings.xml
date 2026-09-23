@@ -277,8 +277,15 @@
     <string name="chevron">›</string>
     <string name="map_subtitle">Ce que ProkNet a vu autour de vous</string>
     <string name="map_radar_hint">Au centre : vous. Plus un point est proche du centre, plus il a été vu récemment.</string>
-    <string name="map_grid_hint">Les cases autour de la vôtre, à 500 m près.</string>
+    <!-- v0.17.8: the map now draws its own scale and compass, so this line no longer
+         repeats them. It carries the rule instead: a colour is what ProkNet has SEEN
+         here, never a promise that a connection will work - the same honesty v0.17.2
+         put into the Home wording, said where the colours actually are. -->
+    <string name="map_grid_hint">Une couleur montre ce que ProkNet a vu ici. Ce n\'est pas une promesse de connexion.</string>
     <string name="map_now">Disponible maintenant</string>
+    <!-- v0.17.8: the inline legend under the map, where the number carries the meaning -->
+    <string name="map_now_short">disponible</string>
+    <string name="map_recent_short">vu récemment</string>
     <string name="map_recent">Vu récemment</string>
     <string name="map_place">Placer sur une vraie carte</string>
     <string name="map_place_sub">Autorisez la position approximative (à 500 m près) pour placer ces observations dans des cases. Jamais votre position exacte.</string>

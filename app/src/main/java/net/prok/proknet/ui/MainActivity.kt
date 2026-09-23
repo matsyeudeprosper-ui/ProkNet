@@ -683,7 +683,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         }
         // v0.13: what the network has seen, kept apart, never "available now"
         val localZones = cover.state.sources.values.flatMap { it.zones }.toSet()
-        for (c in cover.shared.filter { it.status != Coverage.ZoneStatus.RED }.sortedByDescending { it.lastSeen }.take(8)) {
+        // v0.17.8: not YOUR cell. The card above already states what the network sees
+        // here, with the same source count - printing it again as a list row was the same
+        // fact twice on one screen, which makes a screen feel padded rather than full.
+        for (c in cover.shared.filter { it.status != Coverage.ZoneStatus.RED && it.zone != zone }
+                .sortedByDescending { it.lastSeen }.take(8)) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; background = getDrawable(R.drawable.bg_card_alt); setPadding(dp(18), dp(15), dp(16), dp(15)) }
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.bottomMargin = dp(8); row.layoutParams = lp
             val dot = View(this).apply { background = getDrawable(R.drawable.dot_warn) }

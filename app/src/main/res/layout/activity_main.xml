@@ -141,29 +141,27 @@
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tab_map" style="@style/H1" />
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/map_subtitle" style="@style/Muted" android:layout_marginTop="4dp" android:layout_marginBottom="14dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="6dp" android:layout_marginBottom="10dp">
-                    <net.prok.proknet.ui.CoverageMapView android:id="@+id/mapView" android:layout_width="match_parent" android:layout_height="wrap_content" />
-                </LinearLayout>
-                <TextView android:id="@+id/mapHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="@string/map_radar_hint" style="@style/Muted" android:layout_marginBottom="14dp" />
-
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginEnd="5dp">
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/map_now" style="@style/Caption" />
-                        <TextView android:id="@+id/mapNow" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="0" style="@style/Stat" android:drawableStart="@drawable/dot_ok" android:drawablePadding="10dp" android:gravity="center_vertical" />
-                    </LinearLayout>
-                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginStart="5dp">
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/map_recent" style="@style/Caption" />
-                        <TextView android:id="@+id/mapRecent" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="0" style="@style/Stat" android:drawableStart="@drawable/dot_warn" android:drawablePadding="10dp" android:gravity="center_vertical" />
-                    </LinearLayout>
+                <net.prok.proknet.ui.CoverageMapView android:id="@+id/mapView" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" />
+                <!-- v0.17.8: the legend was two large cards saying "1" and "1". They took
+                     the best space on the screen to carry a colour key, so they are one
+                     quiet strip now and the map above them got the room back. -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginTop="2dp" android:layout_marginBottom="16dp">
+                    <TextView android:id="@+id/mapNow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0" android:textSize="13sp" android:textStyle="bold" android:textColor="@color/text" android:drawableStart="@drawable/dot_ok" android:drawablePadding="8dp" android:gravity="center_vertical" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="@string/map_now_short" android:textSize="13sp" android:textColor="@color/text_muted" />
+                    <View android:layout_width="1dp" android:layout_height="13dp" android:background="@color/divider" android:layout_marginStart="16dp" android:layout_marginEnd="16dp" />
+                    <TextView android:id="@+id/mapRecent" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0" android:textSize="13sp" android:textStyle="bold" android:textColor="@color/text" android:drawableStart="@drawable/dot_warn" android:drawablePadding="8dp" android:gravity="center_vertical" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="@string/map_recent_short" android:textSize="13sp" android:textColor="@color/text_muted" />
                 </LinearLayout>
 
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_alt" android:padding="18dp" android:layout_marginBottom="12dp">
-                    <TextView android:id="@+id/mapHereTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
-                    <TextView android:id="@+id/mapHereSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/Muted" />
-                    <Button android:id="@+id/btnMapLocation" android:text="@string/map_place" style="@style/SecondaryButton" android:layout_marginTop="14dp" android:visibility="gone" />
+                <!-- the one fact this screen exists to state -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="20dp" android:layout_marginBottom="18dp">
+                    <TextView android:id="@+id/mapHereTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text" android:letterSpacing="-0.02" />
+                    <TextView android:id="@+id/mapHereSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" />
+                    <TextView android:id="@+id/mapHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/map_radar_hint" android:textSize="12sp" android:textColor="@color/text_muted" android:lineSpacingExtra="2dp" />
+                    <Button android:id="@+id/btnMapLocation" android:text="@string/map_place" style="@style/SecondaryButton" android:layout_marginTop="16dp" android:visibility="gone" />
                 </LinearLayout>
 
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/map_known" style="@style/Caption" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/map_known" style="@style/Caption" android:layout_marginBottom="10dp" />
                 <LinearLayout android:id="@+id/mapList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
                 <TextView android:id="@+id/mapEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:text="@string/map_empty" style="@style/Body" />
             </LinearLayout>

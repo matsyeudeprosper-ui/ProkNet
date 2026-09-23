@@ -4726,3 +4726,68 @@ assertion being relaxed.
 ### Not changed
 
 No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.
+
+## v0.17.8 a map that grows with what it knows
+
+A design pass on Carte, asked for after seeing it on a real phone. No behaviour changed —
+this is about what the screen says and how much room it takes to say it.
+
+### What was wrong
+
+**The grid was a fixed 9×9.** `range = 4`, always. On the pilot phone ProkNet knew about
+exactly **one** cell, so the map was eighty identical empty squares around one real one.
+The grid was not lying — there genuinely was nothing else known — but a 9×9 field is a
+promise of density the data could not keep, and it reads as a loading skeleton rather than
+a map.
+
+**The legend was dressed as statistics.** Two large cards, each a third of the screen,
+reading **1** and **1**. They are a colour key. They were taking the best space on the
+page to carry it.
+
+**The same fact appeared twice.** "Fournisseur actif dans cette zone · 2 sources connues"
+as the hero card, then again as a list row: "Vu par le réseau ProkNet · Autour de vous ·
+2 source(s) connue(s)". One screen, one fact, two places.
+
+**No orientation.** "à 500 m près" was a caption under the map. Nothing on the map itself
+said which way north was or how big a square really is.
+
+### What it does now
+
+**The grid grows with the network.** `rangeFor()` measures the furthest cell ProkNet
+actually knows something about and clamps it to 1..4. One known cell gives a confident
+3×3 with large, well-rounded cells; as more cells are learned the grid widens and the
+cells tighten. Watching it grow is the point — it makes the map a record of the network
+spreading rather than a mostly-empty field.
+
+**Unknown cells recede.** They fade towards the edge (`unknownAlpha`), so the empty area
+becomes context instead of competing with the one square that means something. Known
+cells get a soft radial glow in their status colour, so the eye lands on information.
+
+**Your cell is unmistakably yours** — a brand-coloured rounded stroke around the square
+itself, not only a dot in the middle of it.
+
+**The map carries its own compass and scale.** A small `N` with a tick above the grid, and
+a bar exactly one cell wide labelled `500 m` below it. Scale you can see beats scale you
+have to read.
+
+**The legend is one quiet strip** — `● 1 disponible · ● 1 vu récemment` — and the map
+above it got the room back. The map also lost its card border: a bordered box inside a
+padded page was a frame around a frame.
+
+**The duplicate row is gone.** Shared cells are listed for *other* zones only; the hero
+card already states what the network sees here, with the same source count.
+
+### The caption now carries the rule
+
+`map_grid_hint` used to repeat the scale. It says this instead:
+
+> Une couleur montre ce que ProkNet a vu ici. Ce n'est pas une promesse de connexion.
+
+That is the v0.17.2 honesty rule — a zone colour is not a working connection — stated
+where the colours actually are, rather than only on Home.
+
+### Constraints respected
+
+Still one custom `View` drawing on `Canvas`: no AndroidX, no map SDK, no tiles, no network
+fetch, nothing that stutters on a low-end phone. The only new per-frame work is one radial
+gradient per *known* cell, and known cells are few by definition.
