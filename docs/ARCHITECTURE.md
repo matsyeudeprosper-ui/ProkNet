@@ -4791,3 +4791,52 @@ where the colours actually are, rather than only on Home.
 Still one custom `View` drawing on `Canvas`: no AndroidX, no map SDK, no tiles, no network
 fetch, nothing that stutters on a low-end phone. The only new per-frame work is one radial
 gradient per *known* cell, and known cells are few by definition.
+
+## v0.17.9 a service type chosen before the permission existed
+
+Found on hardware the same evening v0.17.8 shipped, from the Brain's access log rather
+than from the phone — the payment calls were arriving on schedule and **no presence came
+with them**.
+
+### The defect
+
+v0.17.6 chose the foreground-service type set **once**, inside `startForeground`:
+
+```kotlin
+var types = FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+if (hasLocationPermission()) types = types or FOREGROUND_SERVICE_TYPE_LOCATION
+startForeground(NOTIF_ID, notif, types)
+```
+
+The service starts when the app first runs — which is **before** the user has granted
+location. So it came up as `connectedDevice` only. The permission was granted a minute
+later, the zone watch started, and it worked **while the app was on screen**. The moment
+the app went to background Android cut the location updates, because a foreground service
+without the `location` type may not have them. Thirty minutes later the fix expired, the
+zone went to `z?`, and the phone stopped publishing presence.
+
+Eight presence posts while the app was being used, then silence. **TESTING 78 could never
+have passed**, and the overnight run would have been a wasted night.
+
+### The rule
+
+**A capability decided before its permission exists has to be re-asserted after the
+permission arrives.** Same shape as v0.17.5 (asking on one screen only) and v0.17.7 (a
+memory of having asked): a decision taken once, at the wrong moment, and never revisited.
+
+`ensureForegroundTypes()` recomputes the set and calls `startForeground` again only when
+the answer actually moved. It runs on every start intent and from the service's existing
+once-a-minute sweep, so granting the permission takes effect within a minute without the
+user restarting anything. It also runs *before* the zone watch starts, because beginning
+location updates that Android will cut at the next screen-off is worse than not starting
+them — it looks like it worked.
+
+It logs the transition, so the diagnostic can show it happened:
+
+```
+foreground service types updated - it may now hold a coarse position with the app closed
+```
+
+### Not changed
+
+No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.

@@ -74,30 +74,68 @@ class ProkNetService : Service(), ProkNetNode.Listener {
                 clearAlert()
                 if (err != null) toastOnMain(err)
             }
-            else -> startNode()
+            else -> { startNode(); refreshZoneWatch("start intent") }
         }
         return START_STICKY
+    }
+
+    /**
+     * v0.17.8: which foreground-service types this service may legally claim RIGHT NOW.
+     *
+     * The LOCATION type is what lets the service keep a coarse zone while the app is
+     * closed, on the ordinary coarse permission and with no ACCESS_BACKGROUND_LOCATION.
+     * It is claimed only when the permission is actually held: Android 14 refuses a
+     * service that declares a type it has no permission for, and being refused would take
+     * the whole node down rather than just the zone.
+     */
+    private fun wantedTypes(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Build.VERSION.SDK_INT >= 30 && ProkNetApp.coverage(this).hasLocationPermission())
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        return types
+    }
+
+    /**
+     * THE DEFECT THIS EXISTS FOR, found on hardware 2026-09-23 while Mike was testing.
+     *
+     * v0.17.6 chose the type set ONCE, at startForeground. But the service starts when
+     * the app first runs - which is BEFORE the user has granted location. So the service
+     * came up as connectedDevice only; the permission was granted a minute later; the
+     * zone watch started and worked while the app was on screen; and the moment the app
+     * went to background Android cut the location updates, because a foreground service
+     * without the location type may not have them. The zone went stale half an hour
+     * later and the phone stopped publishing presence - which is exactly what the Brain
+     * log showed: the payment calls arriving and no presence with them.
+     *
+     * TESTING 78 could never have passed. A type set decided before the permission exists
+     * has to be re-asserted after it arrives, so this runs whenever anything might have
+     * changed and calls startForeground again only when the answer actually moved.
+     */
+    private var foregroundTypes = 0
+
+    private fun ensureForegroundTypes() {
+        if (Build.VERSION.SDK_INT < 29 || !running) return
+        val want = wantedTypes()
+        if (want == foregroundTypes) return
+        try {
+            startForeground(NOTIF_ID, buildNotification(consumerStatus()), want)
+            foregroundTypes = want
+            DiagLog.i(tag, "foreground service types updated" +
+                (if (Build.VERSION.SDK_INT >= 30 &&
+                    (want and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION) != 0)
+                    " - it may now hold a coarse position with the app closed" else ""))
+        } catch (e: Exception) {
+            DiagLog.w(tag, "could not update the foreground service types: " + e.message)
+        }
     }
 
     private fun startNode() {
         createChannel()
         val notif = buildNotification(getString(R.string.notif_starting))
         try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                // v0.17.6: the LOCATION type is what lets this service keep a coarse zone
-                // while the app is closed, on the ordinary coarse permission and with no
-                // ACCESS_BACKGROUND_LOCATION - so nobody is ever sent into system
-                // settings for it. Added only when the permission is actually held: a
-                // service that declares a type it has no permission for is refused
-                // outright on Android 14, and refusing to start would take the whole node
-                // down rather than just the zone.
-                var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                if (Build.VERSION.SDK_INT >= 30 && ProkNetApp.coverage(this).hasLocationPermission())
-                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-                startForeground(NOTIF_ID, notif, types)
-            } else {
-                startForeground(NOTIF_ID, notif)
-            }
+            if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIF_ID, notif, wantedTypes())
+            else startForeground(NOTIF_ID, notif)
+            foregroundTypes = if (Build.VERSION.SDK_INT >= 29) wantedTypes() else 0
             DiagLog.i(tag, "foreground started (persistent notification shown)")
         } catch (e: Exception) {
             DiagLog.e(tag, "startForeground FAILED - Android refused the foreground service", e)
@@ -135,7 +173,13 @@ class ProkNetService : Service(), ProkNetNode.Listener {
      *
      * Somebody who is neither offering nor looking has no position tracked at all.
      */
-    fun refreshZoneWatch(why: String) = Companion.refreshZoneWatch(this, why)
+    fun refreshZoneWatch(why: String) {
+        // the type set first: starting location updates that Android will cut the moment
+        // the screen goes off is worse than not starting them, because it looks like it
+        // worked
+        ensureForegroundTypes()
+        Companion.refreshZoneWatch(this, why)
+    }
 
     private fun net_prok_inboxEmpty(): Boolean =
         net.prok.proknet.core.ProviderInbox.active(ProkNetApp.network(this).inbox, System.currentTimeMillis()).isEmpty()
