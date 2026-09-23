@@ -3647,3 +3647,99 @@ zone such as `z2431:337` instead of `z?`.
 - Being sent to Settings when Android could still have shown its dialog.
 - Being asked for the permission again when it is already granted.
 - Granting the permission and then having to press the button a second time.
+
+## 78. v0.17.6 the idle provider survives the night
+
+Run after 77. This is the section that proves the central promise of v0.17: a provider can
+close the app and still be found.
+
+It exists because of a real failure: until build 73 the position was dropped the moment
+the screen went off, and a fix expires after thirty minutes. A provider who had granted
+everything and opted in was invisible to the Brain by morning, and nothing said so.
+
+### 78a. The permission exists at all
+
+This is first because on build 73 and earlier it did not. `ACCESS_COARSE_LOCATION` was
+capped at API 32, so on Android 13+ ProkNet could not hold a position under any
+circumstances and no amount of granting in settings would have helped.
+
+On the **OUKITEL** (Android 15): Settings → Apps → ProkNet → **Permissions**.
+
+Expected: a **Location** entry exists and can be set to Allow.
+
+**FAIL** if Location is not listed at all. That is the old build; reinstall build 74.
+
+### 78b. The position is held with the app closed
+
+On the **OUKITEL**, with location granted:
+
+1. Gagner → **« Me prévenir quand quelqu'un cherche Internet »** ON.
+2. PARTAGER **OFF** — idle, exactly as in 75a.
+3. Open the Lab screen, **Copy network diagnostic**, and check the new line:
+
+```
+zone watch: tracking: opted in to be woken | last fix ..., good for NN min
+```
+
+4. Close ProkNet (home button, not force-stop). Lock the screen. **Wait one hour.**
+5. Reopen and copy the diagnostic again.
+
+Expected: the zone is still a real cell such as `z2431:337`, **not** `z?`, and `last fix`
+is only a few minutes old — not an hour.
+
+**FAIL** if the zone is `z?`, or if the last fix is older than 30 minutes. That is build
+73's behaviour and the whole reason for this section.
+
+### 78c. The Brain still sees it
+
+While the OUKITEL is still closed and idle after that hour, ask me to check the Brain. I
+should see a fresh `network_presence` row for it with the real zone and `current_load 0`.
+
+**FAIL** if the presence row is missing or expired.
+
+### 78d. A phone that sits perfectly still
+
+78b already covers this if you did not move — and that is the point. Build 73 asked for
+300 m of movement before delivering any update, so a phone on a table received none at
+all.
+
+Expected: leaving the phone untouched on a table for an hour still shows a `last fix` of
+a few minutes.
+
+**FAIL** if standing still makes the zone expire.
+
+### 78e. It is released when it is not needed
+
+Turn **OFF** « Me prévenir quand quelqu'un cherche Internet », make sure PARTAGER is off
+and you have no active request, then check the diagnostic.
+
+Expected:
+
+```
+zone watch: not tracking (neither sharing nor looking)
+```
+
+ProkNet must not hold a position for somebody who is neither offering Internet nor looking
+for it.
+
+**FAIL** if it still says tracking.
+
+### 78f. And it comes back
+
+Turn the switch back ON. The diagnostic must return to `tracking: opted in to be woken`
+within a minute, without reopening anything.
+
+### 78g. The service still survives the night
+
+Check the persistent ProkNet notification is still there after the hour, and the
+diagnostic still says `service: RUNNING`.
+
+**FAIL** if Android killed the service — if so, press **Battery** in the app and repeat.
+
+### What would make this a FAIL
+
+- Location not listed in the app's permissions at all.
+- Zone `z?` after an hour with the app closed and the switch on.
+- A last fix older than 30 minutes at any point while tracking.
+- A position still held when nothing is offered and nothing is wanted.
+- The Brain having no fresh presence row for an idle, opted-in provider.

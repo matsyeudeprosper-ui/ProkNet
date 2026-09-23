@@ -1,3 +1,127 @@
+# CLAUDE_REPORT - ProkNet v0.17.6 "the permission that did not exist"
+
+Date: 2026-09-23
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.6, build 74. **716 Android tests, 360 server tests, all passing.**
+Floor was 706 + 360; every one of those still passes, none removed.
+
+I have to correct something I told you yesterday. v0.17.5 was not the fix. It was a good
+change sitting in front of a door that could not open.
+
+## 1. The root cause
+
+I ran `aapt2 dump permissions` on the **built APK** rather than reading the source, and:
+
+```
+uses-permission: name='android.permission.ACCESS_COARSE_LOCATION' maxSdkVersion='32'
+```
+
+**On Android 13, 14 and 15 the location permission was not declared at all.**
+`checkSelfPermission` could only ever return DENIED. `requestPermissions` could only ever
+do nothing. The pilot OUKITEL is **Android 15** — so it could never have held a position,
+granting it in settings would have changed nothing, and the v0.17.5 dialog I shipped
+yesterday would have asked politely for a permission that does not exist.
+
+That is the whole day of invisibility, and two of my own explanations for it were wrong
+along the way. I told Mike the fix was stale, then that it was denied. It was neither: it
+was undeclared.
+
+**The cap was correct when written.** Location was needed only by the old radios — BLE
+scan results on Android 8-11, the local-only hotspot on 8-12. Android 13+ replaced both
+with `NEARBY_WIFI_DEVICES` and `BLUETOOTH_SCAN/neverForLocation`, so capping at API 32
+avoided asking for something no longer needed. Then **v0.13 made the coarse zone the thing
+the entire Network Brain runs on**, and nobody lifted the cap. A permission stopped being
+optional and its declaration never caught up.
+
+`ACCESS_COARSE_LOCATION` is now uncapped. `ACCESS_FINE_LOCATION` **keeps** its cap: a
+500 m cell is all ProkNet needs, so on a modern phone it asks for coarse and nothing more
+— which is exactly what the dialog promises. The request was narrowed to coarse to match.
+
+## 2. Two more faults, behind that door
+
+**The position stopped with the screen.** Updates were requested in the Activity's
+`onForeground` and cancelled in `onBackground`; a fix lasts thirty minutes. A provider who
+pocketed the phone had no zone half an hour later, so no presence, so invisible — breaking
+the exact promise v0.17.3 was built on.
+
+**A stationary phone never refreshed.** `LOCATION_MIN_DISTANCE_M` was 300 m, and the
+network provider delivers nothing until the phone moves that far. A phone on a table got
+**no updates at all**. The idle provider is by definition the phone that is not moving, so
+the one case that mattered was the one case that could not work. Fixing only the first
+would have failed the hardware test again for a different reason.
+
+## 3. The fix, still without a background-location permission
+
+ProkNet already runs a foreground service with a permanent notification. A service
+declaring the **`location`** type may receive updates while the app is closed **on the
+ordinary coarse permission** — no `ACCESS_BACKGROUND_LOCATION`, so the v0.17.5 rule holds
+that nobody is ever sent into system settings.
+
+- `FOREGROUND_SERVICE_LOCATION` declared; type is `connectedDevice|location`.
+- The type is added at `startForeground` **only when the permission is held** — Android 14
+  refuses a service declaring a type it lacks permission for, and that refusal would take
+  the whole node down rather than just the zone.
+- `CoverageEngine.updateZoneWatch(...)` owns the updates; the Activity no longer touches
+  location.
+- `MIN_DISTANCE` is **0**, so time is the only interval and a stationary phone stays fresh.
+
+## 4. Only while it is needed
+
+`core/ZoneWatch` decides purely: sharing, looking, or opted in to be woken — otherwise
+nothing at all. Somebody neither offering nor looking has no position tracked. Released
+when the reason goes and on `onDestroy`.
+
+Nothing in that decision mentions the screen, and a test asserts the property across all
+eight combinations: `needed == opted || sharing || looking`.
+
+Self-correcting: every caller that can change the answer calls the static
+`ProkNetService.refreshZoneWatch`, and the existing once-a-minute sweep calls it too, so a
+missed call site costs sixty seconds rather than a silent regression.
+
+## 5. Visible
+
+The diagnostic gained a line, because "is this phone holding a position, and how long is
+the fix good for?" was unanswerable from the phone:
+
+```
+zone watch: tracking: opted in to be woken | last fix il y a 3 min, good for 27 min
+```
+
+## 6. Numbers
+
+- Android **716** (10 new in `ZoneWatchTest`), server **360**
+- Brain schema **4**, Android DB **10**, no migration
+- v0.17.6 / build 74
+
+## 7. Hardware status
+
+**Software-proven only.** Nothing in v0.16 or v0.17 has run successfully on a phone yet.
+
+TESTING **78** is new and starts with the check that would have caught this in one look:
+open the app's permission page and confirm **Location is listed at all**. On build 73 it
+was not.
+
+## 8. The lesson worth keeping
+
+A permission whose role has changed needs its declaration re-read, not assumed. And the
+source is not the artefact: this was invisible in `AndroidManifest.xml` unless you noticed
+one attribute, and obvious in `aapt2 dump permissions` on the APK. I should have dumped
+the built APK the moment the phone said "no location permission" while the manifest
+clearly declared it — the contradiction was the clue, and I spent a day explaining it away
+instead of chasing it.
+
+## 9. Remaining limitations
+
+- Android may still kill the foreground service on aggressive OEM battery settings. The
+  app has a Battery button for that; TESTING 78g checks it.
+- The zone is only as good as the network provider. Indoors with Wi-Fi off and no cell
+  data, there may be no coarse fix at all — and ProkNet will now say so rather than going
+  quiet.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.5 "a permission nobody was ever asked for"
 
 Date: 2026-09-23

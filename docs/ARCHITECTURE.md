@@ -4533,3 +4533,115 @@ consent. A test asserts those three sentences are present.
 
 No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10. This
 milestone changes only what the phone asks for and what it admits to.
+
+## v0.17.6 the permission that did not exist
+
+### The root cause, found in the built APK
+
+`aapt2 dump permissions` on build 74 said:
+
+```
+uses-permission: name='android.permission.ACCESS_COARSE_LOCATION' maxSdkVersion='32'
+```
+
+**On Android 13, 14 and 15 the location permission was not declared at all.**
+`checkSelfPermission` could only ever return DENIED; `requestPermissions` could only ever
+do nothing. The pilot OUKITEL is Android 15 - so it could not have held a position under
+any circumstances, no amount of granting in settings would have helped, and the v0.17.5
+dialog would have asked for something that did not exist.
+
+The cap was correct when it was written. Location used to be needed only by the old
+radios: BLE scan results on Android 8-11, and the local-only Wi-Fi hotspot on 8-12.
+Android 13+ replaced both with `NEARBY_WIFI_DEVICES` and `BLUETOOTH_SCAN/neverForLocation`,
+so capping location at API 32 avoided asking for something no longer needed. Then **v0.13
+made the coarse zone the thing the entire Network Brain runs on** - no zone, no presence,
+no demand, no coverage - and nobody lifted the cap. A permission stopped being optional
+and its declaration never caught up.
+
+`ACCESS_COARSE_LOCATION` is now uncapped, because the zone needs it on every version.
+`ACCESS_FINE_LOCATION` **keeps** its cap: a 500 m cell is all ProkNet ever needs, so on a
+modern phone it asks for coarse and nothing more - which is also exactly what the dialog
+promises. The permission request was narrowed to coarse only to match.
+
+This is the defect that cost the day. The two below are real and were fixed in the same
+milestone, but they were sitting behind a door that could not open.
+
+### Two more faults, stacked behind it
+
+**The position stopped with the screen.** Location updates were requested in the
+**Activity's** `onForeground` and cancelled in `onBackground`. A fix is usable for thirty
+minutes, so a provider who put the phone in a pocket had no zone half an hour later. No
+zone means `ProviderPresence.of` returns null, which means no presence heartbeat, which
+means the Brain cannot see that phone at all. The implementation was "only while you are
+looking at it"; the product said the opposite.
+
+**A stationary phone never refreshed.** Updates asked for `LOCATION_MIN_DISTANCE_M =
+300f`. The network provider delivers nothing until the phone moves that far, so a phone
+sitting still in a house received **no updates whatever** and went stale even with the app
+open. The idle provider is by definition the phone that is not moving - so the one case
+that mattered was the one case that could not work. Fixing only the first fault would have
+left this one hiding underneath it.
+
+### The fix, without a background-location permission
+
+ProkNet already runs a foreground service with a permanent notification; that is how it
+carries anything at all. A foreground service that declares the **`location`** type may
+receive updates while the app is closed **on the ordinary coarse permission** - no
+`ACCESS_BACKGROUND_LOCATION`, and therefore no trip into system settings, which is
+consistent with the v0.17.5 rule that nobody is ever sent hunting.
+
+So:
+
+- `FOREGROUND_SERVICE_LOCATION` declared, and the service type becomes
+  `connectedDevice|location`.
+- The type is added at `startForeground` **only when the permission is actually held**.
+  Android 14 refuses a service that declares a type it has no permission for, and being
+  refused would take the whole node down rather than just the zone.
+- `CoverageEngine.updateZoneWatch(...)` starts and stops the updates; the Activity's
+  `onForeground`/`onBackground` no longer touch location at all. They still drive the
+  Wi-Fi sweep, which genuinely is a foreground concern.
+- `LOCATION_MIN_DISTANCE_M` is now **0**, so time is the only interval and a stationary
+  phone keeps its timestamp alive. One coarse network fix every five minutes.
+
+### Only while it is needed
+
+`core/ZoneWatch` decides, purely, whether a position should be held at all:
+
+| reason | held? |
+|---|---|
+| sharing right now | yes |
+| looking for Internet | yes |
+| opted in to be woken | yes - **this is the case that was broken** |
+| none of those | **no** |
+
+Somebody who is neither offering nor looking has no position tracked. The service releases
+it when the reason goes away and on `onDestroy`, so a position is never held behind a
+stopped node.
+
+Nothing in that decision mentions the screen. That was the bug, and a test asserts the
+property directly: for every combination of the three reasons, `needed` equals
+`opted || sharing || looking`.
+
+### Self-correcting
+
+Every caller that can change the answer - the notify switch, sharing starting or stopping,
+a request beginning or ending, the permission being granted - calls
+`ProkNetService.refreshZoneWatch(...)`, which is static because those callers have a
+Context and not the service object. It is idempotent, and the service's existing
+once-a-minute sweep calls it too, so a missed call site costs at most sixty seconds rather
+than a silent regression.
+
+### Visible
+
+The diagnostic gained a line, because "is this phone holding a position, and how long is
+the current fix good for?" was previously unanswerable:
+
+```
+zone watch: tracking: opted in to be woken | last fix il y a 3 min, good for 27 min
+```
+
+A stale zone is now visibly a stale zone.
+
+### Not changed
+
+No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.
