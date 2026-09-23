@@ -731,9 +731,59 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     /** Has Android's permission dialog been used up? Asked once, remembered on disk. */
     private fun locationPrefs() = getSharedPreferences("proknet_ui", Context.MODE_PRIVATE)
 
-    private fun canAskLocationInApp(): Boolean =
-        !locationPrefs().getBoolean("location_asked", false) ||
-            shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_COARSE_LOCATION)
+    /**
+     * v0.17.7: is the permission even in THIS build's manifest?
+     *
+     * Build 73 capped ACCESS_COARSE_LOCATION at API 32, so on Android 13+ it was not
+     * declared: no dialog could appear and no Position entry existed in settings. Asking
+     * the package manager is the only honest way to know, and it turns a whole class of
+     * silent build mistakes into a sentence on the screen.
+     */
+    private fun locationDeclaredInBuild(): Boolean = try {
+        packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions?.contains(Manifest.permission.ACCESS_COARSE_LOCATION) == true
+    } catch (e: Exception) { true }   // cannot tell; assume it is there and let the ask fail loudly
+
+    /**
+     * v0.17.7: has Android's dialog genuinely been used up?
+     *
+     * THE BUG THIS REPLACES. Build 73 remembered "we have asked" in a preference. On
+     * build 73 that ask went nowhere, because the permission was not in the manifest - so
+     * build 74 inherited a flag saying "already asked" for a question that had never been
+     * put. `shouldShowRequestPermissionRationale` is false both for "never asked" and for
+     * "denied for ever", so the two together concluded the dialog was exhausted and the
+     * app offered a settings page instead of ever trying. Mike tapped Ouvrir, found
+     * nothing, and was stuck - on the build that had just fixed the underlying problem.
+     *
+     * A memory of having asked is a guess. This is evidence: the flag is written ONLY
+     * after a real request came back denied with no rationale owed, which is exactly
+     * "don't ask again", and it is scoped to the build that observed it because a new
+     * build may declare different permissions. Anything uncertain means "try the dialog",
+     * because an unnecessary dialog costs one tap and a wrong settings page costs the
+     * user the whole feature.
+     */
+    /** This build's number, the same way the Lab screen reads it. */
+    private val buildNumber: Long by lazy {
+        try {
+            val pi = packageManager.getPackageInfo(packageName, 0)
+            if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode
+            else @Suppress("DEPRECATION") pi.versionCode.toLong()
+        } catch (e: Exception) { 0L }
+    }
+
+    private fun locationDialogExhausted(): Boolean {
+        val p = locationPrefs()
+        return p.getBoolean("loc_dialog_dead", false) &&
+            p.getLong("loc_dialog_dead_build", -1L) == buildNumber
+    }
+
+    private fun rememberLocationDialogDead(dead: Boolean) {
+        val e = locationPrefs().edit().putBoolean("loc_dialog_dead", dead)
+        if (dead) e.putLong("loc_dialog_dead_build", buildNumber)
+        e.apply()
+    }
+
+    private fun canAskLocationInApp(): Boolean = !locationDialogExhausted()
 
     private fun locationServicesOn(): Boolean = try {
         val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
@@ -748,7 +798,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     fun locationNeed(): LocationGate.Need = LocationGate.need(
         hasPermission = cover.hasLocationPermission(),
         locationServicesOn = locationServicesOn(),
-        canAskInApp = canAskLocationInApp())
+        canAskInApp = canAskLocationInApp(),
+        declaredInBuild = locationDeclaredInBuild())
 
     /**
      * Run [then] once a zone is possible, asking for whatever is missing first.
@@ -762,21 +813,23 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (need == LocationGate.Need.NONE) { then?.invoke(); return }
         pendingAfterLocation = then
         DiagLog.i(tag, "location gate: " + LocationGate.diag(need))
-        AlertDialog.Builder(this)
+        val b = AlertDialog.Builder(this)
             .setTitle(LocationGate.title(need))
             .setMessage(LocationGate.message(need))
-            .setPositiveButton(LocationGate.button(need)) { _, _ -> actOnLocationNeed(need) }
             .setNegativeButton(R.string.close) { _, _ ->
                 // refused, and the screen says so from now on rather than going quiet
                 pendingAfterLocation = null; refresh()
             }
-            .show()
+        // v0.17.7: NOT_IN_BUILD has no button, because there is nothing for the user to
+        // open. Offering one would send them to a settings page with no Position entry.
+        val label = LocationGate.button(need)
+        if (label.isNotEmpty()) b.setPositiveButton(label) { _, _ -> actOnLocationNeed(need) }
+        b.show()
     }
 
     private fun actOnLocationNeed(need: LocationGate.Need) {
         when (need) {
             LocationGate.Need.ASK_PERMISSION -> {
-                locationPrefs().edit().putBoolean("location_asked", true).apply()
                 locationAsked = true
                 // v0.17.6: COARSE only. FINE is capped at API 32 in the manifest and is
                 // not wanted anyway - the promise in the dialog is a 500 m cell, so
@@ -788,6 +841,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
                     android.net.Uri.fromParts("package", packageName, null)))
             LocationGate.Need.TURN_ON_LOCATION -> openSettings(
                 Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            // nothing to do: only a new build fixes this one
+            LocationGate.Need.NOT_IN_BUILD -> {}
             LocationGate.Need.NONE -> {}
         }
     }
@@ -1432,7 +1487,16 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         if (requestCode == 7) {
             cover.onForeground()
             val granted = cover.hasLocationPermission()
-            DiagLog.i(tag, "location permission " + (if (granted) "GRANTED" else "denied"))
+            // v0.17.7: the only reliable signal Android gives. After a REAL request:
+            // granted, or denied-with-rationale (it will ask again), or denied-without-
+            // rationale, which is "don't ask again" and the only case where the settings
+            // page is the right answer. Recorded as evidence, never assumed in advance.
+            val mayAskAgain = shouldShowRequestPermissionRationale(
+                Manifest.permission.ACCESS_COARSE_LOCATION)
+            rememberLocationDialogDead(!granted && !mayAskAgain)
+            DiagLog.i(tag, "location permission " + (if (granted) "GRANTED"
+                else if (mayAskAgain) "denied (it can be asked again)"
+                else "denied for good (settings only from now on)"))
             val go = pendingAfterLocation
             pendingAfterLocation = null
             refresh()

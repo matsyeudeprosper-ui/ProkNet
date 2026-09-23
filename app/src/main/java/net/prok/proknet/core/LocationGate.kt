@@ -43,6 +43,16 @@ object LocationGate {
 
         /** Granted, but the phone's location switch is off. Open that switch directly. */
         TURN_ON_LOCATION,
+
+        /**
+         * v0.17.7: this BUILD cannot ask, because the permission is not in its manifest.
+         *
+         * Sending somebody to a settings page that has no Position entry is worse than
+         * saying nothing - they tap Ouvrir, find nothing, and conclude the app is broken.
+         * That is exactly what build 73 did to the pilot phone. Nothing the user can do
+         * fixes this; only a new build does, so say that instead.
+         */
+        NOT_IN_BUILD,
     }
 
     /**
@@ -53,8 +63,12 @@ object LocationGate {
      *   `shouldShowRequestPermissionRationale`, because Android cannot tell "never asked"
      *   from "permanently denied" on its own.
      */
-    fun need(hasPermission: Boolean, locationServicesOn: Boolean, canAskInApp: Boolean): Need = when {
+    fun need(hasPermission: Boolean, locationServicesOn: Boolean, canAskInApp: Boolean,
+             declaredInBuild: Boolean = true): Need = when {
         hasPermission && locationServicesOn -> Need.NONE
+        // v0.17.7: before anything else - can this build even ask? If the permission is
+        // missing from the manifest, every other answer here is a lie.
+        !hasPermission && !declaredInBuild -> Need.NOT_IN_BUILD
         // granted but switched off at the phone level: the permission dialog would be
         // pointless and confusing, because the user already said yes
         hasPermission -> Need.TURN_ON_LOCATION
@@ -68,6 +82,7 @@ object LocationGate {
     fun title(n: Need): String = when (n) {
         Need.NONE -> ""
         Need.TURN_ON_LOCATION -> "Activez la localisation"
+        Need.NOT_IN_BUILD -> "Cette version ne peut pas demander votre zone"
         else -> "ProkNet a besoin de votre zone"
     }
 
@@ -91,12 +106,19 @@ object LocationGate {
             "Vous avez autorisé ProkNet, mais la localisation du téléphone est éteinte.\n\n" +
                 "Appuyez sur Ouvrir pour l'allumer. ProkNet ne voit personne tant " +
                 "qu'elle est éteinte."
+        Need.NOT_IN_BUILD ->
+            "Cette version de ProkNet ne contient pas l'autorisation de position, donc " +
+                "elle ne peut pas vous la demander et les réglages ne l'afficheront pas " +
+                "non plus.\n\n" +
+                "Ce n'est pas votre téléphone : installez la dernière version de ProkNet."
     }
 
     /** The one button that fixes it. Never "go and find it yourself". */
     fun button(n: Need): String = when (n) {
         Need.NONE -> ""
         Need.ASK_PERMISSION -> "Autoriser"
+        // nothing to open: a settings page with no Position entry is a dead end
+        Need.NOT_IN_BUILD -> ""
         else -> "Ouvrir"
     }
 
@@ -107,6 +129,7 @@ object LocationGate {
     fun note(n: Need): String = when (n) {
         Need.NONE -> ""
         Need.TURN_ON_LOCATION -> "Localisation éteinte : ProkNet ne voit personne autour de vous."
+        Need.NOT_IN_BUILD -> "Cette version ne peut pas demander votre zone : mettez ProkNet à jour."
         else -> "Zone inconnue : autorisez la position pour trouver Internet près de vous."
     }
 
@@ -116,5 +139,6 @@ object LocationGate {
         Need.ASK_PERMISSION -> "NO PERMISSION (the in-app dialog can still be shown)"
         Need.OPEN_SETTINGS -> "NO PERMISSION (dialog exhausted; app settings needed)"
         Need.TURN_ON_LOCATION -> "granted, but the phone's location switch is OFF"
+        Need.NOT_IN_BUILD -> "NOT DECLARED IN THIS BUILD - no dialog and no settings entry exist"
     }
 }
