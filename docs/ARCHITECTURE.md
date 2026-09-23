@@ -4431,3 +4431,105 @@ asking again.
 
 Brain schema stays **4**, Android DB stays **10**. Every field used here already existed;
 only the values are honest now.
+
+## v0.17.5 a permission nobody was ever asked for
+
+The first defect found by running v0.17 on real phones, and it was not in the Brain.
+
+### What happened
+
+The pilot OUKITEL was healthy in every way that mattered: Brain reachable over HTTPS,
+signed requests succeeding, `syncs: 4, error: -`, notifications on, Internet validated,
+Bluetooth on, and a working local BLE session with the other phone. The Brain saw nothing
+from it. No presence, no demand, no activation, for a whole day.
+
+Its diagnostic said:
+
+```
+zone: z? (no location permission)
+```
+
+Every Brain call is gated on the zone, and each one returns early **and silently**:
+
+| call | guard |
+|---|---|
+| presence heartbeat | `ProviderPresence.of` returns null for `NO_ZONE` |
+| job poll | same - no presence, no poll |
+| coverage refresh | `if (z.isEmpty()) return` |
+| create demand | `if (z.isEmpty()) return ""` |
+| `reconcile` | **no zone check** |
+
+`reconcile` was the only one of the six arriving at the server, which is exactly what the
+Brain's access log showed and is how the cause was found.
+
+### Two faults, not one
+
+**Nobody was told.** The provider saw nothing at all. The buyer saw *"Aucun Internet
+disponible tout de suite"*, which is true and describes the wrong problem: it sounds like
+an empty neighbourhood, when in fact the whole network layer was switched off. No user
+could diagnose that, and neither could the operator without reading the server log.
+
+**Nobody was asked.** `askLocation()` existed, and fired only when the user opened the
+**map** tab. A person who uses Accueil and Gagner - which is everybody - is never asked
+once. The permission the entire product depends on was behind a screen with no reason to
+visit it.
+
+### The rule
+
+A capability gated on a permission must ask for it **where it is used**, and must say so
+on the screens where its absence is felt. Not on one tab, and not only in a diagnostic.
+
+`core/LocationGate.kt` decides, purely, which of four states the phone is in and what to
+say about each:
+
+| state | when | the one tap |
+|---|---|---|
+| `NONE` | granted and switched on | nothing to say |
+| `ASK_PERMISSION` | not granted, Android will still show its dialog | the system dialog |
+| `OPEN_SETTINGS` | dialog exhausted (denied twice) | the app's own settings page, opened directly |
+| `TURN_ON_LOCATION` | granted, but the phone's location switch is off | the location screen, opened directly |
+
+**Nobody is sent hunting.** The normal answer is the system yes/no dialog. The settings
+screens are only used when Android will no longer show that dialog, and then they are
+opened by intent straight onto the right page - never "go into Settings and find it",
+which most people cannot do and should not have to.
+
+Android cannot tell "never asked" from "permanently denied": `shouldShowRequestPermission-
+Rationale` is false in both cases. So the app remembers whether it has ever asked, and
+`canAskInApp` is `!askedBefore || shouldShowRationale`. That stays in the Activity;
+`LocationGate` takes it as an argument and remains pure.
+
+### Where it now asks
+
+- **GET INTERNET** - without a zone the Brain cannot create a demand at all, so asking
+  here is the difference between a working button and a buyer watching *Recherche* for
+  ever.
+- **Turning on « Me prévenir quand quelqu'un cherche Internet »** - opting in to be woken
+  is precisely the moment the zone starts to matter, because a provider with no zone
+  publishes no presence and is offered no buyer however willing it is.
+- **The map**, as before.
+
+After the permission is granted the app continues what the user actually pressed. A
+permission granted with nothing happening afterwards reads as a broken app.
+
+### Where it now says something
+
+`homeNote` on Accueil and `earnFootnote` on Gagner - both existing lines, no new banner.
+Bluetooth-off still wins on Accueil, because that stops even the local path.
+
+The note names the **consequence**, not the setting: *"Zone inconnue : autorisez la
+position pour trouver Internet près de vous."* Telling somebody a zone is unknown explains
+nothing; telling them ProkNet cannot see anyone around them is the thing they are
+actually experiencing.
+
+### Privacy, repeated at the point of asking
+
+The permission dialog is the only place most users will ever read what ProkNet does with
+a position, so the promise is restated there every time: a zone to 500 m, never an exact
+position, never a history of movements. A permission granted without understanding is not
+consent. A test asserts those three sentences are present.
+
+### Not changed
+
+No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10. This
+milestone changes only what the phone asks for and what it admits to.

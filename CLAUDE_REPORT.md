@@ -1,3 +1,147 @@
+# CLAUDE_REPORT - ProkNet v0.17.5 "a permission nobody was ever asked for"
+
+Date: 2026-09-23
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.5, build 73. **706 Android tests, 360 server tests, all passing.**
+Floor was 696 + 360; every one of those still passes, none removed.
+
+The first defect real phones found in v0.17. It was not in the Brain.
+
+## 1. What happened
+
+The Brain went live on `https://proknet.duckdns.org` and saw **nothing** from either
+phone for a day. No presence, no demand, no activation.
+
+The OUKITEL was healthy in every visible way: Brain reachable over HTTPS, signed requests
+succeeding, `syncs: 4, error: -`, notifications ON, Internet validated, Bluetooth on, and
+a working local BLE session with the other phone - including a notification and a
+PARTAGER that started the seller over `BLUETOOTH_BULK`. Its diagnostic said:
+
+```
+zone: z? (no location permission)
+```
+
+Every Brain call is gated on the zone, and each returns early **and silently**:
+
+| call | guard |
+|---|---|
+| presence heartbeat | `ProviderPresence.of` returns null for `NO_ZONE` |
+| job poll | same - no presence, no poll |
+| coverage | `if (z.isEmpty()) return` |
+| create demand | `if (z.isEmpty()) return ""` |
+| `reconcile` | **no zone check** |
+
+`reconcile` was the only one of six arriving at the server. That is how I found it - from
+the Brain's access log, not from either phone, which is itself the problem.
+
+## 2. Two faults, not one
+
+**Nobody was told.** The provider saw nothing at all. The buyer saw *"Aucun Internet
+disponible tout de suite"* - true, and describing the wrong problem. It reads as an empty
+neighbourhood when in fact the entire network layer was switched off. No user could
+diagnose that, and neither could I without server logs.
+
+**Nobody was asked.** `askLocation()` existed and fired only on the **map** tab. A person
+who uses Accueil and Gagner - everybody - is never asked once. The permission the whole
+product depends on sat behind a screen with no reason to visit it.
+
+## 3. The rule
+
+A capability gated on a permission must ask for it **where it is used**, and say so on the
+screens where its absence is felt. Not on one tab, not only in a diagnostic.
+
+`core/LocationGate` decides purely between four states:
+
+| state | when | the one tap |
+|---|---|---|
+| `NONE` | granted and switched on | nothing |
+| `ASK_PERMISSION` | not granted, Android will still ask | the system dialog |
+| `OPEN_SETTINGS` | dialog exhausted | the app's own permission page, opened directly |
+| `TURN_ON_LOCATION` | granted, phone's switch off | the location screen, opened directly |
+
+You asked for a yes/no rather than sending people to settings, and that is what this is.
+The system dialog is the normal answer. The settings screens are used **only** when
+Android will no longer show that dialog, and then they are opened by intent straight onto
+the right page - never "go to Settings and find it", which most people cannot do.
+
+Android cannot tell "never asked" from "permanently denied" - `shouldShowRequestPermission-
+Rationale` is false for both - so the app remembers whether it has ever asked.
+`canAskInApp` is passed in, so `LocationGate` stays pure and testable.
+
+## 4. Where it asks now
+
+- **GET INTERNET** - no zone, no demand, so the button could not work.
+- **Turning on « Me prévenir quand quelqu'un cherche Internet »** - opting in to be woken
+  is exactly when the zone starts to matter; without one the phone publishes no presence
+  and is offered no buyer however willing it is.
+- The map, as before.
+
+After granting, the app **continues what the user pressed**. A permission granted with
+nothing happening afterwards reads as a broken app.
+
+## 5. Where it speaks now
+
+`homeNote` on Accueil and `earnFootnote` on Gagner - both existing lines, no new banner.
+Bluetooth-off still wins on Accueil, because that stops even the local path.
+
+The note names the **consequence**: *"Zone inconnue : autorisez la position pour trouver
+Internet près de vous."* Telling somebody a zone is unknown explains nothing; telling them
+ProkNet cannot see anyone around them is what they are experiencing.
+
+## 6. Privacy
+
+The promise is restated inside the dialog every time - a zone to 500 m, never an exact
+position, never a history of movements - because that dialog is the only place most users
+will ever read it, and a permission granted without understanding is not consent. A test
+asserts all three sentences are present.
+
+## 7. Numbers
+
+- Android tests: **706** (10 new in `LocationGateTest`)
+- Server tests: **360**, unchanged
+- Brain schema **4**, Android DB **10**, no migration
+- Version / build: **v0.17.5 / 73**
+
+Nothing in the Brain, payments, BLE, L2CAP or the VPN changed. This milestone changes only
+what the phone asks for and what it admits to.
+
+## 8. Hardware status
+
+**Software-proven only** for everything in v0.16 and v0.17.
+
+But the pilot run did prove something real, and it is worth recording: on build 72 the
+**local BLE path works end to end on the two phones** - request received over BLE with its
+signature verified, notification posted, PARTAGER starting the seller over
+`BLUETOOTH_BULK`, and BLE self-healing twice from a stale scan unaided. v0.17.4 did not
+regress the proven local flow.
+
+TESTING **77** is new and comes **before** 75 and 76: until a phone has a zone, the Brain
+sections cannot pass on a fresh install.
+
+## 9. What is still blocking the Brain run
+
+Three things on the phones, none of them code:
+
+1. Location permission - this patch now asks for it properly.
+2. The OUKITEL has **no Mobile Money number**, so `mayOfferPaidSharing()` is false and,
+   since v0.17.4, both ready flags are false. The Brain will see it and offer it nothing.
+   That is correct behaviour and is exactly TESTING 76a.
+3. The OnePlus owes **49.33 CFA** against a 10 CFA new-buyer limit, which blocks the final
+   paid session.
+
+## 10. Remaining limitations
+
+- The zone still comes from `getLastKnownLocation` and location updates are requested only
+  while the app is in the foreground, so a fix expires 30 minutes after the app was last
+  open. An idle provider with the app closed all night will have no zone by morning and
+  will stop publishing presence. That is a **second, separate defect** with the same
+  shape, and I have not fixed it here - it needs a decision about background location,
+  which is a privacy question for you rather than a bug for me to quietly patch.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.4 "the offer class is the truth"
 
 Date: 2026-09-22

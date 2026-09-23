@@ -3565,3 +3565,85 @@ work.
 - A buyer matched as FREE being charged, or vice versa.
 - The waiting buyer in 76b needing a second tap.
 - Any regression in sections 59 to 75.
+
+## 77. v0.17.5 the phone asks for what it needs
+
+Run this **before** 75 and 76. It is short, and until it passes the Brain sections cannot
+pass on a fresh phone.
+
+This section exists because of a real failure on 2026-09-23: the OUKITEL was healthy in
+every visible way, the Brain saw nothing from it for a whole day, and neither phone said
+why. The cause was a location permission the app only ever asked for on the map tab.
+
+### 77a. A fresh phone asks, and one tap is enough
+
+Easiest on a phone that has never granted location to ProkNet. Otherwise: Settings → Apps
+→ ProkNet → Permissions → Location → **Deny**, then force-stop and reopen ProkNet.
+
+On **Accueil**, tap **DEMANDE / GET INTERNET**.
+
+Expected:
+1. A dialog: **« ProkNet a besoin de votre zone »**, explaining a zone to 500 m, never
+   an exact position, never a history of movements;
+2. tap **Autoriser** → Android's own permission dialog appears;
+3. tap Allow → **the request starts by itself**, with no second tap on GET INTERNET.
+
+**FAIL** if nothing happens after granting, or if you are told to go to Settings, or if
+the request only starts when you press the button again.
+
+### 77b. The provider is asked at the moment it matters
+
+On **Gagner**, with location still denied, turn ON **« Me prévenir quand quelqu'un
+cherche Internet »**.
+
+Expected: the same dialog appears immediately. That switch is a promise to wake this
+phone, and without a zone it publishes no presence and is offered no buyer.
+
+### 77c. It says why, even after you refuse
+
+Deny location again, and press **Fermer** on ProkNet's dialog rather than granting.
+
+Expected, on **Accueil**:
+
+> Zone inconnue : autorisez la position pour trouver Internet près de vous.
+
+And the same line on **Gagner**.
+
+**FAIL** if either screen is silent. Silence is what build 72 did, and it is the whole
+reason for this section. Note the line names the consequence, not the setting: a user
+must learn that ProkNet cannot see anybody, not merely that a zone is unknown.
+
+### 77d. When Android will not ask again
+
+Deny the Android dialog **twice** so the system stops offering it. Then press GET
+INTERNET.
+
+Expected: ProkNet's dialog now says Android can no longer ask here, and the button says
+**Ouvrir**. Tapping it lands you **directly on ProkNet's own permission page** — not the
+top of Settings.
+
+**FAIL** if you have to search for ProkNet in a list.
+
+### 77e. Permission granted, location switch off
+
+Grant location, then turn the phone's **location/GPS switch OFF** in quick settings.
+Press GET INTERNET.
+
+Expected: **« Activez la localisation »**, and **Ouvrir** takes you straight to the
+location screen. It must **not** ask for the permission again — you already granted it.
+
+### 77f. And then it gets out of the way
+
+With permission granted and location on, use Accueil and Gagner normally.
+
+Expected: no dialog, no note, nothing about location anywhere. The diagnostic shows a real
+zone such as `z2431:337` instead of `z?`.
+
+**FAIL** if any location message survives once everything is granted.
+
+### What would make this a FAIL
+
+- Any screen silently doing nothing while the zone is unknown.
+- Being sent to Settings when Android could still have shown its dialog.
+- Being asked for the permission again when it is already granted.
+- Granting the permission and then having to press the button a second time.
