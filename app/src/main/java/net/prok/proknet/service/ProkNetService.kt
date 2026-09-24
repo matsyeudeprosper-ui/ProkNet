@@ -22,6 +22,8 @@ import net.prok.proknet.ble.ProkNetNode
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.node.NetworkNode
 import net.prok.proknet.core.ProductState
+import net.prok.proknet.core.ProviderActivation
+import net.prok.proknet.core.SyncCadence
 import net.prok.proknet.ui.MainActivity
 
 /**
@@ -270,9 +272,39 @@ class ProkNetService : Service(), ProkNetNode.Listener {
             // v0.17.6: self-correcting. Every explicit caller makes the zone watch react
             // at once; this makes sure it is right within a minute even if one is missed.
             refreshZoneWatch("periodic")
-            main.postDelayed(this, NetworkNode.PERIODIC_MS)
+            // v0.17.10: and detection, for the same reason - a permission granted while
+            // the app is running used to be ignored until the next restart.
+            try { node.refreshDetection() } catch (e: Exception) { DiagLog.w(tag, "detection: " + e.message) }
+            main.postDelayed(this, nextSyncDelay())
         }
     }
+
+    /**
+     * v0.17.10: how long until the next sweep, from what this phone is actually doing.
+     *
+     * This used to be a flat fifteen minutes against a server presence window of two, so a
+     * provider was visible about 13% of the time and a waiting buyer could stare at
+     * "Recherche d'Internet…" for a quarter of an hour after somebody had already agreed.
+     * The right numbers were already written down in NetworkBrainSync and nothing used
+     * them.
+     */
+    private fun nextSyncDelay(): Long = try {
+        val netNode = ProkNetApp.network(this)
+        val willing = ProviderActivation.willing(netNode.eligibility())
+        val why = SyncCadence.why(
+            buyerWaiting = node.networkSync.demandId.isNotEmpty(),
+            providerWilling = netNode.notifyOptIn && willing,
+            sharing = node.sellOn)
+        if (why != lastCadence) {
+            lastCadence = why
+            DiagLog.i(tag, "talking to the network " + SyncCadence.diag(why))
+        }
+        SyncCadence.delayFor(why)
+    } catch (e: Exception) {
+        DiagLog.w(tag, "cadence: " + e.message); NetworkNode.PERIODIC_MS
+    }
+
+    private var lastCadence: SyncCadence.Why? = null
 
     /** The Wi-Fi join dialog only appears while a ProkNet screen is in front: ask the user to open the app. */
     private fun checkApproval() {

@@ -4840,3 +4840,84 @@ foreground service types updated - it may now hold a coarse position with the ap
 ### Not changed
 
 No Brain, payment, BLE, L2CAP or VPN behaviour. Brain schema 4, Android DB 10.
+
+## v0.17.10 the cadence that was written down and never run
+
+The last structural blocker, and the one hiding under every other location fix.
+
+### The arithmetic
+
+| | |
+|---|---|
+| Server expires a presence after | **120 s** (`PRESENCE_TTL_MS`) |
+| Phone talked to the Brain every | **15 min** (`PERIODIC_MS`) |
+
+A provider was therefore visible for two minutes in every fifteen — about **13%** of the
+time. Every inspection of the Brain found a stale presence, and that was blamed in turn on
+the app being closed, the zone expiring, and the foreground-service type. All three were
+real and all three were fixed. This sat underneath them and would have kept the network
+broken on its own.
+
+The second consequence was worse for the product: a buyer waiting on *Recherche
+d'Internet…* only learned that a provider had accepted on the next sweep. **Up to fifteen
+minutes** staring at a screen that already had its answer — which is the whole of TESTING
+75 step 5.
+
+### The cruel part
+
+`NetworkBrainSync` already declared the right numbers, with the right comments:
+
+```kotlin
+const val POLL_MS = 5_000L        // How often a waiting buyer asks what happened
+const val IDLE_POLL_MS = 30_000L  // How often a willing provider checks for work
+```
+
+**Neither was used anywhere.** The intent was documented and the scheduler that would have
+honoured it was never written. Every other defect in this series was a decision taken once
+at the wrong moment; this one was a decision written down and never taken at all.
+
+### The fix
+
+`core/SyncCadence` decides purely, from what the phone is doing:
+
+| state | cadence | why |
+|---|---|---|
+| a buyer is waiting | **5 s** | somebody is watching the screen |
+| willing or sharing | **30 s** | four times inside the 120 s window, so three lost requests are survivable |
+| neither | **15 min** | battery is spent only when somebody is waiting or offering |
+
+Waiting outranks offering: a phone doing both must answer the person staring at a screen.
+
+The property the defect broke is now a test: **any state that publishes a presence must
+keep it alive**, and the provider cadence must leave room for lost requests rather than
+landing exactly on the window. `the_old_fifteen_minute_sweep_would_fail_this` recomputes
+build 77's interval beside the new one, so a later simplification back to a flat sweep
+fails in the test file rather than in Congo.
+
+`refreshDetection()` also joins the sweep — see below.
+
+### And detection, finally called
+
+`ProkNetNode.refreshDetection()` existed since v0.16.1 with the comment *"notification
+access can be granted or revoked while we are running, so the seller's readiness must
+follow it without an app restart"*. Nothing called it: one occurrence in the whole
+codebase, its own definition. So `detectionAvailable` was computed once at node start, and
+a permission granted a minute later was ignored until the app was force-stopped.
+
+It now runs on the same sweep, so **any** permission change is picked up within thirty
+seconds regardless of which one it was.
+
+### The pattern, named
+
+Six defects in three days, all one family:
+
+1. Location asked for only on the map tab — decided when that screen was written.
+2. `ACCESS_COARSE_LOCATION` capped at API 32 — decided when only the old radios needed it.
+3. "We already asked" — remembered from a request that never reached Android.
+4. The foreground-service type — chosen before the permission existed.
+5. `refreshDetection()` — written, documented, never called.
+6. The sync cadence — the numbers written down, the scheduler never built.
+
+Each was correct when written. Each stopped being correct when something else changed, and
+nothing went back to check. The defence in every case was the same: make the decision pure
+and testable, and re-run it on a sweep rather than trusting that a single call site fires.
