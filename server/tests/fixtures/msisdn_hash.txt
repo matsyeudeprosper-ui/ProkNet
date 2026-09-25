@@ -1,0 +1,21 @@
+# v0.18.0: the one hash of a Mobile Money number that both halves compute.
+#
+# The treasury phone hashes the counterparty printed in the operator's message; the
+# payee's phone hashes what they typed into Gagner; the server hashes what a withdrawal
+# request carried. All three must agree or a paid withdrawal never turns "Payé" on its
+# own. Python (brain/ledger.py msisdn_hash) WROTE this file; Kotlin (core/Msisdn.kt)
+# reads it. sha256("ProkNet-msisdn-1|" + nine national digits), hex.
+#
+# input|digits|hash  - empty digits means "not a number we accept" and an empty hash.
+
+066123456|066123456|abc1be362ba3017ad5aa7afbdd14a3bf57a6af0fc921fed61c75d5d5faa216a3
++242 06 612 34 56|066123456|abc1be362ba3017ad5aa7afbdd14a3bf57a6af0fc921fed61c75d5d5faa216a3
+00242066123456|066123456|abc1be362ba3017ad5aa7afbdd14a3bf57a6af0fc921fed61c75d5d5faa216a3
+242066123456|066123456|abc1be362ba3017ad5aa7afbdd14a3bf57a6af0fc921fed61c75d5d5faa216a3
+055987654|055987654|162cef12329c280069a528ef61cec44237a575075ba83025869ce08fa26212de
+05 59 87 65 4|055987654|162cef12329c280069a528ef61cec44237a575075ba83025869ce08fa26212de
+66123456||
+06 61 23 45||
+abc||
+0661234567||
+||

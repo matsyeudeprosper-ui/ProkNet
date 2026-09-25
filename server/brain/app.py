@@ -34,6 +34,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import evidence
+from . import ledger
 from . import network
 from . import paybox
 from . import protocol
@@ -43,7 +44,7 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.17.4"
+VERSION = "0.18.0"
 
 
 def _network_error(e) -> dict:
@@ -130,6 +131,9 @@ class State:
         # v0.17.0: the control plane shares the Brain's own connection, because its tables
         # are part of the Brain's schema and its sweep runs on the Brain's timer.
         self.net = network.NetworkPlane(self.brain.db)
+        # v0.18.0: the ledger shares the Brain's connection and schema (migration 5). Roles
+        # and the payments switch come from the environment; see ledger.py.
+        self.ledger = ledger.Ledger.from_env(self.brain.db)
         self.rules = ruleconfig.RuleStore(self.pay.db, CONFIG_PUBLIC_KEY)
         self.lock = threading.Lock()
         self.rate = {}          # node_id -> [timestamps]
@@ -404,7 +408,91 @@ class Handler(BaseHTTPRequestHandler):
         except signed_request.AuthError:
             return None
 
+    def _ledger_error(self, e: "ledger.LedgerError"):
+        out = {"error": str(e)}
+        if e.reason:
+            out["reason"] = e.reason
+        self._json(e.code, out)
+
+    def _ledger_get(self, who: str, now: int):
+        """v0.18.0: everything here is somebody's money or the treasurer's list, so every
+        read is signed and returns only what the caller may see."""
+        L = STATE.ledger
+        p = self.path.split("?", 1)[0]
+        try:
+            if p == "/v1/ledger/wallet":
+                self._json(200, L.wallet(who, now))
+            elif p == "/v1/ledger/withdrawals":
+                self._json(200, {"withdrawals": L.my_withdrawals(who, now)})
+            elif p == "/v1/ledger/treasury/queue":
+                self._json(200, L.queue(who, now))
+            elif p == "/v1/ledger/treasury/summary":
+                L._require_treasury(who, "treasury.summary", "-", now)
+                self._json(200, L.summary(now))
+            elif p == "/v1/ledger/treasury/review":
+                self._json(200, {"items": L.review_list(who, now)})
+            elif p == "/v1/ledger/treasury/audit":
+                self._json(200, {"rows": L.audit_rows(who, now)})
+            else:
+                self._json(404, {"error": "not found"})
+        except ledger.LedgerError as e:
+            self._ledger_error(e)
+
+    def _ledger_post(self, body: dict, who: str, now: int):
+        L = STATE.ledger
+        p = self.path
+        def s(k, default=""):
+            v = body.get(k, default)
+            return v if isinstance(v, str) else default
+        def n(k):
+            v = body.get(k, 0)
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+        try:
+            if p == "/v1/ledger/hold":
+                out = L.hold(s("customer_id"), who, n("amount"), now)
+            elif p == "/v1/ledger/hold/started":
+                out = L.hold_started(s("hold_id"), who, s("session_hex"), now)
+            elif p == "/v1/ledger/hold/keepalive":
+                out = L.keepalive(s("hold_id"), who, now)
+            elif p == "/v1/ledger/hold/release":
+                out = L.release_unused(s("hold_id"), who, now)
+            elif p == "/v1/ledger/withdraw":
+                out = L.request_withdrawal(who, s("rail"), s("msisdn"), n("amount"), now)
+            elif p == "/v1/ledger/withdraw/cancel":
+                out = L.cancel_withdrawal(who, s("withdrawal_id"), now)
+            elif p == "/v1/ledger/intent":
+                out = L.create_intent(who, s("rail"), n("amount"), now)
+            elif p == "/v1/ledger/claim":
+                out = L.claim(who, s("rail"), s("sender_hash"), n("amount"), s("reference"), now)
+            elif p == "/v1/ledger/treasury/withdrawal":
+                out = L.treasury_withdrawal(who, s("withdrawal_id"), s("action"), now, memo=s("memo"), evidence=s("evidence"))
+            elif p == "/v1/ledger/treasury/topup":
+                out = L.observe_credit(who, s("rail"), s("sender_hash"), n("amount"), s("sms_hash"), now, source=s("source", "sms"))
+            elif p == "/v1/ledger/treasury/debit":
+                out = L.observe_debit(who, s("rail"), s("counterparty_hash"), n("amount"), s("sms_hash"), now)
+            elif p == "/v1/ledger/treasury/review":
+                out = L.review(who, s("topup_id"), bool(body.get("confirm", False)), now, memo=s("memo"))
+            elif p == "/v1/ledger/treasury/test_credit":
+                out = L.test_credit(who, s("target"), n("amount"), now, memo=s("memo"))
+            elif p == "/v1/ledger/treasury/balance":
+                out = L.balance_check(who, s("rail"), n("typed"), now)
+            else:
+                self._json(404, {"error": "not found"})
+                return
+            self._json(200, out)
+        except ledger.LedgerError as e:
+            self._ledger_error(e)
+
     def do_GET(self):
+        # ---- v0.18.0: the ledger, signed and per caller ----
+        if self.path.startswith("/v1/ledger/"):
+            who = self._who()
+            if who is None:
+                self._json(401, {"error": "this endpoint requires a signed request"})
+                return
+            with STATE.lock:
+                self._ledger_get(who, int(time.time() * 1000))
+            return
         # ---- v0.16.2: private payment state, authenticated and authorised ----
         if self.path.startswith("/v1/pay/"):
             who = self._who()
@@ -526,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if (self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments")
                 or self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/")
-                or self.path.startswith("/v1/network/")):
+                or self.path.startswith("/v1/network/") or self.path.startswith("/v1/ledger/")):
             self._settlement_post()
             return
         if self.path != "/v1/sync":
@@ -577,6 +665,10 @@ class Handler(BaseHTTPRequestHandler):
             submitter = ""
 
         with STATE.lock:
+            if self.path.startswith("/v1/ledger/"):
+                self._ledger_post(body, submitter, now)
+                return
+
             if self.path == "/v1/settlements":
                 # The phone submits EVIDENCE, not amounts. The server re-derives the
                 # money and the settlement id from the signed contract and the signed
@@ -589,7 +681,18 @@ class Handler(BaseHTTPRequestHandler):
                 if protocol.node_id(body["submitter_pub"]) != submitter:
                     self._json(401, {"error": "the signing identity is not the submitter in the evidence"})
                     return
-                self._json(200, STATE.settlements.record(derived, now))
+                out = STATE.settlements.record(derived, now)
+                # v0.18.0: verified evidence is what creates earnings. Posted once per
+                # settlement id; a dispute posts nothing. The settlement row and the ledger
+                # live on different connections, so the posting is idempotent by id rather
+                # than atomic with the row: a crash between the two is repaired by the
+                # next submission of the same evidence.
+                if out.get("ok") and out.get("status") not in settlement.NEEDS_HUMAN:
+                    try:
+                        out["ledger"] = STATE.ledger.post_settlement(derived, now)
+                    except ledger.LedgerError as e:
+                        out["ledger"] = {"posted": False, "error": str(e)}
+                self._json(200, out)
                 return
 
             if self.path == "/v1/payments/initiate":
@@ -744,6 +847,7 @@ def cleanup_loop(state: State, every_s: int):
                 n["settlements_expired"] = state.settlements.expire(now_ms)
                 n["payment_windows_swept"] = state.pay.sweep(now_ms)
                 n.update(state.net.sweep(now_ms))
+                n.update(state.ledger.sweep(now_ms))
             if any(n.values()):
                 LOG.info("cleanup %s", n)
         except Exception as e:  # never let the timer die

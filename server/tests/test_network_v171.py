@@ -99,7 +99,7 @@ class AcceptedWaitWindowTest(unittest.TestCase):
 
 class FallbackAfterAcceptedTimeoutTest(unittest.TestCase):
     """Item 19-20. A provider that agreed and then never turned up must not leave the
-    buyer looking at "un fournisseur se prépare" for ever."""
+    buyer looking at "un fournisseur se prÃ©pare" for ever."""
 
     def setUp(self):
         self.n = plane()
@@ -297,7 +297,7 @@ class SchemaThreeTest(unittest.TestCase):
         con.close()
 
         b = braindb.Brain(path)
-        self.assertEqual(4, b.schema_version())
+        self.assertEqual(5, b.schema_version())
         cols = {r[1] for r in b.db.execute("PRAGMA table_info(network_activation)")}
         self.assertIn("accepted_at", cols)
         self.assertIn("link_deadline", cols)

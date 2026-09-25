@@ -171,8 +171,40 @@ counts processes afterwards for the same reason.
 | `PROK_BRAIN_BACKUPS` | where backups go | `C:\ProkNetBrain\backups` |
 | `PROK_BRAIN_PUBLIC_URL` | for `status.ps1` | loopback |
 | `PROK_CONFIG_PUBLIC_KEY` | parser-rule key override | the pinned key |
+| `PROK_TREASURY_IDS` | v0.18.0: comma-separated node ids allowed to act as the **treasury** (record top-ups, move withdrawals past REQUESTED, post test credit) | none - nobody is treasury |
+| `PROK_TEST_IDS` | v0.18.0: node ids that may receive audited **test credit** (pilot phones only) | none |
+| `PROK_PAYMENTS_LIVE` | v0.18.0: `1` lets an observed top-up credit a customer. Anything else records it as REJECTED (`payments_disabled`) and credits nobody | off |
 
 No credential is ever a command-line argument, and none is in git.
+
+### v0.18.0 the ledger, the treasury phone and the payments switch
+
+The Brain now keeps the Prok ledger (schema 5): customer credit, holds, earnings,
+withdrawal requests, observed top-ups, an audit table. **It cannot send money.** A
+withdrawal is a row a person still has to send by hand from the Mobile Money app; the
+queue says "N retraits en attente = N envois manuels" and means it.
+
+Roles are the server's, from the environment above, never from the app:
+
+- a **treasury identity** is the node id of the phone holding Prok's SIMs. Find it on
+  that phone's Lab screen (`me: prok-…` is the short form; the full id is in the network
+  diagnostic), put it in `PROK_TREASURY_IDS`, restart the Brain. The Lab screen's
+  TRÉSORERIE button appears on the next sync, and the phone starts forwarding the
+  operator's own "vous avez reçu / envoyé" messages as amounts and hashes - never text;
+- a **test identity** may receive test credit from the treasury screen so holds, sessions
+  and withdrawals can be exercised with nobody's money. List the pilot phones there;
+- `PROK_PAYMENTS_LIVE` stays **unset** until the legal and operational questions in
+  `docs/PAYMENTS_V018_DESIGN.md` Appendix B are answered in writing. Mike flips it, not a
+  script. While it is off the customer app shows no treasury number.
+
+Set them as **machine** environment variables like `PROK_BRAIN_PORT`, so the scheduled
+task sees them at boot, then `stop.ps1` / `start.ps1` and check `/health` reports
+`"schema": 5`.
+
+What is logged from the ledger: ids cut short, amounts, states, the actor. Never a
+number, never a message body. The withdrawal row holds the payee's number because the
+treasurer has to type it; it is returned only to treasury identities and never written
+to the audit table (a test walks the audit rows for it).
 
 ### Backups
 

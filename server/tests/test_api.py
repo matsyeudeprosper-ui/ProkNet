@@ -263,6 +263,8 @@ class PayApiTest(unittest.TestCase):
     what -- not just that the happy path returns 200.
     """
 
+    seq = 0
+
     @classmethod
     def setUpClass(cls):
         app.STATE = app.State(":memory:")
@@ -314,7 +316,8 @@ class PayApiTest(unittest.TestCase):
              headers=None, nonce=None):
         """Sign the method and the path as well, exactly as PaymentSync does."""
         ts = int(time.time() * 1000)
-        nonce = nonce or ("n%d%d" % (id(path), ts))
+        PayApiTest.seq += 1
+        nonce = nonce or ("n%d-%d" % (ts, PayApiTest.seq))   # never the clock alone: two calls a millisecond apart are a replay
         digest = signed_request.body_hash(raw)
         line = signed_request.signing_line(
             ts, nonce, digest,

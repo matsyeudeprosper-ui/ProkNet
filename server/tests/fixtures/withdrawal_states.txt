@@ -1,0 +1,18 @@
+# v0.18.0: what a provider's screen says about a withdrawal, per server state.
+#
+# Both halves read this file. The server (server/brain/ledger.py WITHDRAWAL_TEXT) is the
+# only source of the state; the phone (core/LedgerView.kt) shows exactly the text on the
+# same line and nothing else. The product rule: the screen says "withdrawal requested",
+# "being sent" or "paid" ACCURATELY - never a state the ledger cannot vouch for. A ledger
+# cannot send money, so "Envoi en cours" means a treasurer marked it sent by hand, and
+# "Payé" means the operator's own message (or the treasurer's typed reference) confirmed it.
+#
+# One STATE|text per line. Blank lines and lines starting with # are ignored.
+
+REQUESTED|Retrait demandé
+APPROVED|Retrait demandé
+SENT|Envoi en cours
+PAID|Payé
+DENIED|Refusé
+CANCELLED|Annulé
+NEEDS_ATTENTION|En vérification

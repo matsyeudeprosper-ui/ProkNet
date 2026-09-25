@@ -336,7 +336,7 @@ class SchemaFourTest(unittest.TestCase):
 
         from brain.db import Brain
         b = Brain(self.path)
-        self.assertEqual(4, b.schema_version())
+        self.assertEqual(5, b.schema_version())
         b.db.close()
 
         for t, rows in before.items():
@@ -374,7 +374,7 @@ class SchemaFourTest(unittest.TestCase):
         Brain(self.path).db.close()
         mid = {t: self.rows(t) for t in ("settlements", "network_demand")}
         b = Brain(self.path)
-        self.assertEqual(4, b.schema_version())
+        self.assertEqual(5, b.schema_version())
         self.assertEqual(1, int(b.db.execute(
             "SELECT COUNT(*) FROM schema_version WHERE version=4").fetchone()[0]))
         b.db.close()

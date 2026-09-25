@@ -8,6 +8,7 @@ import sqlite3
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import ledger
 from . import matching
 from . import network
 from .protocol import Availability, Coverage, Request, verify_request
@@ -54,6 +55,10 @@ MIGRATIONS = [
     # has never met the buyer can verify the request itself. Additive: one column with a
     # default, so every existing demand, activation and financial row is untouched.
     network.MIGRATION_4,
+    # 5: v0.18.0. The Prok ledger: postings, holds, withdrawals, observed top-ups, audit.
+    # New tables only, so every existing row is untouched. A ledger cannot send money;
+    # these tables record what was proved and what a person still has to do by hand.
+    ledger.SCHEMA,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000
