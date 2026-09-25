@@ -32,6 +32,7 @@ import net.prok.proknet.ProkNetApp
 import net.prok.proknet.R
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
+import net.prok.proknet.core.BrainEndpoint
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Dir
 import net.prok.proknet.core.Identity
@@ -128,9 +129,20 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         }
         findViewById<Button>(R.id.btnBrainUrl).setOnClickListener {
             val net = ProkNetApp.network(this)
-            val input = android.widget.EditText(this).apply { setText(net.brainUrl); hint = "https://brain.example.org (empty = off)" }
+            val input = android.widget.EditText(this).apply { setText(net.brainUrl); hint = BrainEndpoint.PILOT + " (vide = off)" }
             AlertDialog.Builder(this).setTitle("Network Brain URL").setMessage("HTTPS base URL of the ProkNet Network Brain. Leave empty to run local/direct only.").setView(input)
-                .setPositiveButton("Save") { _, _ -> net.brainUrl = input.text.toString(); toast(if (net.configured) "Brain: " + net.brainUrl else "Brain off"); net.syncNow("url set") }
+                .setPositiveButton("Save") { _, _ ->
+                    // v0.17.11: a signed identity and a request for Internet are not
+                    // things to send in the clear, so a public http:// address is
+                    // refused here rather than quietly used.
+                    val typed = input.text.toString()
+                    val bad = BrainEndpoint.refusal(typed)
+                    if (bad != null) { toast(bad) } else {
+                        net.brainUrl = typed
+                        toast(if (net.configured) "Brain: " + net.brainUrl else "Brain off")
+                        net.syncNow("url set")
+                    }
+                }
                 .setNeutralButton("Sync now") { _, _ -> net.syncNow("manual"); toast("Sync requested") }
                 .setNegativeButton("Cancel", null).show()
         }

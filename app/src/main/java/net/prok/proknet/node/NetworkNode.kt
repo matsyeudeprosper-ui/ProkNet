@@ -10,6 +10,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import net.prok.proknet.ble.Peer
 import net.prok.proknet.ble.ProkNetNode
+import net.prok.proknet.core.BrainEndpoint
 import net.prok.proknet.core.CoverageModel
 import net.prok.proknet.core.DiagLog
 import net.prok.proknet.core.Market
@@ -95,9 +96,29 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
     var shareCoverage: Boolean
         get() = prefs.getBoolean("share_coverage", false)
         set(v) { prefs.edit().putBoolean("share_coverage", v).apply(); DiagLog.i(tag, "shared coverage " + (if (v) "ON" else "OFF")); syncSoon("coverage preference changed") }
+    /**
+     * v0.17.11: the pilot Brain is the DEFAULT, so a fresh install is on the network
+     * without anybody typing a URL from memory.
+     *
+     * The default applies only when this key has never been written. Saving an EMPTY
+     * address is therefore still a real choice and still means "off" - which is what the
+     * Brain-off sections of TESTING need, and what an off switch has to mean.
+     */
     var brainUrl: String
-        get() = prefs.getString("brain_url", "")!!.trim().trimEnd('/')
-        set(v) { prefs.edit().putString("brain_url", v.trim()).apply(); backoffMs = MIN_BACKOFF_MS; nextAllowedSync = 0L; DiagLog.i(tag, "brain url " + (if (v.isBlank()) "cleared" else "set")) }
+        get() = BrainEndpoint.normalise(prefs.getString("brain_url", BrainEndpoint.PILOT)!!)
+        set(v) {
+            val url = BrainEndpoint.normalise(v)
+            prefs.edit().putString("brain_url", url).apply()
+            backoffMs = MIN_BACKOFF_MS; nextAllowedSync = 0L
+            DiagLog.i(tag, "brain url " + when {
+                url.isEmpty() -> "cleared - this phone is off the network"
+                url == BrainEndpoint.PILOT -> "set to the pilot Brain"
+                else -> "set to a custom address"
+            })
+        }
+
+    /** True while this phone has never been told anything about a Brain. */
+    val brainUrlIsDefault: Boolean get() = !prefs.contains("brain_url")
 
     companion object {
         const val MIN_BACKOFF_MS = 60_000L
