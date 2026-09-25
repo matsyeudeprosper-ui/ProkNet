@@ -1,519 +1,519 @@
-# ProkNet v0.18 — Prepaid credit, metered sessions, automatic payouts
+# ProkNet v0.18 — Prepaid credit, metered sessions, accumulated earnings, pre-registration money flow
 
-Date: 2026-09-25 (revision 2, after Mike's design review)
+Date: 2026-09-25 (revision 3)
 From: Claude (implementation engineer)
 To: Mike (product owner), ChatGPT (architect)
-Status: **DESIGN UNDER REVIEW — nothing here is built, and this is not approval to
-launch live payments.** Every percentage and threshold is an example until operator
-quotes and measured data costs exist.
+Status: **DESIGN UNDER REVIEW — nothing is built. Not approval to launch live payments.
+No real-money implementation starts until the legal and operational path is settled.**
+Every percentage, threshold and cap is an example until operator quotes and measured
+data costs exist.
 
-Revision 2 changes, from the review: (1) the legal section no longer assumes prepaid
-credit is outside payment regulation; it compares a licensed partner holding funds with
-pay-per-session and lists what counsel must confirm. (2) Offline spending has a hard
-loss bound and a named bearer; the normal path is an **online hold by the seller**, who
-has Internet by definition. (3) The finished payout flow is automatic; unknown operator
-results are **queried, never retried blind**; cross-rail treasury is specified.
-(4) Short sessions keep the v0.15.0 rule — a signed final checkpoint decides — and
-charge zero only when no usable Internet was delivered. (5) The kiosk path is
-exceptional by construction, not by labelling. Section 12 classifies everything as
-**Confirmed / Assumed / Blocks real money / Pilot-only**.
+**Firm constraint (Mike, 2026-09-25): no MTN or Airtel APIs for the foreseeable future.**
+Prok is not registered. This build uses **no operator API credentials, no sandbox calls,
+no API top-ups, no API disbursements.** Operator APIs are a later option (Appendix A),
+not a dependency. Manual Mobile Money app / USSD actions are allowed and are labelled
+**[MANUAL]** wherever they occur.
 
----
-
-## 0. The brief, and the one-paragraph answer
-
-> Customers add credit with MTN MoMo or Airtel Money. A controlled gateway meters the
-> real session. Providers and relays earn a share, see it in Prok Wallet, and are paid
-> out automatically. Nobody sends dozens of tiny payments by hand.
-
-**Answer.** Customer money enters through the operators' Collections API into a
-business wallet held by **Prok's Congolese entity or a licensed partner (section 9
-decides which)**. The Brain keeps a double-entry **ledger** in integer centimes. A
-session is metered by the **existing ProkNet tunnel** — every buyer packet passes
-through the seller's app, both phones count bytes, both sign a checkpoint every
-30 s / 1 MB — and the ledger is posted from the same signed evidence the Brain verifies
-today. Before admitting a paid session the seller, who has Internet, asks the Brain for
-an **atomic hold** on the customer's credit; a small signed offline authorisation covers
-the case where the Brain is unreachable, with a hard loss cap that Prok bears. For
-fixed sites serving ordinary devices, an OpenWrt router with openNDS is the gateway and
-the Brain is its authentication server. A **payout engine** pays each provider and relay
-by Mobile Money disbursement when their balance passes a threshold or on a weekly run,
-with status queries before any retry and a treasury rule for paying an Airtel payee from
-MTN-collected funds. The kiosk path survives only where Prok is unreachable and never
-appears in the normal flow.
+Revision 3 changes: the whole money flow is redesigned around what can be verified
+**without an API** — the operator's own SMS on a Prok-held phone — with every
+non-automatable step named. Two revision-2 defects fixed: a hold now stays reserved for
+the whole session (5.1), and the "free under 64 KB" rule is withdrawn (6.1.3). Offline
+authorisations stay disabled in the pilot.
 
 ---
 
-## 1. What already exists (so v0.18 is not a second money system)
+## 0. One-paragraph answer
 
-Verified in the code on 2026-09-25:
+Customers pay by an ordinary Mobile Money transfer **[MANUAL, by the customer]** to a
+**Prok treasury number** (one MTN, one Airtel SIM, in one dedicated phone held by a
+named person in Congo, the *treasurer*). That phone runs ProkNet in **Treasury mode**
+and reads the operator's own "vous avez reçu …" SMS — the mechanism v0.16 already built
+for sellers — to verify each top-up and post it to the Brain's ledger. Sessions are
+metered by the existing tunnel with co-signed checkpoints; the seller, who has
+Internet, reserves an **online hold** on the customer's credit before admitting a paid
+session, and that hold stays reserved until the session settles. Providers and relays
+**accumulate** earnings in the ledger. Once a week, or when a balance passes a
+threshold, the Brain produces a **payout list**; the treasurer sends each transfer from
+the Mobile Money app or USSD **[MANUAL]**, and the treasury phone confirms each one
+automatically from the operator's "vous avez envoyé …" SMS. Nobody travels to a kiosk;
+nobody pays a provider per session; the only human actions are typing transfers and
+one daily balance check. What a ledger cannot do — move money — is done by a person, a
+few times a week, from a list.
 
-| Piece | Where | What it gives v0.18 |
+---
+
+## 1. What exists and is reused (verified in code 2026-09-25)
+
+| Piece | Where | Reused for |
 |---|---|---|
-| Buyer traffic through the seller app | `vpn/ProkVpnService.kt`, `node/TunnelClient.kt`, `node/Gateway.kt` | **The phone path is already a controlled gateway.** VpnService captures every IPv4 packet of every app on the buyer, a user-space TCP/DNS stack forwards it over Wi-Fi/Bluetooth to the seller, the seller opens the real sockets. Bytes are counted on **both** phones. |
-| Signed contract + checkpoints | `core/Market.kt` — `Contract` (buyer proposes, seller admits), `Checkpoint` every 30 s or 1 MB, tolerance 64 KB / 10 %, buyer countersigns | Meter readings neither side can inflate alone. |
-| Symmetric teardown | `core/Teardown.kt` (v0.15.0) | **Whoever stops, a closing checkpoint is issued and countersigned before settlement.** A seller-stopped short session is charged for what it delivered. |
-| Settlement + evidence | `core/Settlement.kt` (`fromSession` returns **no obligation without a mutually signed checkpoint**), `core/Evidence.kt`, `server/brain/evidence.py`, `settlement.py` | The Brain re-derives gross/fee/net from signed bytes. |
-| Pricing | `core/Pricing.kt`: CFA per MB, centimes, seller floor 1–4 CFA/MB by policy, `DEFAULT_FEE_PCT = 5` | Rates and the fee hook. |
-| Trust cap | `core/Trust.kt`, `SettlementPolicy.kt` (credit limit 50 CFA) | Stays for the exceptional path only. |
-| Wallet UI | `core/Wallet.kt`, `WalletUi.kt` — never shows a "Solde" | Screen scaffolding. |
-| Relay | `core/Relay.kt`, `node/RelayNode.kt` — live A→B→C forwarding, `FLAG_VIA_RELAY` | Exists, **earns nothing today**. |
-| Server money routes | `/v1/settlements`, `/v1/payments/*`, `/v1/wallet`, `/v1/device/risk` | Extended, not duplicated. |
-| v0.16 direct-pay path | `ReceiptParser`, `PaymentExpectation`, `DestinationClaim`, `paybox.py` | The kiosk path (section 6.5). |
+| Buyer traffic through the seller app; bytes counted both ends; checkpoint every 30 s / 1 MB, countersigned | `vpn/ProkVpnService.kt`, `node/TunnelClient.kt`, `node/Gateway.kt`, `core/Market.kt` | Metering. Unchanged. |
+| Symmetric teardown: whoever stops, a closing checkpoint is countersigned | `core/Teardown.kt` (v0.15.0) | Short sessions. Unchanged. |
+| `Settlement.fromSession` = no obligation without a mutually signed checkpoint; budget sessions cost `costFor(billable)` **proportionally, no floor** | `core/Settlement.kt`, `Market.kt:164` | Charging rule. |
+| Evidence verified server-side | `core/Evidence.kt`, `server/brain/evidence.py`, `settlement.py` | Ledger posting. |
+| **Operator SMS reading**: `ReceiptParser` (scored, never templated, DATA rules), `ReceiptListener` (NotificationListener + `SmsReceiptReceiver`), `PaymentExpectation` (rail + amount + window, ambiguity prevented), `DeviceReceipt` (source trust) | `core/`, `service/` | **The treasury phone's verification.** Today it runs on each seller for its own number; v0.18 runs it on Prok's phone for Prok's numbers. |
+| Signed remote parser rules with a pinned config key | `ReceiptRules`, `brain/publish_rules.py` | Operator rewording fixes without an app release. |
+| Wallet UI never shows a "Solde" | `WalletUi.kt` | Screens. |
+| Relay (live forwarding, earns nothing today) | `core/Relay.kt` | Relay share. |
 
-**Product decision embedded here (needs a yes from Mike and ChatGPT):** money goes
-through Prok (or its licensed partner) and providers are paid out; the v0.16 "pay the
-seller's own number" path becomes exceptional.
+**What is NOT reused in the normal flow:** per-seller destination numbers, the buyer
+paying a seller directly, kiosk cash. They survive only in the exceptional path (6.5).
 
 ---
 
-## 2. Who holds the money, who sends it, who receives it, when
+## 2. Who holds, sends, receives, and when — pre-registration
 
 ```
- Customer (MTN/Airtel wallet)
-      │  Collections API "request to pay" — PIN prompt on the customer's own phone
+ Customer's own MoMo/Airtel wallet
+      │  [MANUAL, customer] transfer to the Prok treasury number (app or USSD)
       ▼
- FLOAT  = business wallet(s) at MTN and Airtel, held by [Prok entity | licensed partner]
-      │  the ledger says whose money it is; the daily invariant proves it
+ PROK TREASURY PHONE  — one dual-SIM phone, MTN + Airtel personal wallets,
+      │                 held by the treasurer, ProkNet in Treasury mode
+      │  reads "vous avez reçu N F de 06xxxxxxx" ─► TOPUP posting (automatic)
       │
-      │  per session, from signed evidence:
-      │     customer_credit −gross · provider +share · relay +share · prok +share
+      │  ledger, per session (signed evidence): customer −gross · provider +share
+      │                                          · relay +share · prok +share
       │
-      ├──► Provider   Disbursements API, threshold or weekly, automatic
-      ├──► Relay      same engine
-      ├──► Customer   refund of UNSPENT credit to the ORIGINATING number only
-      └──► Prok       its share, monthly, after reconciliation, human-approved
+      ├──► Provider / Relay  [MANUAL, treasurer] transfer from the payout list;
+      │                       confirmed automatically from "vous avez envoyé …"
+      ├──► Customer refund   [MANUAL, treasurer] same mechanism, to the origin number
+      └──► Prok              [MANUAL] monthly, after reconciliation
 ```
 
 | Who | Holds | Sends | Receives | When |
 |---|---|---|---|---|
-| Customer | Own MoMo/Airtel wallet; a **credit at Prok** (form decided in section 9) | Top-up 100–10,000 CFA | Internet; refund of unspent credit (6.3) | Top-up when they have cell signal (the PIN prompt is USSD, no data needed). Spend per session from the signed final checkpoint. |
-| Provider | An earnings balance | Nothing | A disbursement | Balance ≥ threshold (ex. 2,000 CFA) or weekly run if ≥ minimum (ex. 500 CFA) |
-| Relay | Same | Nothing | Same | Same engine; one balance per person |
-| Prok / partner | The float | Payouts, refunds | Prok's share; equipment recovery | Monthly, after 7.3 |
+| Customer | Own wallet; a **credit at Prok** | A transfer to the Prok number **[MANUAL]** | Internet; refund of unspent credit | Top-up whenever they have cell signal (USSD needs no data). Spend per session from the signed final checkpoint. |
+| Provider / relay | An **earnings balance** in the ledger | Nothing | A transfer from the treasurer **[MANUAL]** | Balance ≥ threshold (ex. 2,000 CFA) or the weekly run if ≥ minimum (ex. 500 CFA) |
+| Treasurer (a named person) | The two treasury SIMs and their PINs; the treasury phone | Payouts, refunds, Prok's monthly share | Nothing of their own | Weekly payout session; one daily balance check |
+| Prok | Legally, the float in the treasury wallets | — | Its share | Monthly |
 
-**Invariant, checked daily and before every payout run:**
-`float(MTN) + float(Airtel) ≥ Σ customer_credit + Σ earned + Σ holds + payouts_in_flight`.
-If it fails, payouts pause and Mike is told.
+**Invariant, checked daily:**
+`balance(MTN) + balance(Airtel)` (typed in by the treasurer, section 7.3) `≥ Σ customer_credit
++ Σ earned + Σ active holds + payouts SENT-not-CONFIRMED`. Failure pauses the payout
+list and tells Mike.
 
 ---
 
-## 3. The ledger (build first)
+## 3. The ledger
 
 Brain schema migration **5**, ALTER-based, upgrade-tested from a real schema-4 DB.
+Double-entry, integer centimes, append-only, reversals by `ADJUSTMENT` with a memo and
+an operator name. Every float movement carries the operator's SMS reference when it has
+one.
 
 ```
-ledger_accounts   id, owner_id, kind (CUSTOMER_CREDIT|EARNED|PROK_REVENUE|
-                  FLOAT_MTN|FLOAT_AIRTEL|IN_FLIGHT|LOSS), balance_centimes (cache)
-ledger_postings   id, ts, kind (TOPUP|HOLD|HOLD_RELEASE|SESSION|RELAY_SHARE|PROK_SHARE|
-                  PAYOUT|PAYOUT_CONFIRMED|PAYOUT_FAILED|REFUND|TREASURY_MOVE|
-                  DOUBLE_SPEND_LOSS|ADJUSTMENT),
-                  debit_account, credit_account, amount_centimes, ref, memo
-topups            id, customer_id, rail, msisdn_hash, amount, operator_ref,
-                  state (REQUESTED|PENDING|CONFIRMED|FAILED|EXPIRED|UNKNOWN)
-holds             id, customer_id, seller_id, amount, kind (ONLINE|OFFLINE_AUTH),
-                  expires_at, session_id?, state (ACTIVE|CONSUMED|RELEASED|EXPIRED)
-payouts           id (= operator reference id), payee_id, rail, msisdn_hash, amount,
-                  state (SCHEDULED|SENT|UNKNOWN|CONFIRMED|FAILED|NEEDS_ATTENTION),
-                  attempts, operator_txn_id, last_error, created_at, settled_at
-treasury_moves    id, from_rail, to_rail, amount, method, ref, state
+ledger_accounts  id, owner_id, kind (CUSTOMER_CREDIT|EARNED|PROK_REVENUE|FLOAT_MTN|
+                 FLOAT_AIRTEL|IN_FLIGHT|LOSS|FEES), balance_centimes (cache)
+ledger_postings  id, ts, kind (TOPUP|HOLD|HOLD_RELEASE|SESSION|RELAY_SHARE|PROK_SHARE|
+                 PAYOUT_SENT|PAYOUT_CONFIRMED|PAYOUT_FAILED|REFUND|FEE|BALANCE_CHECK|
+                 ADJUSTMENT), debit, credit, amount, ref, memo, posted_by
+topups           id, customer_id?, rail, sender_hash, amount, sms_hash, received_at,
+                 state (MATCHED|UNASSIGNED|NEEDS_REVIEW|CLAIMED), posted_by (treasury id)
+topup_intents    id, customer_id, rail, amount_tag, created_at, expires_at   (section 4.2)
+holds            id, customer_id, seller_id, amount, state (PRE_SESSION|IN_SESSION|
+                 CONSUMED|RELEASED|EXPIRED), created_at, last_keepalive, session_hex?
+payouts          id, payee_id, rail, msisdn_hash, amount, state (SCHEDULED|SENT|
+                 CONFIRMED|FAILED|NEEDS_ATTENTION), sent_at, confirmed_by_sms_hash, memo
+balance_checks   id, ts, rail, balance_typed, balance_expected, delta, by
 ```
 
-- Double-entry; balances are sums. Integer centimes. Nothing deleted; reversals are
-  `ADJUSTMENT` with a memo and an operator name.
-- A session posts once, keyed by settlement id; `evidence.verify`'s DISPUTED rule
-  carries over.
-- Every float movement has an operator reference so reconciliation is a join, not a
-  guess.
+**Roles are enforced by the Brain, not the app.** Only the pinned **treasury identity**
+(one node id per treasury phone, allow-listed on the server like the config key) may post
+`TOPUP`, `PAYOUT_*`, `REFUND`, `BALANCE_CHECK`. Any other node's attempt is a 403 and an
+audit row. A test proves an ordinary seller cannot post a top-up.
 
 ---
 
-## 4. Metering: what actually controls access
+## 4. Customer payments: who receives, how verified, how posted
 
-### 4.1 Phone-to-phone (exists) — the tunnel *is* the gateway
+### 4.1 Who receives
 
-Both ends count, both sign every 30 s or 1 MB, settlement is the **last checkpoint both
-signed**. When the budget or hold is exhausted `Gateway.enforceMax()` stops forwarding.
-A crashed session costs at most one interval. v0.18 adds only the pre-admission hold
-check (section 5).
+**The Prok treasury numbers** — one MTN MoMo, one Airtel Money — shown inside the app
+on **Recharger**, with a *copy* button and the amount. Nothing else ever shows a number
+to a customer. ⚠ These are **personal-tier wallets** until Prok is registered:
+balance caps and daily limits apply (values not published; section 9). The pilot float is
+capped (ex. 50,000 CFA per rail) so it stays well inside them.
 
-### 4.2 Fixed site serving ordinary devices — captive-portal router (v0.19 spike)
+### 4.2 How each payment is verified — the operator's own SMS, on Prok's phone
 
-OpenWrt router (GL.iNet class) + **openNDS**: per-client data quotas, rate limits,
-session timeouts, an external **FAS** (the Brain) that authorises a client, and a
-**BinAuth** hook that reports `client_mac, bytes_incoming, bytes_outgoing,
-session_start, session_end` on every deauth. Access stops **on the box** when the quota
-is consumed. The **site host** is the provider; Prok adds an equipment-recovery share
-(7.2). Upstream: fibre or 4G SIM. **Not Starlink** — no licence in Congo-Brazzaville
-per section 11.
+1. Customer taps **Recharger** → picks rail and amount → the app registers a
+   **top-up intent** with the Brain (needs a moment of Internet or a sync through the
+   next seller; a top-up can also be made with no intent, see 3 below).
+2. **[MANUAL, customer]** sends the transfer from their Mobile Money app or USSD to the
+   Prok number. The customer pays the operator's P2P fee (ex. 50–100 CFA on ≤ 5,000).
+3. The treasury phone receives the operator's "vous avez reçu N FCFA de 06xxxxxxx"
+   SMS. `ReceiptParser` (extended to **DEBIT/CREDIT with counterparty**, section 4.4)
+   yields amount + sender number → **only a salted hash of the sender** leaves the
+   parser. Matching, in order:
+   - **sender hash known** (customer registered their number once; a hash bound to an
+     identity on the first matched payment) → `TOPUP MATCHED`, full amount credited;
+   - sender unknown but an **intent with a unique amount tag** is pending (the app asks
+     for "exactement 503 F" when the number is not yet bound — the 3 F goes to the
+     customer's credit, nothing is taken) → `MATCHED`, number now bound;
+   - neither → `UNASSIGNED`. The customer's app can **claim** it by entering the sending
+     number; the Brain binds the hash and credits. Unclaimed after 7 days → treasurer's
+     review list (refund **[MANUAL]** or leave).
+   - parser `AMBIGUOUS` → `NEEDS_REVIEW`: the treasury phone shows the SMS text and two
+     buttons, *Créditer …* / *Ignorer*. **[MANUAL, treasurer]** but one tap.
+4. The customer's app shows "Crédit Internet : 1 250 F" on its next sync. Typical delay:
+   seconds while the treasury phone is on and has signal.
 
-### 4.3 Not metered, not sold
+**What makes this honest:** money is credited only when the operator itself says it
+arrived, on the phone that holds the receiving SIM. No customer statement, screenshot or
+"I paid" button exists. A parsing miss delays a credit; it never invents one. A
+duplicate SMS lands on the same `sms_hash` and posts nothing twice.
 
-A plain Android hotspot to strangers. ProkNet must never price it.
+### 4.3 What cannot be automated here, plainly
+
+- **The customer's transfer itself.** A human types a number, an amount and a PIN.
+- **Reading a message the parser cannot score** → one tap by the treasurer.
+- **Refunding an unclaimed payment** → a manual transfer.
+- **Knowing the wallet balance** → a USSD query by the treasurer (7.3).
+- **A payment sent to the wrong number** → not recoverable by ProkNet; the app says so
+  before showing the number.
+
+### 4.4 Parser change
+
+`ReceiptParser` today returns CREDIT / NOT_A_CREDIT / AMBIGUOUS with an amount and, by
+design, **never a name or number** (a privacy test asserts it). Treasury mode needs the
+**counterparty** for both directions. The change keeps the privacy rule for sellers and
+adds a treasury-only path: `Parsed.counterpartyHash` (salted SHA-256 of the digits,
+salt per treasury identity) filled **only** when the listener runs under the treasury
+identity; on any other phone the field is empty and the existing test still passes. A
+`DEBIT` verdict is added for "vous avez envoyé … à …" (payout confirmation, 8.2) and
+"frais … " lines where the operator states the fee. Rules stay DATA under the signed
+config key. **Nobody has seen a real MTN Congo / Airtel Congo message yet** — the first
+pilot task is to collect twenty real ones on the treasury phone and add them to the
+corpus (section 12).
 
 ---
 
-## 5. Spending: the hold, the offline fallback, and the hard loss bound
+## 5. Spending: online hold (fixed), offline fallback (disabled)
 
-### 5.1 Normal path — ONLINE hold by the seller (no double-spend possible)
+### 5.1 Online hold — reserved for the whole session
 
-The seller is the phone **with** Internet. Before admitting a paid contract it calls
+The seller has Internet. Before admitting a paid contract it calls
 `POST /v1/credit/hold {customer_id, amount = contract.buyerBudget}`; the Brain moves
-credit → `holds` **atomically** (one SQL transaction, `UNIQUE (customer_id) WHERE state
-= ACTIVE` so a customer cannot hold twice). Response ≤ 2 s on the seller's own upstream.
-Session end → evidence → `HOLD` consumed, remainder released. A hold not consumed within
-`HOLD_TTL` (ex. 30 min) is released by the sweep.
+credit → hold **atomically** (one transaction; `UNIQUE(customer_id) WHERE state IN
+(PRE_SESSION, IN_SESSION)`). The contract carries the hold id; `Gateway.enforceMax()`
+already stops the session at the budget, so **a session can never exceed its hold**.
 
-With the Brain reachable there is **no** double-spend and **no** loss: the same credit
-cannot be held by two sellers.
+Lifecycle, fixing the revision-2 defect:
 
-### 5.2 Fallback — signed OFFLINE authorisation (bounded loss, Prok bears it)
-
-Used **only** when the seller's hold call fails (Brain down, or the seller's upstream
-cannot reach it). The customer's phone carries `SpendAuth {customer_id, amount, issued_at,
-expires_at, serial}` signed by a dedicated Brain key (pinned like `ReceiptRules`).
-
-Hard limits, all enforced in code and each pinned by a test:
-
-| Limit | Example value | Enforced by |
+| State | Enters when | Leaves when |
 |---|---|---|
-| `OFFLINE_MAX` per authorisation and per session | 300 CFA | seller refuses a contract whose budget exceeds it |
-| Validity | 6 h from issue | seller checks `expires_at` |
-| Issued only to customers with ≥ 1 confirmed top-up and no open debt | — | Brain at issue time |
-| One live authorisation per customer | — | serial; Brain reissues only after the previous expires or is reported consumed |
-| Global daily budget for offline-auth settlements | ex. 20,000 CFA/day | Brain stops **issuing** when the day's offline settlements pass it; existing ones expire within 6 h |
+| `PRE_SESSION` | hold granted | session starts → `IN_SESSION`; or **30 min** with no start → `EXPIRED` (credit back) |
+| `IN_SESSION` | seller reports `session_started {hold_id, session_hex}` — sent on the same 30 s cadence the seller already runs while sharing (v0.17.10) | settlement → `CONSUMED` (remainder released); seller reports end → `RELEASED`; or **no keepalive for 15 min** → `EXPIRED` |
 
-**Worst-case loss per customer per 6 h = `OFFLINE_MAX × (number of distinct offline
-sellers reached − 1)`.** The first seller is paid from the customer's real credit; each
-further one is the loss. With `OFFLINE_MAX = 300` and, say, 4 sellers in 6 h, that is
-900 CFA — and the global daily budget caps the sum across all customers regardless.
+- **While the seller keeps sending keepalives the hold never expires**, however long the
+  session runs. The 30-minute clock is only for holds that never became a session.
+- Keepalive = the existing sharing-state heartbeat plus the hold id; no new timer.
+- If a seller phone dies mid-session the hold expires 15 min after its last keepalive; a
+  later settlement (buyer or seller reconnects with the signed final checkpoint) still
+  posts the `SESSION` debit — the customer may go negative by at most one session, which
+  the report shows and the next top-up clears.
+- If the Brain is unreachable **when the hold is requested**, the paid session is
+  refused (5.3). If it becomes unreachable **during** a session, nothing changes for the
+  session: the hold's keepalives resume when it is back, and the 15-min expiry only
+  affects reservation, never the signed cost.
 
-**Who bears it: Prok.** Sellers who served in good faith on a valid authorisation are
-paid in full — the ledger posts `DOUBLE_SPEND_LOSS` from `PROK_REVENUE` (never from any
-provider, never from the float's customer liabilities). The customer's identity and
-device pseudonym are blocked from *further* offline authorisations and from new
-sessions until the negative balance is topped up; Mike's review is right that this
-recovers nothing — it only stops repetition. The loss is a **measured, capped cost of
-doing business** and appears as its own line in the daily report. If it ever exceeds the
-budget, the Brain turns offline authorisations off and everybody falls to 5.3.
+### 5.2 Offline authorisation — DISABLED in the pilot
 
-**Pilot-only rule:** offline authorisations are **disabled** in the pilot. Loss from
-double-spend is therefore exactly zero while the pilot runs; sellers that cannot reach
-the Brain refuse paid sessions (free ones unaffected) and the app says why. The offline
-path is switched on only after the online path is hardware-proven.
+Design unchanged from revision 2 (`OFFLINE_MAX` 300 CFA, 6 h, one live per customer,
+global daily budget, **loss borne by Prok** as its own ledger line, worst case per
+customer `OFFLINE_MAX × (offline sellers reached − 1)`). It is build step 9, after
+everything else is hardware-proven, and ships **switched off**. Pilot double-spend loss
+is therefore zero.
 
-### 5.3 No hold, no authorisation
+### 5.3 No hold
 
-Paid session refused. Free / sponsored sessions unaffected. The exceptional kiosk path
-(6.5) is reachable only from here and only when the Brain has been unreachable from the
-seller for longer than `KIOSK_AFTER` (ex. 24 h).
+Paid session refused with one sentence ("Le réseau Prok n'est pas joignable — session
+gratuite seulement"). Free / sponsored sessions unaffected. The exceptional path (6.5)
+is reachable only from here and only after the gate.
 
 ---
 
-## 6. Flows, including the ugly cases
+## 6. Flows
 
-Example split (⚠ examples): no relay — provider 75 / Prok 25; via relay — provider 65 /
-relay 10 / Prok 25. Equipment sites add an equipment-recovery share (7.2).
+Example split (⚠): no relay — provider 75 / Prok 25; via relay — provider 65 / relay 10
+/ Prok 25.
 
 ### 6.1 Customer
 
-1. **Recharger** → rail, amount (chips 200 / 500 / 1,000 / 2,000; max balance 10,000).
-   Brain calls request-to-pay; the operator pushes a PIN prompt over USSD; the app says
-   "Confirmez sur votre téléphone" and polls the Brain, which polls the operator.
-   `CONFIRMED` → `TOPUP` posting. `FAILED`/`EXPIRED` → nothing posted, one sentence,
-   retry. **`UNKNOWN`** (operator timed out, no callback) → keep querying by our
-   reference id for up to 24 h; never issue a second request-to-pay for the same top-up
-   under a new id while the first is unknown; the customer sees "Recharge en cours de
-   vérification".
-2. **Session**: as today, with the hold at admission. After the closing checkpoint the
-   screen shows the cost from the numbers the seller signed.
-3. **Short or seller-stopped session — the v0.15.0 rule stands.** `Teardown` issues a
-   closing checkpoint and waits for the countersignature whichever side stopped; the
-   settlement is `costFor(final.billable)`. **New in v0.18: zero when no usable Internet
-   was delivered** — a signed final checkpoint whose `billable` is below
-   `USABLE_FLOOR` (ex. 64 KB, the existing tolerance constant) settles at 0 and releases
-   the hold; nothing below that is "Internet" a person could have used. No signed final
-   checkpoint → no obligation, unchanged (`Settlement.fromSession` already returns null).
-4. **Dispute**: the last mutually signed checkpoint is the truth and both phones hold it.
+1. Recharger — section 4.
+2. Session — as today, with the hold at admission.
+3. **Short sessions — revision-2 rule withdrawn.** The "free under 64 KB" floor would
+   let a customer open tiny sessions repeatedly and use a provider's data for nothing.
+   Rule now:
+   - A signed final checkpoint costs **`costFor(billable)` at the signed rate, from the
+     first byte** — proportional, no free band. Budget sessions already work this way.
+   - A **per-session minimum** `MIN_SESSION_CENTIMES` (ex. 100 = 1 CFA) applies whenever
+     the seller's upstream returned anything (`bytesDown > 0`), covering the seller's
+     fixed cost of a session (DNS, handshake).
+   - **Zero only when no usable Internet was delivered**: no mutually signed checkpoint
+     (already zero), or a signed final checkpoint with **`bytesDown == 0`** — nothing
+     came back from the Internet, so nothing was delivered and the seller's own data
+     cost was nil.
+   - **Rate limit on holds**: more than `MAX_HOLDS_PER_HOUR` (ex. 6) per customer, or
+     more than 3 per hour with the same seller, is refused ("Trop de sessions —
+     réessayez dans une heure"). This closes the repeated-tiny-session loop even if a
+     future pricing change reintroduced a floor.
+   - The v0.15.0 teardown is untouched; a test settles a seller-stopped session to the
+     same centime as today.
+4. Dispute: the last mutually signed checkpoint, held by both phones.
 
-### 6.2 Provider
+### 6.2 Provider / relay
 
-1. **Gagner** → willing (exists) + a **verified payout number** (rail + number; verified
-   by the first confirmed payout, or by a 1 CFA test disbursement that must reach
-   `CONFIRMED`). Replaces `DestinationClaim` as the destination of record; same signed
-   object, addressed to Prok.
-2. Session ends → evidence → `SESSION` + `PROK_SHARE` (+ `RELAY_SHARE`). Wallet shows
-   **Gagné (en attente de versement)** and **Prochain versement : vendredi / dès 2 000 F**.
-3. **Automatic payout** — section 8.
-4. **Data cost check**: bundles ≈ 1,000–1,200 CFA/GB; existing floor 1–4 CFA/MB. Whether
-   the provider share clears it at real usage is the pilot's first number.
+1. Gagner → willing (exists) + a **payout number** (rail + number, stored as hash on the
+   Brain, plain on the payee's phone). Verified by the first confirmed payout.
+2. Session → evidence → `SESSION` + shares. Wallet: **Gagné (en attente de versement)**,
+   **Prochain versement : vendredi / dès 2 000 F**, and the history of past payouts with
+   the operator SMS reference.
+3. Payout — section 8.
+4. Relay: `relayId` in the signed contract (version bump); "verified relay" after N
+   relayed sessions (ex. 5) before payouts start.
 
 ### 6.3 Refunds
 
-Unspent credit → **the originating number only**, ≤ once per 30 days, ≤ unspent credit,
-via Disbursement. Never to another number, never to cash, never to another customer.
-Session refunds are not needed (6.1.3); goodwill = `ADJUSTMENT` with a memo.
+Unspent credit → **origin number only**, ≤ once / 30 days. The engine puts it on the
+payout list; the treasurer sends it **[MANUAL]**; confirmed from the debit SMS like a
+payout.
 
-### 6.4 Relay
+### 6.4 Prok
 
-`relayId` added to the signed contract (`Contract.version` bump; old contracts parse).
-A "verified relay" = verified payout number + ≥ N relayed sessions (ex. 5) before
-payouts start; the share accrues from the first. No relay → no posting.
+Its share accrues in `PROK_REVENUE`; moved out **[MANUAL]** monthly after 7.3 passes,
+logged as a posting with who and when.
 
-### 6.5 Exceptional path: kiosk / pay the provider directly
+### 6.5 Exceptional path (unchanged from revision 2)
 
-**Exceptional by construction, not by label.** It can only be entered when:
+Only when the seller could not reach the Brain for > `KIOSK_AFTER` (ex. 24 h) **and**
+the customer has no verifiable credit **and** the seller enabled "Paiement de secours".
+Then the v0.16 rule: Trust cap 50 CFA, the seller's own number, its own SMS receipt; the
+seller bears any loss; Prok takes no share. A test asserts no normal-flow string contains
+"kiosque" or a phone number.
 
-- the seller has been unable to reach the Brain for > `KIOSK_AFTER` (ex. 24 h), **and**
-- the customer holds no valid authorisation and no credit the seller can verify, **and**
-- the seller has explicitly enabled "Paiement de secours" in Réglages du partage.
+### 6.6 Lost phone / reinstall
 
-Then, and only then, the v0.16 rule applies: Trust cap 50 CFA, seller's own number, SMS
-receipt. Prok takes no share (it never touched the money) and the **seller** bears any
-Trust-cap loss, as today. The normal Home / Gagner / Wallet screens never mention a
-kiosk, a provider's number, or paying a person; those words exist only inside the
-secours screen. A test asserts no normal-flow string contains "kiosque" or a phone
-number.
-
-### 6.6 Phone reinstalled / lost
-
-Credit lives on the Brain by identity. Recovery = the customer proves the top-up number
-(a 0-CFA request-to-pay they confirm); the old identity's balance moves by `ADJUSTMENT`.
-Debts follow the device pseudonym as today.
+Credit lives on the Brain. Recovery: the customer sends a 100 CFA top-up from the bound
+number; the match proves the number; the old identity's balance moves by `ADJUSTMENT`.
 
 ---
 
-## 7. Prok: revenue, equipment, reconciliation
+## 7. Treasury operations (what the treasurer actually does)
 
-### 7.1 Prok's share → moved float → Prok bank monthly, only after 7.3, only by a human.
+### 7.1 Setup, once
+A dedicated Android phone with both SIMs, ProkNet installed, **Treasury mode** unlocked
+by a signed enrolment from the Brain (its node id allow-listed; Mike approves).
+`RECEIVE_SMS` granted (this is Prok's phone, not a Play distribution, so the restricted
+permission is acceptable); notification access as a second source. Kept on, charged, in
+signal. If it is off, SMS queue at the operator and are read when it returns —
+`SmsReceiptReceiver` handles the backlog; notifications alone would not.
 
-### 7.2 Equipment recovery (fixed sites)
-Landed cost per box recorded; sessions on that box carry an **equipment share** (ex.
-15 %, from the host's side by written agreement) until cumulative = cost, then it stops
-automatically and the host's share rises. Shown on the host's Gagner screen, never hidden.
+### 7.2 Weekly, ~10–15 minutes for a 10-provider pilot
+The **Versements** screen lists: name, rail, number (copy button), amount, payout id.
+**[MANUAL]** the treasurer sends each one from the MoMo / Airtel Money app or USSD. As
+each "vous avez envoyé N F à 06xxxxxxx" SMS arrives, the row turns green automatically
+(8.2). Anything not green after the session stays `SENT` and is chased by 8.2.
 
-### 7.3 Reconciliation (daily; failure pauses payouts)
-1. Operator statements (Collections + Disbursements) per rail, or wallet balances in the
-   pilot. 2. Every `CONFIRMED` top-up/payout has an operator ref present there; every
-   operator entry has a posting. 3. Invariant (section 2). 4. Telegram report: float per
-   rail, liabilities, payouts due, `UNKNOWN` items, double-spend loss, unmatched refs.
+### 7.3 Daily, ~1 minute
+**[MANUAL]** `*xxx#` balance query on each SIM; the treasurer types the two balances into
+the app. The Brain posts `BALANCE_CHECK` with expected vs typed; a delta beyond the fees
+the parser saw that day pauses the payout list and reports. (If the operator sends the
+balance as an SMS, the parser reads it and pre-fills; still confirmed by a person.)
+
+### 7.4 What the treasurer cannot delegate to the ledger
+Sending money (payouts, refunds, Prok's share), reading the balance, deciding a
+`NEEDS_REVIEW` message, and handling an unclaimed payment. Everything else — matching,
+posting, invariant, list generation, confirmation from SMS, reminders — is automatic.
 
 ---
 
-## 8. Payout engine — automatic in the finished flow
+## 8. Payout engine — automatic list, manual send, automatic confirmation
 
-### 8.1 Schedule and thresholds (⚠ examples)
+### 8.1 Schedule (⚠ examples)
+Threshold: balance ≥ 2,000 CFA → appears on the next list. Weekly: Friday 17:00,
+everyone ≥ 500 CFA (below that, the operator's fee eats it). Per-transfer cap 100,000.
+The payee chooses rail and number; Prok never picks a number for anyone.
 
-| Rule | Example | Why |
-|---|---|---|
-| Threshold payout | balance ≥ 2,000 CFA → next hourly run | Money when it is worth having |
-| Weekly run | Friday 17:00, everyone ≥ 500 CFA | "Vendredi" is a sentence |
-| Minimum | 500 CFA | Withdrawal fees 100–150 CFA on ≤ 5,000 at MTN Congo (third-party tariff pages) |
-| Per-payout cap | 100,000 CFA | Wallet limits; larger balances split over days |
-| Rail | the payee's choice, one number | Prok never picks a number for anyone |
-
-### 8.2 State machine — an unknown result is not a failure
+### 8.2 State machine
 
 ```
-SCHEDULED ─► SENT ──► CONFIRMED  (operator status SUCCESSFUL, or callback verified)
-              │
-              ├─► FAILED  (operator status FAILED with reason)  ─► RETRY (≤3, 30m/2h/12h)
-              │                                                    └─► NEEDS_ATTENTION
-              └─► UNKNOWN (timeout, 5xx, no callback)
-                     └─► query status by OUR reference id every 5 min for up to 24 h
-                           ├─► SUCCESSFUL → CONFIRMED
-                           ├─► FAILED     → RETRY
-                           └─► not found after 24 h → NEEDS_ATTENTION (human decides)
+SCHEDULED ──(treasurer taps "envoyé" or the debit SMS arrives)──► SENT
+SENT ──(debit SMS: amount + counterparty hash match)──► CONFIRMED  (automatic)
+SENT ──(no matching SMS within 24 h)──► reminder to the treasurer:
+        "Vérifiez dans l'historique MoMo: 2 000 F à 06…"  [MANUAL]
+        ├─ treasurer confirms it went (types the operator ref) ──► CONFIRMED
+        ├─ treasurer says it did not ──► back to SCHEDULED (next list)
+        └─ 7 days unresolved ──► NEEDS_ATTENTION (Mike)
 ```
 
-- The payout id **is** the operator reference (MTN: the client-chosen `X-Reference-Id`
-  that `GET /disbursement/v1_0/transfer/{referenceId}` reads; Airtel: the client
-  transaction id passed to its enquiry endpoint). A retry reuses the **same** reference
-  only if the operator reports it FAILED or absent; a new reference is never minted
-  while the old one is `UNKNOWN`. This is what makes "never sent twice" true.
-- A `FAILED` for a wrong / inactive number goes straight to `NEEDS_ATTENTION` (retrying
-  cannot fix it); the payee sees "Versement en attente — vérifiez votre numéro" with a
-  button that re-verifies.
-- Money moves in the ledger only on `CONFIRMED`; `SENT`/`UNKNOWN` sit in `IN_FLIGHT`
-  and count against the invariant.
+- **Never sent twice**: a payout stays `SENT` until confirmed or explicitly denied by
+  the treasurer after checking the operator's own history; the engine never re-lists a
+  `SENT` payout. This is the manual equivalent of "query the unknown result before
+  retrying".
+- Fees: the operator's sender fee appears in the debit SMS or the daily balance delta;
+  posted as `FEE` from `PROK_REVENUE`. Payees receive the full amount.
+- Cross-rail: each rail's float is checked against that rail's scheduled payouts; a
+  starved rail is topped up **[MANUAL]** by the treasurer moving money between the two
+  wallets via cash-out/cash-in or an operator-to-operator transfer where offered
+  (fees posted). Until then that rail's payouts wait, visibly.
 
-### 8.3 Cross-rail treasury — paying an Airtel payee from MTN-collected money
-
-Collections land per rail; payees choose per person. Three ways, in order of preference:
-
-1. **Aggregator with one balance** (pawaPay lists Congo-Brazzaville; also others to
-   quote): deposits from both rails and payouts to both rails settle against **one**
-   merchant balance, so the netting is theirs. Simplest; cost unknown.
-2. **Direct operator APIs + treasury moves**: the engine computes `due(rail)` = payouts
-   scheduled on that rail; if `float(rail) < due(rail) + reserve`, it raises a
-   `treasury_move` (MTN business wallet → Prok bank → Airtel business wallet, or a
-   business-to-business transfer if the operators offer one) and **pauses that rail's
-   payouts** until the move is `CONFIRMED`. Moves are human-approved in the pilot,
-   automatic later with a daily cap. Bank moves take a day; the weekly cadence absorbs
-   that, threshold payouts on a starved rail wait.
-3. **Never**: paying an Airtel payee by a person-to-person transfer from somebody's
-   personal wallet.
-
-The float invariant is per rail **and** total, so a starved rail is visible before it
-blocks anyone.
-
-### 8.4 Pilot-only: manual confirmation
-The engine computes the identical list; Mike executes the transfers from the business
-wallet and marks each `CONFIRMED` with the operator ref in the admin. Same state
-machine, same ledger, same app screens. This is the pilot's mode **only** because
-production API credentials do not exist yet (section 9); it is not the design.
+### 8.3 Why this is not "dozens of tiny payments"
+Thresholds and a weekly cadence make it one short session per week. A 10-provider pilot
+with typical earnings produces 3–10 transfers a week. Growth beyond ~50 payees a week is
+the trigger for Appendix A, not a reason to add people.
 
 ---
 
-## 9. Legal structure — what counsel must confirm (⚠ nothing here is confirmed)
+## 9. What blocks real money (legal + operational) — unchanged in substance
 
-### 9.1 Why this is not obviously "just a prepaid service"
+Same counsel checklist as revision 2 (section 9.3 there; kept in Appendix B). Under the
+manual flow the questions do not soften: the treasurer **holds customer funds and pays
+providers**, which is intermediation whether done by API or by thumb. Pre-registration
+facts that are new:
 
-Under **Règlement 04/18/CEMAC/UMAC/COBAC** (in force 2019-01-01) electronic money is
-monetary value stored electronically representing a claim on the issuer and accepted as
-a means of payment; issuing it needs a credit institution, a microfinance institution
-or a licensed *établissement de paiement* (SA, 500 M CFA capital, segregated customer
-account, AML). The same regulation covers **payment services** — collecting funds on
-behalf of third parties and transferring them — not only stored value.
-
-The review's point stands: **the Internet is delivered by independent providers**, so
-Prok collecting from customers and paying providers looks like *intermediating
-payments between third parties*, which may be a regulated payment service **even with
-no stored balance at all**. A "we only sell our own service" argument requires Prok to
-actually be the seller.
-
-### 9.2 Three structures, compared
-
-| | A. Licensed partner holds the funds | B. Prok entity holds a prepaid balance | C. Pay-per-session (no balance) |
-|---|---|---|---|
-| Who holds customer money | A licensed EMI / *établissement de paiement* / aggregator; Prok is technical operator and merchant of record for its own share | Prok's business wallets at MTN/Airtel; Prok is the debtor of every customer's credit | The operator until a session is paid; Prok holds nothing between sessions |
-| Regulatory exposure | Lowest — the licence is theirs; Prok signs a merchant/agent contract | Highest — likely e-money issuance **and** payment intermediation | Middle — no e-money, but payment intermediation question remains |
-| UX | Same app; top-up prompt may show the partner's name | Best; what the brief describes | A PIN prompt per session; unusable for 50 CFA sessions after per-transaction fees; a minimum session (ex. 200 CFA) is forced |
-| Cost | Partner fees on every top-up and payout | Operator fees only | Operator fee on **every** session |
-| Time to production | Partner onboarding (weeks) | Licence route (18 months+ and 500 M CFA) or a lawyer's opinion that it is exempt | Same operator KYC as A/B |
-| Ledger / app impact | Identical ledger; the float accounts belong to the partner | Identical | Identical ledger; `TOPUP` becomes per-session |
-
-**Recommendation for the finished product: A.** Prok does not become a financial
-institution; the ledger, holds, evidence and payouts are unchanged; the partner's
-licence covers custody and payment intermediation. **C is the fallback** if no partner
-will take a Congolese pilot, and it is the only structure that needs *no* custody
-answer at all — at the price of per-session fees and a minimum session.
-**B is the design to avoid** unless counsel says in writing that it is exempt.
-
-Whichever is chosen, the strongest commercial framing is also the truest one:
-**Prok is the service provider; providers and relays are Prok's subcontractors paid a
-commission**; customers buy Internet from Prok. That is what the equipment model and the
-Prok share already say. Counsel must confirm it holds.
-
-### 9.3 The checklist for Congo / CEMAC counsel
-
-1. Is a customer's prepaid ProkNet credit (non-transferable, no cash-out except
-   refund-to-origin, ≤ 10,000 CFA, consumable only as Internet) electronic money under
-   04/18? Is there any closed-loop / limited-network exemption in CEMAC practice, and
-   does the fact that **independent providers deliver the service** defeat it?
-2. Is Prok collecting from customers and paying providers a **payment service**
-   (intermediation / transfer of funds) under 04/18 even with **no** stored balance?
-3. Does the "Prok is the seller, providers are subcontractors on commission" framing
-   hold, and what does it imply for VAT, withholding tax on commissions, and the
-   providers' status (self-employed vs. employee)?
-4. May Prok operate under a licensed partner's licence as a merchant / technical
-   operator / agent, and what contract form does COBAC expect?
-5. Do providers reselling Internet access need an **ARPCE** authorisation, declaration
-   or ISP licence (ARPCE lists an "FAI" regime with administrative, technical and
-   financial conditions); does Prok? Does a fixed site with a captive portal change the
-   answer?
-6. Which entity signs with MTN Congo and Airtel Congo: is a Congolese-registered company
-   (RCCM) with a local bank account required for API go-live, and can a French parent
-   own it?
-7. Refund-to-origin, dormant credit, and complaint handling: what consumer rules apply.
-8. AML/KYC: what identification is required for a *payee* (provider) receiving regular
-   disbursements, and for a customer topping up ≤ 10,000 CFA.
-
-**Real money does not move until questions 1–6 have written answers.**
+- Personal-tier wallets have **balance and daily limits** (values not published for
+  Congo; ⚠ ask the operators or test with small amounts). The pilot float cap (ex.
+  50,000 CFA/rail) exists for this.
+- The treasurer is a **named individual holding money for others**; a written mandate
+  from Prok and a log of every manual action (the ledger provides the log) are the
+  minimum. Counsel to confirm what else.
+- **Pilot participants are Mike's own numbers and named testers only.** No member of the
+  public pays into this until questions 1–6 of Appendix B have written answers.
 
 ---
 
-## 10. Operator and partner facts (what a real integration needs)
+## 10. Confirmed · Assumed · Blocks real money · Pilot-only
 
-| Fact | Status |
-|---|---|
-| MTN MoMo Open API: Collections / Disbursements / Remittances; free sandbox at momodeveloper.mtn.com; **Congo (Brazzaville) listed**; MTN Congo's page routes businesses to the same portal (sosclient.cg@mtn.com, WhatsApp 067000123) | **Confirmed** |
-| MTN go-live: KYC documents proving the business, per country; production portal momoapi.mtn.com; contracts follow | **Confirmed** (community docs); which documents for Congo: **not confirmed** |
-| MTN disbursement: client-generated reference id used for status query; `externalId` for our own reconciliation; status SUCCESSFUL / PENDING / FAILED with reason | **Confirmed** (API docs and client libraries) |
-| Airtel Africa developer portal: Collection + Disbursement APIs, OAuth2, sandbox; Congo-B hosts `openapiuat.airtel.cg` / `openapi.airtel.cg` | **Partly confirmed** — hosts appear in third-party client code; the portal blocked automated reading |
-| pawaPay: Congo-Brazzaville among 23 markets; deposits, refunds, payouts | **Confirmed on their site**; operators per country, fees, whether they accept the Prok entity: **not confirmed** |
-| Fees: MTN Congo merchant collection and API disbursement fees | **Not published**; consumer tariffs (third party): withdrawal 100–150 CFA on ≤ 5,000, P2P 50–100 |
-| Provider data cost ≈ 1,000–1,200 CFA/GB | **Indicative** (third-party comparison pages) |
-| Starlink in Congo-Brazzaville | **No licence**; ARPCE seized an unlicensed kit (2024) |
+**Confirmed**
+- The tunnel meters both ends with co-signed checkpoints; seller-stop issues a closing
+  checkpoint; budget sessions cost proportionally with no floor; no signed checkpoint →
+  no obligation.
+- `ReceiptParser` / `ReceiptListener` / `PaymentExpectation` exist and are tested
+  (synthetic corpus).
+- CEMAC 04/18 regulates e-money and payment services; Starlink has no Congo-B licence.
 
----
+**Assumed**
+- MTN Congo and Airtel Congo send an SMS for every received and sent transfer that
+  states amount and counterparty number. (Standard in every MoMo market; **unverified
+  for Congo** — first pilot task.)
+- Personal wallet limits are above the pilot float cap.
+- All example values: splits, 2,000 / 500 CFA, 30 min / 15 min hold clocks, 1 CFA
+  session minimum, 6 holds/hour, 24 h kiosk gate, 50,000 CFA float cap.
 
-## 11. Sources
+**Blocks real money**
+- Written answers to Appendix B items 1–6 (custody, intermediation, Prok-as-seller
+  framing, ARPCE, entity).
+- Twenty real operator messages parsed correctly on the treasury phone.
+- Ledger + hold + SMS top-up + payout confirmation hardware-proven with Mike's own
+  numbers; reconciliation running one week with zero unexplained delta.
 
-- MTN MoMo developer portal — https://momodeveloper.mtn.com/ ; Go-Live — https://momodeveloper.mtn.com/golive ; production configuration — https://momodevelopercommunity.mtn.com/how-to-59/momo-api-production-configuration-101 ; disbursement status semantics via client docs — https://www.npmjs.com/package/mtn-momo , https://github.com/lepresk/momo-api
-- MTN Congo Open API — https://www.mtn.cg/momo/momo-entreprise/open-api/ ; MTN MoMo markets/pricing page — https://momo.mtn.com/pricing/
-- Airtel Africa developer portal — https://developers.airtel.africa/ ; Disbursement API v2 — https://developers.airtel.africa/documentation/disbursement-apis/2.0
-- pawaPay — https://www.pawapay.io/
-- Règlement 04/18/CEMAC/UMAC/COBAC — text https://www.beac.int/wp-content/uploads/2019/07/REGLEMENT-N-04-18-CEMAC-UMAC-COBAC-du-21-d%C3%A9cembre-2018.pdf ; summary https://cesttoutdroit.com/article-droit-bancaire-et-financier/nouveau-reglement-cemac-relatif-aux-services-de-paiement/
-- ARPCE, Fournisseur d'accès internet — https://www.arpce.cg/fournisseur-acces-internet
-- MTN MoMo Congo consumer tariffs (third party) — https://blog.iambeezy.app/fr/frais-mtn-momo-congo-2026-tarifs-complets/ ; data bundles — https://blog.iambeezy.app/fr/forfaits-internet-mtn-airtel-congo-2026-comparatif-plans/
-- openNDS — https://opennds.readthedocs.io/en/stable/ ; BinAuth — https://opennds.readthedocs.io/en/stable/binauth.html
-- Starlink / ARPCE — https://www.agenceecofin.com/regulation/2506-119755-congo-l-arpce-demantele-une-installation-starlink-non-autorisee-dans-une-exploitation-forestiere
-
----
-
-## 12. Confirmed · Assumed · Blocks real money · Pilot-only
-
-**Confirmed (verified in code or on the source's own site)**
-- The phone tunnel meters both ends with co-signed checkpoints; seller-stop issues a
-  closing checkpoint (v0.15.0); no signed checkpoint → no obligation.
-- MTN MoMo API lists Congo-B; sandbox is free; go-live needs business KYC.
-- pawaPay lists Congo-B. openNDS reports per-client bytes to BinAuth.
-- CEMAC 04/18 regulates both e-money and payment services; licence needs 500 M CFA.
-- Starlink has no Congo-B licence.
-
-**Assumed (design choices that stand until measured or quoted)**
-- All splits, thresholds, caps, TTLs (25 %, 10 % relay, 2,000 / 500 CFA, 300 CFA offline
-  max, 6 h, 20,000 CFA/day, 64 KB usable floor, 24 h kiosk gate).
-- Provider data cost ≈ 1.2 CFA/MB. Sellers can reach the Brain within 2 s in the field.
-- Airtel Congo-B API hosts and onboarding route. Aggregator fees.
-- That "Prok is the seller, providers are subcontractors" is the right framing.
-
-**Blocks real money (must exist before a real customer pays)**
-- Written answers to counsel checklist 9.3 items 1–6, and a decision A / C (not B).
-- A Congolese Prok entity (or a partner contract) and a business wallet with production
-  API credentials on at least one rail.
-- Ledger + hold + evidence posting hardware-proven on both phones against the sandbox.
-- Reconciliation running one week with zero unmatched entries.
-- ARPCE answer on whether providers or Prok need an authorisation.
-
-**Pilot-only (deliberately not the finished design)**
-- Manual weekly payout confirmation (8.4).
-- Offline authorisations **disabled** (5.2) — double-spend loss is zero in the pilot.
-- One rail (whichever gives production access first); cross-rail treasury by hand.
-- Kiosk path enabled only on test phones.
+**Pilot-only**
+- Personal-tier treasury wallets and a named treasurer.
+- Manual sends (payouts, refunds, cross-rail moves) — the design keeps the automatic
+  list and confirmation so the manual part shrinks to typing.
+- Offline authorisations disabled. Kiosk path enabled on test phones only.
 
 ---
 
-## 13. Build order (v0.18, each step useful alone)
+## 11. Actual pilot user flow (what each person sees)
 
-1. **Ledger** — migration 5, postings, invariant, `GET /v1/wallet` extended. Server
-   tests: double-entry, idempotent session posting, upgrade from a real schema-4 DB.
-2. **Online hold** — `POST /v1/credit/hold` atomic; seller-side admission check; hold
-   TTL sweep; contract carries the hold id.
-3. **Session → ledger** — `POST /v1/settlements` posts on verify; `relayId` in the
-   contract; `USABLE_FLOOR` zero rule with the v0.15.0 teardown untouched (a test
-   settles the same seller-stopped session to the same centime as today).
-4. **Top-up, sandbox** — MTN Collections request-to-pay; `UNKNOWN` handling by
-   reference id; **Recharger** screen; TESTING section on real phones.
-5. **Payout engine** — full state machine incl. `UNKNOWN` queries and NEEDS_ATTENTION,
-   verified payout number, per-rail float check; pilot mode = manual confirm behind the
-   same machine; then the Disbursements sandbox adapter.
-6. **Reconciliation + Telegram report**, per rail and total.
-7. **Kiosk path gating** — `KIOSK_AFTER`, the secours toggle, the no-kiosk-words test.
-8. **Offline authorisation** — `SpendAuth`, key ceremony, cross-language fixture, loss
-   bound tests, disabled by default. Last, and only after 1–6 are hardware-proven.
-9. **v0.19 spike** — one openNDS box, FAS endpoint, BinAuth posting.
+**Customer (pays conveniently, never meets a provider about money)**
+1. Home shows "Crédit Internet : 0 F · Recharger".
+2. Recharger → MTN or Airtel → 500 F → screen shows the Prok number, "envoyez exactement
+   500 F" (or "503 F" the first time), copy button, "puis revenez ici".
+3. **[MANUAL]** sends from their MoMo app or USSD.
+4. Within seconds to minutes: "Crédit Internet : 500 F". If not: "Recharge non encore
+   vue — vérifiez le numéro et le montant" with the claim button.
+5. Asks for Internet as today; the provider's phone reserves the hold; the session runs;
+   Home shows the cost from the signed numbers; credit decreases.
 
-Not in v0.18: production credentials, multi-currency, customer-to-customer transfers,
-any cash-out "Solde".
+**Provider (accumulates, is paid without asking)**
+1. Gagner → enter payout number once.
+2. Serves sessions; Gagné grows; "Prochain versement : vendredi".
+3. Friday: the operator's own SMS says the money arrived; Gagner shows it paid, with the
+   reference.
+
+**Relay** — same as provider from step 2, after N relayed sessions.
+
+**Treasurer**
+1. Once: enrol the treasury phone.
+2. Daily: `*xxx#` on two SIMs, type two numbers **[MANUAL]**; tap through any
+   `NEEDS_REVIEW` SMS **[MANUAL]**.
+3. Friday: open Versements; send each row from the operator app **[MANUAL]**; watch rows
+   turn green; chase any still yellow next day.
+
+**Mike** — Telegram report daily: float per rail, liabilities, holds, payouts due /
+sent / confirmed, review items, unclaimed top-ups, delta. Approves the monthly Prok move.
+
+---
+
+## 12. Build order under the no-API constraint
+
+1. **Ledger** — migration 5, postings, roles (treasury identity allow-list), invariant,
+   `GET /v1/wallet` extended. Server tests incl. "a seller cannot post a TOPUP".
+2. **Hold with keepalive** — `POST /v1/credit/hold`, `session_started`, keepalive on the
+   sharing heartbeat, PRE_SESSION / IN_SESSION clocks, rate limit. Tests: a 2-hour
+   session never loses its hold; a dead seller's hold expires 15 min after its last
+   keepalive; the 7th hold in an hour is refused.
+3. **Session → ledger** — `POST /v1/settlements` posts; `relayId`; `MIN_SESSION_CENTIMES`
+   and the `bytesDown == 0` zero rule; teardown untouched (same-centime test).
+4. **Treasury mode + SMS top-ups** — parser counterparty/DEBIT extension behind the
+   treasury identity (privacy test still green elsewhere); `topup_intents` with amount
+   tags; matching order; UNASSIGNED / claim / NEEDS_REVIEW; **Recharger** screen.
+   **Corpus task: 20 real MTN Congo + Airtel Congo messages** collected on the treasury
+   phone with Mike's own transfers, added to the fixture. TESTING section: a real 100 F
+   transfer between Mike's numbers appears as credit on the customer phone.
+5. **Payout engine** — list, thresholds, Versements screen, debit-SMS confirmation,
+   24 h reminder, never-twice rule, refunds on the same list, per-rail float check.
+6. **Balance check + reconciliation + Telegram report.**
+7. **Kiosk gating** — `KIOSK_AFTER`, secours toggle, no-kiosk-words test.
+8. **Relay share** — contract version bump, verified-relay rule.
+9. **Offline authorisation** — built last, shipped off.
+10. **v0.19 spike** — one openNDS router at one site (unchanged; also API-free: the
+    box talks to the Brain, not to an operator).
+
+Steps 1–3 touch no money and can start once the design is approved. Steps 4–6 handle
+real transfers **only between Mike's own numbers** until section 9 is settled.
+
+---
+
+## Appendix A — Later option: operator APIs (not a dependency)
+
+When Prok is registered: MTN MoMo Collections/Disbursements (Congo-B listed, free
+sandbox, KYC go-live), Airtel Congo OpenAPI (`openapi.airtel.cg`, unconfirmed), or an
+aggregator with one balance for both rails (pawaPay lists Congo-B). The ledger, holds,
+evidence and payout state machine are unchanged; `TOPUP` and `PAYOUT_CONFIRMED` become
+API callbacks instead of SMS matches, the treasurer's Friday session disappears, and
+`UNKNOWN` results are queried by our reference id before any retry (revision 2, 8.2).
+Structure **A** (licensed partner holds funds) remains the recommendation for the
+finished product; **B** (Prok-held balance) is to be avoided unless counsel says exempt.
+
+## Appendix B — Counsel checklist (from revision 2)
+
+1. Is prepaid ProkNet credit (non-transferable, no cash-out except refund-to-origin,
+   ≤ 10,000 CFA, consumable only as Internet) electronic money under 04/18? Any
+   closed-loop exemption in CEMAC practice, and does delivery by independent providers
+   defeat it?
+2. Is collecting from customers and paying providers a payment service under 04/18 even
+   with no stored balance — and does doing it manually change anything?
+3. Does "Prok is the seller; providers are subcontractors on commission" hold; VAT,
+   withholding on commissions, providers' status?
+4. May Prok operate under a licensed partner's licence, and in what contract form?
+5. Do providers or Prok need an ARPCE authorisation to resell Internet access? Does a
+   fixed captive-portal site change the answer?
+6. Which entity contracts with MTN Congo / Airtel Congo; is a Congolese RCCM company with
+   a local bank account required; can a French parent own it?
+7. Refund-to-origin, dormant credit, complaints: applicable consumer rules.
+8. AML/KYC for regular payees and for customers topping up ≤ 10,000 CFA; what a named
+   treasurer holding funds for others must document.
+
+## Appendix C — Sources (unchanged from revision 2)
+
+MTN MoMo developer portal https://momodeveloper.mtn.com/ · MTN Congo Open API
+https://www.mtn.cg/momo/momo-entreprise/open-api/ · Airtel Africa developer portal
+https://developers.airtel.africa/ · pawaPay https://www.pawapay.io/ · Règlement
+04/18/CEMAC/UMAC/COBAC https://www.beac.int/wp-content/uploads/2019/07/REGLEMENT-N-04-18-CEMAC-UMAC-COBAC-du-21-d%C3%A9cembre-2018.pdf
+· ARPCE FAI https://www.arpce.cg/fournisseur-acces-internet · MTN MoMo Congo consumer
+tariffs (third party) https://blog.iambeezy.app/fr/frais-mtn-momo-congo-2026-tarifs-complets/
+· openNDS https://opennds.readthedocs.io/en/stable/ · Starlink/ARPCE
+https://www.agenceecofin.com/regulation/2506-119755-congo-l-arpce-demantele-une-installation-starlink-non-autorisee-dans-une-exploitation-forestiere
