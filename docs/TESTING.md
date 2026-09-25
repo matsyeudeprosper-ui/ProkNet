@@ -3377,15 +3377,22 @@ told when somebody needs them. **Section 75 starts with the provider NOT sharing
 
 The pilot Brain is live at **`https://proknet.duckdns.org`** (since 2026-09-22).
 
-On **each** phone, open the Lab / diagnostic screen, tap **Network Brain URL**, and enter
-exactly:
+**From build 79 (v0.17.11) nothing needs typing.** A fresh install, or one whose storage
+was cleared, is already pointed at the pilot Brain. Open the Lab / diagnostic screen and
+tap **Network Brain URL**: the field must already show `https://proknet.duckdns.org`.
+Tap **Sync now**. If the field is empty, somebody switched the Brain off on this phone on
+purpose (see below); if it shows something else, it was set by hand - clear it and enter
+the address above, then Save.
+
+On builds **before 79** the field starts empty: enter exactly
 
 ```
 https://proknet.duckdns.org
 ```
 
-No trailing slash, and **https**, not http. Tap Save, then **Sync now**. The toast must
-say `Brain: https://proknet.duckdns.org`.
+No trailing slash, and **https**, not http - the app now refuses a public `http://`
+address with a sentence saying so. Tap Save, then **Sync now**. The toast must say
+`Brain: https://proknet.duckdns.org`.
 
 Check it from a browser on the phone first if you like - `https://proknet.duckdns.org/health`
 returns the version and schema, and it must show a padlock. If the browser warns about the

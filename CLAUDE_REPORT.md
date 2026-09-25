@@ -1,3 +1,53 @@
+# CLAUDE_REPORT - ProkNet v0.17.11 "nobody types the Brain address"
+
+Date: 2026-09-25
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead)
+
+Version 0.17.11, build 79. Small, deliberate, one purpose.
+
+## 1. What changed
+
+Clearing the app's storage wiped the Brain address, so a freshly reset phone was silently
+off the network until somebody went into the Lab screen and typed a URL from memory.
+That happened four times during the v0.17.5–v0.17.10 runs. Nobody in Congo will do it.
+
+`core/BrainEndpoint.kt`: the pilot address `https://proknet.duckdns.org` is now the
+**default**, not a hard-coded constant. Three states, and the difference matters:
+
+- never told anything → the pilot Brain;
+- owner saved another address → that address;
+- owner saved an **empty** address → deliberately off, and it **stays off** — which is
+  what TESTING 75g and 76 need, and what an off switch has to mean.
+
+This falls out of `SharedPreferences.getString(key, default)`: the default applies only
+when the key was never written. A test pins all three.
+
+The Lab screen now **refuses a public `http://` address** with a sentence saying so. A
+signed identity and a request for Internet are not things to send in the clear; the
+standing rule was never to paper over missing TLS with a plain-HTTP shortcut, and the
+default being HTTPS with a real certificate is the opposite of that. Plain HTTP is still
+allowed to `localhost` and private ranges so a Brain on a laptop can be tested.
+
+## 2. Numbers
+
+8 new Android tests (`BrainEndpointTest`), server suite unchanged at 360. Totals are in
+`dist/test-results.txt` for build 79.
+
+## 3. Hardware status
+
+Unchanged: nothing in v0.16/v0.17 beyond the local BLE path (build 72) is hardware-proven.
+NEXT is still TESTING 77, 79, 78, then 75/76. Section 75's prerequisite step now says the
+address is already there.
+
+## 4. Also this session: v0.18 proposal
+
+`docs/PAYMENTS_V018_DESIGN.md` — prepaid credit, ledger, spending authorisation,
+payout engine, captive-portal gateway for fixed sites, and the CEMAC/operator facts
+that are confirmed vs not. It is a proposal for Mike and ChatGPT, nothing built.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.7 "evidence, not a memory of having asked"
 
 Date: 2026-09-23
