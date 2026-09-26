@@ -27,17 +27,31 @@
                     <net.prok.proknet.ui.PulseButtonView android:id="@+id/btnGetInternet" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_marginBottom="4dp" />
                 </LinearLayout>
 
-                <!-- v0.19.0: the four home actions of the launch contract, in its order -->
-                <LinearLayout android:id="@+id/homeActions" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="14dp">
-                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                        <Button android:id="@+id/btnFreeNearMe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Gratuit près de moi" android:textSize="13sp" />
-                        <Button android:id="@+id/btnExploreTown" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="Explorer la ville" android:textSize="13sp" />
+                <!-- v0.19.1: the four home actions of the launch contract, as the same cards the app has always used -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="6dp">
+                    <LinearLayout android:id="@+id/btnFreeNearMe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="16dp" android:layout_marginEnd="6dp" android:clickable="true" android:focusable="true">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_wifi" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="Gratuit près de moi" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Gratuit près de moi" style="@style/H3" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Wi-Fi vérifiés en ville" android:textSize="12sp" android:textColor="@color/text_muted" />
                     </LinearLayout>
-                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="6dp">
-                        <Button android:id="@+id/btnMarket" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Prok Market" android:textSize="13sp" />
-                        <Button android:id="@+id/btnShareWifi" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="Partager mon Wi-Fi" android:textSize="13sp" />
+                    <LinearLayout android:id="@+id/rowMap" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="16dp" android:layout_marginStart="6dp" android:clickable="true" android:focusable="true">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_compass" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="Explorer la ville" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Explorer la ville" style="@style/H3" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Carte hors ligne, à pied" android:textSize="12sp" android:textColor="@color/text_muted" />
                     </LinearLayout>
-                    <TextView android:id="@+id/homeActionsNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Caption" android:visibility="gone" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="12dp" android:layout_marginBottom="14dp">
+                    <LinearLayout android:id="@+id/btnMarket" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="16dp" android:layout_marginEnd="6dp" android:clickable="true" android:focusable="true">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_bag" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="Prok Market" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Prok Market" style="@style/H3" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Acheter et vendre" android:textSize="12sp" android:textColor="@color/text_muted" />
+                    </LinearLayout>
+                    <LinearLayout android:id="@+id/rowShare" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="16dp" android:layout_marginStart="6dp" android:clickable="true" android:focusable="true">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_router" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="@string/row_share_title" />
+                        <TextView android:id="@+id/rowShareTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Partager mon Wi-Fi" style="@style/H3" />
+                        <TextView android:id="@+id/rowShareSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="@string/row_share_caption" android:textSize="12sp" android:textColor="@color/text_muted" />
+                        <TextView android:id="@+id/rowShareBadge" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="@drawable/bg_pill_ok" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="3dp" android:paddingBottom="3dp" android:text="" android:textSize="11sp" android:textStyle="bold" android:textColor="@color/legend_text" android:visibility="gone" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <!-- the status card while searching / connecting / connected / failed -->
@@ -77,20 +91,6 @@
                     </LinearLayout>
                 </LinearLayout>
 
-                <!-- two action cards -->
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                    <LinearLayout android:id="@+id/rowShare" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="18dp" android:layout_marginEnd="6dp" android:clickable="true" android:focusable="true">
-                        <ImageView android:layout_width="44dp" android:layout_height="44dp" android:src="@drawable/ic_coins" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:contentDescription="@string/row_share_title" />
-                        <TextView android:id="@+id/rowShareTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="@string/row_share_short" android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text" />
-                        <TextView android:id="@+id/rowShareSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="@string/row_share_caption" android:textSize="12sp" android:textColor="@color/text_muted" />
-                        <TextView android:id="@+id/rowShareBadge" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="@drawable/bg_pill_ok" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="3dp" android:paddingBottom="3dp" android:text="" android:textSize="11sp" android:textStyle="bold" android:textColor="@color/legend_text" android:visibility="gone" />
-                    </LinearLayout>
-                    <LinearLayout android:id="@+id/rowMap" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_secondary" android:padding="18dp" android:layout_marginStart="6dp" android:clickable="true" android:focusable="true">
-                        <ImageView android:layout_width="44dp" android:layout_height="44dp" android:src="@drawable/ic_map" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:contentDescription="@string/row_map_title" />
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="@string/row_map_title" android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text" />
-                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="@string/row_map_caption" android:textSize="12sp" android:textColor="@color/text_muted" />
-                    </LinearLayout>
-                </LinearLayout>
                 <TextView android:id="@+id/homeNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:gravity="center" android:text="" style="@style/Muted" />
             </LinearLayout>
         </ScrollView>
@@ -221,6 +221,27 @@
                     <Button android:id="@+id/btnEarnAction" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/PrimaryButton" android:layout_marginTop="24dp" />
                     <TextView android:id="@+id/earnFootnote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/Caption" android:gravity="center" />
                     <TextView android:id="@+id/shareOtherDemand" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/Caption" android:gravity="center" android:visibility="gone" />
+                </LinearLayout>
+
+                <!-- v0.19.1: the owner's offer and the relay's offers live under Gagner, where earning lives -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:layout_marginBottom="16dp">
+                    <LinearLayout android:id="@+id/earnQuoteRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:padding="20dp" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_router" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="Partager mon Wi-Fi" />
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Partager mon Wi-Fi" style="@style/H3" />
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Voir l'offre de ProkNet : prix client, votre part" style="@style/Muted" />
+                        </LinearLayout>
+                        <ImageView android:layout_width="22dp" android:layout_height="22dp" android:src="@drawable/ic_chevron" android:tint="@color/text_muted" android:contentDescription="@string/chevron" />
+                    </LinearLayout>
+                    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginStart="20dp" android:layout_marginEnd="20dp" />
+                    <LinearLayout android:id="@+id/earnRelayRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:padding="20dp" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground">
+                        <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_bolt" android:background="@drawable/bg_icon_circle" android:padding="9dp" android:tint="@color/brand" android:contentDescription="Offres relais" />
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Offres relais" style="@style/H3" />
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Rester disponible, se déplacer : payé sur vérification" style="@style/Muted" />
+                        </LinearLayout>
+                        <ImageView android:layout_width="22dp" android:layout_height="22dp" android:src="@drawable/ic_chevron" android:tint="@color/text_muted" android:contentDescription="@string/chevron" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <!-- money: one number, one link, no second history -->

@@ -74,6 +74,7 @@ class MarketActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_market)
+        Prok.header(this, "Prok Market", "Brazzaville · entre personnes, en main propre")
         findViewById<Button>(R.id.btnMkBrowse).setOnClickListener { show(R.id.mkBrowse); search(reset = true) }
         findViewById<Button>(R.id.btnMkSell).setOnClickListener { openSell() }
         findViewById<Button>(R.id.btnMkMine).setOnClickListener { openMine() }
@@ -120,7 +121,7 @@ class MarketActivity : Activity() {
         if (!market.configured) return
         if (reset) { searchOffset = 0; findViewById<LinearLayout>(R.id.mkResults).removeAllViews() }
         val q = text(R.id.mkQuery)
-        val cat = categoryKeys[findViewById<Spinner>(R.id.mkCategory).selectedItemPosition.coerceIn(0, categoryKeys.size - 1)]
+        val cat = categoryKeys[findViewById<PickerView>(R.id.mkCategory).selected.coerceIn(0, categoryKeys.size - 1)]
         val hood = text(R.id.mkNeighbourhood)
         val min = digits(R.id.mkMinPrice) * 100
         val max = digits(R.id.mkMaxPrice) * 100
@@ -142,18 +143,11 @@ class MarketActivity : Activity() {
     }
 
     private fun resultRow(l: MarketView.Listing): View {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 14, 0, 14) }
-        box.addView(TextView(this).apply {
-            textSize = 16f
-            text = l.rowTitle
-            if (l.boosted) setTypeface(typeface, android.graphics.Typeface.BOLD)
-        })
-        box.addView(TextView(this).apply {
-            textSize = 13f
-            text = l.priceText + " · " + MarketView.categoryName(l.category) + (if (l.neighbourhood.isNotEmpty()) " · " + l.neighbourhood else "") +
-                (if (l.distanceKm.isNotEmpty()) " · " + l.distanceKm + " km" else "") + (if (l.condition.isNotEmpty()) " · " + MarketView.conditionName(l.condition) else "")
-        })
-        box.setOnClickListener { openDetail(l.id) }
+        val box = Prok.card(this) { openDetail(l.id) }
+        box.addView(Prok.titleRow(this, l.title, if (l.boosted) MarketView.SPONSORED_LABEL else null, Prok.Tone.WARN))
+        box.addView(Prok.stat(this, l.priceText, 2))
+        box.addView(Prok.muted(this, listOfNotNull(MarketView.categoryName(l.category), l.condition.takeIf { it.isNotEmpty() }?.let { MarketView.conditionName(it) },
+            l.neighbourhood.takeIf { it.isNotEmpty() }, l.distanceKm.takeIf { it.isNotEmpty() }?.let { it + " km" }).joinToString(" · "), 2))
         return box
     }
 
@@ -201,10 +195,11 @@ class MarketActivity : Activity() {
             runOnUiThread {
                 if (current?.id != l.id) return@runOnUiThread
                 box.addView(ImageView(this).apply {
-                    adjustViewBounds = true
-                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    scaleType = ImageView.ScaleType.CENTER_CROP
                     setImageBitmap(bmp)
-                    setPadding(0, 8, 0, 8)
+                    clipToOutline = true
+                    setBackgroundResource(R.drawable.bg_card)
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Prok.dp(context, 240)).apply { bottomMargin = Prok.dp(context, 10) }
                 })
             }
         }
@@ -243,16 +238,35 @@ class MarketActivity : Activity() {
                 if (t == null || !visible(R.id.mkChat) || chatListing != listing) return@runOnUiThread
                 val rows = findViewById<LinearLayout>(R.id.mkChatRows)
                 rows.removeAllViews()
-                if (t.messages.isEmpty()) rows.addView(TextView(this).apply { textSize = 13f; text = "Aucun message pour l'instant. Présentez-vous et proposez un lieu public." })
-                for (m in t.messages) rows.addView(TextView(this).apply {
-                    textSize = 15f; setPadding(0, 6, 0, 6)
-                    text = m.line(market.myId) + "\n" + SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE).format(Date(m.at))
-                    if (m.fromId == market.myId) gravity = android.view.Gravity.END
-                })
+                if (t.messages.isEmpty()) rows.addView(Prok.empty(this, "Aucun message pour l'instant. Présentez-vous et proposez un lieu public."))
+                for (m in t.messages) rows.addView(bubble(m))
                 chatLastId = t.messages.lastOrNull()?.id ?: 0
                 findViewById<Button>(R.id.btnMkSend).isEnabled = !t.blocked
                 findViewById<TextView>(R.id.mkChatNote).text = if (t.blocked) "Conversation bloquée." else "Messages relayés par Prok, relevés toutes les 20 s. Ne payez rien avant d'avoir l'article en main."
             }
+        }
+    }
+
+    /** One message as a bubble: mine on the right in brand, theirs on the left on a card. */
+    private fun bubble(m: MarketView.Message): View {
+        val mine = m.fromId == market.myId
+        val c = this
+        val body = TextView(c).apply {
+            textSize = 15f
+            text = (if (m.offerCentimes > 0) "Offre " + MarketView.fcfa(m.offerCentimes) + " - " else "") + m.body
+            setTextColor(c.getColor(if (mine) R.color.on_brand else R.color.text))
+            setBackgroundResource(if (mine) R.drawable.bg_bubble_me else R.drawable.bg_bubble_other)
+            setPadding(Prok.dp(c, 14), Prok.dp(c, 10), Prok.dp(c, 14), Prok.dp(c, 10))
+            maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
+        }
+        val stamp = Prok.small(c, SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE).format(Date(m.at)), 2).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = Prok.dp(c, 2) }
+        }
+        return LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = if (mine) android.view.Gravity.END else android.view.Gravity.START
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = Prok.dp(c, 8) }
+            addView(body); addView(stamp)
         }
     }
 
@@ -268,7 +282,7 @@ class MarketActivity : Activity() {
 
     private fun offerDialog(listingId: String, to: String, title: String) {
         val input = EditText(this).apply { hint = "Montant proposé (F)"; inputType = InputType.TYPE_CLASS_NUMBER }
-        AlertDialog.Builder(this).setTitle("Faire une offre").setMessage("Votre offre est un message au vendeur. Rien n'est payé ici : vous réglez le vendeur en personne, une fois l'article vérifié.").setView(input)
+        AlertDialog.Builder(this).setTitle("Faire une offre").setMessage("Votre offre est un message au vendeur. Rien n'est payé ici : vous réglez le vendeur en personne, une fois l'article vérifié.").setView(form(input))
             .setPositiveButton("Envoyer") { _, _ ->
                 val cfa = input.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L
                 if (cfa <= 0) { toast("Montant requis"); return@setPositiveButton }
@@ -355,8 +369,8 @@ class MarketActivity : Activity() {
     private fun submit() {
         val title = text(R.id.mkSellTitle)
         val desc = text(R.id.mkSellDesc)
-        val cat = MarketView.CATEGORIES.keys.toList()[findViewById<Spinner>(R.id.mkSellCategory).selectedItemPosition.coerceAtLeast(0)]
-        val cond = conditionKeys[findViewById<Spinner>(R.id.mkSellCondition).selectedItemPosition.coerceAtLeast(0)]
+        val cat = MarketView.CATEGORIES.keys.toList()[findViewById<PickerView>(R.id.mkSellCategory).selected.coerceAtLeast(0)]
+        val cond = conditionKeys[findViewById<PickerView>(R.id.mkSellCondition).selected.coerceAtLeast(0)]
         val price = digits(R.id.mkSellPrice) * 100
         val hood = text(R.id.mkSellNeighbourhood)
         val pickup = text(R.id.mkSellPickup)
@@ -451,40 +465,41 @@ class MarketActivity : Activity() {
                 for (l in ls) rows.addView(mineRow(l, now))
                 val irows = findViewById<LinearLayout>(R.id.mkInvoiceRows)
                 irows.removeAllViews()
-                for (inv in (invoices ?: emptyList()).take(10)) irows.addView(TextView(this).apply {
-                    textSize = 13f; setPadding(0, 6, 0, 6)
-                    text = MarketView.invoiceLine(inv, now) + " · " + inv.service
-                    if (inv.open) setOnClickListener { openPay(inv) }
+                val invs = (invoices ?: emptyList()).take(10)
+                if (invs.isEmpty()) irows.addView(Prok.empty(this, "Aucune facture."))
+                for (inv in invs) irows.addView(Prok.card(this, onClick = if (inv.open) ({ openPay(inv) }) else null).apply {
+                    addView(Prok.titleRow(this@MarketActivity, "Réf. " + inv.reference, inv.text, if (inv.paid) Prok.Tone.OK else if (inv.open) Prok.Tone.WARN else Prok.Tone.MUTED))
+                    addView(Prok.muted(this@MarketActivity, MarketView.invoiceLine(inv, now) + " · " + inv.service + (if (inv.open) " · appuyez pour payer" else ""), 4))
                 })
             }
         }
     }
 
     private fun mineRow(l: MarketView.Listing, now: Long): View {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 14, 0, 14) }
-        box.addView(TextView(this).apply {
-            textSize = 15f
-            text = l.rowTitle + " · " + l.priceText + "\n" + l.stateText +
-                (if (l.live) " · " + l.daysLeft(now) + " j restants" else "") +
-                (if (l.boosted) " · " + MarketView.SPONSORED_LABEL + " (" + l.boostZone + ")" else "") +
-                (if (l.reviewNote.isNotEmpty()) "\nModération : " + l.reviewNote else "")
-        })
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(Button(this).apply { text = "Voir"; setOnClickListener { openDetail(l.id) } })
-        if (l.needsPayment) buttons.addView(Button(this).apply { text = "Payer"; setOnClickListener { chooseRail { r -> invoiceFlow { market.payListing(l.id, r) } } } })
-        if (l.canEdit) buttons.addView(Button(this).apply { text = "Modifier"; setOnClickListener { editDialog(l) } })
-        if (l.canRenew) buttons.addView(Button(this).apply { text = "Renouveler"; setOnClickListener {
+        val tone = when { l.live -> Prok.Tone.OK; l.needsPayment -> Prok.Tone.WARN; l.state == "AWAITING_REVIEW" -> Prok.Tone.BRAND; l.state == "REJECTED" || l.state == "HIDDEN" -> Prok.Tone.DANGER; else -> Prok.Tone.MUTED }
+        val box = Prok.card(this)
+        box.addView(Prok.titleRow(this, l.title, l.stateText, tone))
+        box.addView(Prok.stat(this, l.priceText, 2))
+        box.addView(Prok.muted(this, listOfNotNull(
+            if (l.live) l.daysLeft(now).toString() + " j restants" else null,
+            if (l.boosted) MarketView.SPONSORED_LABEL + " (" + l.boostZone + ")" else null).joinToString(" · ") +
+            (if (l.reviewNote.isNotEmpty()) "\nModération : " + l.reviewNote else ""), 2))
+        val buttons = ArrayList<View>()
+        if (l.needsPayment) buttons += Prok.primary(this, "Payer") { chooseRail { r -> invoiceFlow { market.payListing(l.id, r) } } }
+        buttons += Prok.secondary(this, "Voir") { openDetail(l.id) }
+        if (l.canEdit) buttons += Prok.secondary(this, "Modifier") { editDialog(l) }
+        if (l.canRenew) buttons += Prok.secondary(this, "Renouveler") {
             confirm("Renouveler 30 jours", MarketView.offerLine("POST") + "\nLa nouvelle période s'ajoute à la fin de l'actuelle une fois le paiement confirmé.") { chooseRail { r -> invoiceFlow { market.renew(l.id, r) } } }
-        } })
-        if (l.canBoost) buttons.addView(Button(this).apply { text = "Booster"; setOnClickListener {
+        }
+        if (l.canBoost) buttons += Prok.secondary(this, "Booster") {
             ask("Mettre en avant", "Quartier de la mise en avant (ex. Bacongo)") { zone ->
                 if (zone.isEmpty()) toast("Un quartier est requis") else confirm("Booster", MarketView.offerLine("BOOST") + "\nL'annonce sera marquée « Sponsorisé ». Aucune garantie de vues.") { chooseRail { r -> invoiceFlow { market.boost(l.id, zone, r) } } }
             }
-        } })
-        if (l.canWithdraw) buttons.addView(Button(this).apply { text = "Retirer"; setOnClickListener {
+        }
+        if (l.canWithdraw) buttons += Prok.ghost(this, "Retirer", danger = true) {
             confirm("Retirer l'annonce", "Elle ne sera plus visible. Aucun remboursement pour la période déjà servie.") { run { market.withdraw(l.id) } }
-        } })
-        box.addView(buttons)
+        }
+        box.addView(Prok.actions(this, *buttons.toTypedArray()))
         return box
     }
 
@@ -494,8 +509,7 @@ class MarketActivity : Activity() {
         val price = EditText(this).apply { hint = "Prix (F)"; setText((l.priceCentimes / 100).toString()); inputType = InputType.TYPE_CLASS_NUMBER }
         val hood = EditText(this).apply { hint = "Quartier"; setText(l.neighbourhood) }
         val pickup = EditText(this).apply { hint = "Lieu de rencontre"; setText(l.pickupOptions) }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(title); addView(desc); addView(price); addView(hood); addView(pickup) }
-        AlertDialog.Builder(this).setTitle("Modifier").setMessage("Changer le titre ou la description renvoie l'annonce en modération, sans prolonger sa durée. Le prix et le lieu changent librement.").setView(col)
+        AlertDialog.Builder(this).setTitle("Modifier").setMessage("Changer le titre ou la description renvoie l'annonce en modération, sans prolonger sa durée. Le prix et le lieu changent librement.").setView(form(title, desc, price, hood, pickup))
             .setPositiveButton("Enregistrer") { _, _ ->
                 run { market.editListing(l.id, title.text.toString().trim(), desc.text.toString().trim(), l.category,
                     (price.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L) * 100, l.condition, hood.text.toString().trim(), pickup.text.toString().trim()) }
@@ -557,12 +571,20 @@ class MarketActivity : Activity() {
     private fun show(pane: Int) {
         for (p in panes) findViewById<View>(p).visibility = if (p == pane) View.VISIBLE else View.GONE
         if (pane != R.id.mkChat && pane != R.id.mkPay) stopPolling()
+        Prok.segment(findViewById(R.id.btnMkBrowse), pane == R.id.mkBrowse || pane == R.id.mkDetail)
+        Prok.segment(findViewById(R.id.btnMkSell), pane == R.id.mkSell)
+        Prok.segment(findViewById(R.id.btnMkMine), pane == R.id.mkMine || pane == R.id.mkPackages || pane == R.id.mkPay)
         findViewById<TextView>(R.id.mkFooter).text = "Identité prok-" + market.myId.take(8) + (if (market.configured) "" else " · Brain non configuré")
+        findViewById<View>(R.id.mkScroll).scrollTo(0, 0)
     }
 
     private fun visible(id: Int): Boolean = findViewById<View>(id).visibility == View.VISIBLE
-    private fun spinner(id: Int, items: List<String>) {
-        findViewById<Spinner>(id).adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, items)
+    private fun spinner(id: Int, items: List<String>) { findViewById<PickerView>(id).items = items }
+
+    /** Dialog fields with the screen's own margins. */
+    private fun form(vararg fields: View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; val p = Prok.dp(context, 20); setPadding(p, Prok.dp(context, 8), p, 0)
+        for (f in fields) addView(f, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = Prok.dp(context, 8) })
     }
 
     private fun run(block: () -> MarketSync.Outcome) {
@@ -578,7 +600,7 @@ class MarketActivity : Activity() {
 
     private fun ask(title: String, hint: String, onText: (String) -> Unit) {
         val input = EditText(this).apply { this.hint = hint }
-        AlertDialog.Builder(this).setTitle(title).setView(input).setPositiveButton("OK") { _, _ -> onText(input.text.toString().trim()) }.setNegativeButton("Annuler", null).show()
+        AlertDialog.Builder(this).setTitle(title).setView(form(input)).setPositiveButton("OK") { _, _ -> onText(input.text.toString().trim()) }.setNegativeButton("Annuler", null).show()
     }
 
     private fun copy(s: String) {

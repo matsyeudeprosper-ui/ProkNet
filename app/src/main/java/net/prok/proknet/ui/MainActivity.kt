@@ -159,13 +159,13 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
         // v0.19.0: the launch contract's home actions. "Bring internet to me" is the sphere above.
         // A switched-off function opens its screen anyway and the screen shows the Brain's own sentence.
-        v<Button>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java).putExtra("filter", "working_now")) }
-        v<Button>(R.id.btnExploreTown).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
-        v<Button>(R.id.btnMarket).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
-        v<Button>(R.id.btnShareWifi).setOnClickListener { startActivity(Intent(this, OwnerOnboardingActivity::class.java)) }
-        v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
+        v<View>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java).putExtra("filter", "working_now")) }
+        v<View>(R.id.rowMap).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
+        v<View>(R.id.btnMarket).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
         v<View>(R.id.rowShare).setOnClickListener { ensureRunning { select(Tab.EARN) } }
-        v<View>(R.id.rowMap).setOnClickListener { select(Tab.MAP) }
+        v<View>(R.id.earnQuoteRow).setOnClickListener { startActivity(Intent(this, OwnerOnboardingActivity::class.java)) }
+        v<View>(R.id.earnRelayRow).setOnClickListener { startActivity(Intent(this, RelayOffersActivity::class.java)) }
+        v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
         v<Button>(R.id.btnConnect).setOnClickListener { connect() }
         v<Button>(R.id.btnConfirmBack).setOnClickListener { pendingOffer = null; refresh() }
         v<Button>(R.id.btnStopInternet).setOnClickListener { stopAll() }

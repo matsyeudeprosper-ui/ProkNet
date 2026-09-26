@@ -30,6 +30,7 @@ class OwnerOnboardingActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_owner_onboarding)
+        Prok.header(this, "Partager mon Wi-Fi", "ProkNet propose, vous acceptez ou refusez")
         findViewById<CheckBox>(R.id.ooAttest).text = OwnerQuoteView.ATTESTATION_SENTENCE
         findViewById<TextView>(R.id.ooFree).text = OwnerQuoteView.choiceWord(OwnerQuoteView.Choice.FREE)
         findViewById<TextView>(R.id.ooEarn).text = OwnerQuoteView.choiceWord(OwnerQuoteView.Choice.EARN)

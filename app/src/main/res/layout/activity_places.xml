@@ -1,53 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v0.19.1: the free Internet finder, in the app's design system. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 
-        <!-- "Internet gratuit à Brazzaville · N lieux connus" and, underneath, when the cached list was refreshed -->
-        <TextView android:id="@+id/plHeader" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="18sp" android:textStyle="bold" android:text="Internet gratuit à Brazzaville" />
-        <TextView android:id="@+id/plRefreshed" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="2dp" android:textSize="13sp" android:text="" />
-        <TextView android:id="@+id/plNote" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" android:textSize="12sp"
-            android:text="Liste non exhaustive : seuls les lieux vérifiés et consentants figurent ici." />
-        <TextView android:id="@+id/plLocationNote" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
-        <Button android:id="@+id/btnPlLocation" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="Autoriser la position (500 m près)" android:visibility="gone" />
-
-        <EditText android:id="@+id/plSearch" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="8dp" android:hint="Rechercher un lieu, un quartier…" android:inputType="text"
-            android:imeOptions="actionSearch" android:singleLine="true" />
-
-        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
-            android:scrollbars="none">
-            <LinearLayout android:id="@+id/plNeighbourhoods" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:orientation="horizontal" />
-        </HorizontalScrollView>
-        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:scrollbars="none">
-            <LinearLayout android:id="@+id/plFilters" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:orientation="horizontal" />
-        </HorizontalScrollView>
-
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
-            <Button android:id="@+id/btnPlRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
-            <Button android:id="@+id/btnPlContribute" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Contribuer" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <ImageView android:id="@+id/hdBack" android:layout_width="42dp" android:layout_height="42dp" android:src="@drawable/ic_back" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:clickable="true" android:focusable="true" android:contentDescription="Retour" />
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+                <TextView android:id="@+id/plHeader" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet gratuit" style="@style/ScreenTitle" />
+                <TextView android:id="@+id/plRefreshed" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="" style="@style/Muted" />
+            </LinearLayout>
         </LinearLayout>
-        <TextView android:id="@+id/plOffer" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="12sp" android:text="" />
 
-        <LinearLayout android:id="@+id/plCards" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:orientation="vertical" android:layout_marginTop="8dp" />
-        <TextView android:id="@+id/plEmpty" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="13sp" android:text="Aucun lieu dans cette liste. Essayez un autre quartier ou retirez un filtre." />
+        <EditText android:id="@+id/plSearch" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Un lieu, un quartier…" android:inputType="text" android:imeOptions="actionSearch" android:singleLine="true" android:drawableStart="@drawable/ic_search" android:drawableTint="@color/text_muted" android:drawablePadding="12dp" />
 
-        <TextView android:id="@+id/plFooter" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:scrollbars="none">
+            <LinearLayout android:id="@+id/plNeighbourhoods" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" />
+        </HorizontalScrollView>
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:scrollbars="none">
+            <LinearLayout android:id="@+id/plFilters" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <!-- the one thing that limits what this screen can say: no position, no distance -->
+        <LinearLayout android:id="@+id/plLocationCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_alt" android:padding="16dp" android:layout_marginTop="14dp" android:visibility="gone">
+            <TextView android:id="@+id/plLocationNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" />
+            <Button android:id="@+id/btnPlLocation" android:text="Autoriser la position (500 m près)" style="@style/SmallSecondary" android:layout_marginTop="10dp" android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView android:id="@+id/plOffer" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="" style="@style/Caption" />
+
+        <LinearLayout android:id="@+id/plCards" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginTop="14dp" />
+        <LinearLayout android:id="@+id/plEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="22dp" android:layout_marginTop="14dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Aucun lieu dans cette liste" style="@style/H2" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Essayez un autre quartier ou retirez un filtre. La liste ne montre que des lieux vérifiés et consentants." style="@style/Muted" />
+        </LinearLayout>
+
+        <!-- contribute: one card, one action -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="20dp" android:layout_marginTop="6dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Vous connaissez un Wi-Fi gratuit ?" style="@style/H2" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Connectez-vous au réseau du lieu, puis signalez-le. Seule une empreinte du réseau et la zone sont envoyées." style="@style/Muted" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="14dp" android:gravity="center_vertical">
+                <Button android:id="@+id/btnPlContribute" android:text="Signaler un lieu" style="@style/SmallPrimary" />
+                <Button android:id="@+id/btnPlRefresh" android:text="Actualiser" style="@style/GhostButton" android:layout_marginStart="8dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView android:id="@+id/plNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Liste non exhaustive : seuls les lieux vérifiés et consentants figurent ici." style="@style/Muted" android:gravity="center" />
+        <TextView android:id="@+id/plFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Caption" android:gravity="center" />
     </LinearLayout>
 </ScrollView>

@@ -32,6 +32,7 @@ class OperatorActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_operator)
+        findViewById<android.view.View>(R.id.hdBack).setOnClickListener { finish() }
         findViewById<Button>(R.id.btnOpRefresh).setOnClickListener { load() }
         findViewById<Button>(R.id.btnOpDecision).setOnClickListener { decisionDialog() }
         findViewById<Button>(R.id.btnOpCohort).setOnClickListener { cohortDialog() }
@@ -55,33 +56,38 @@ class OperatorActivity : Activity() {
         val box = findViewById<LinearLayout>(R.id.opFunctions); box.removeAllViews()
         for (name in FlagsView.FUNCTIONS) {
             val f = s.functions[name]
-            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 12, 0, 12) }
-            row.addView(TextView(this).apply { textSize = 15f; text = FlagsView.label(name) + " — " + s.why(name) })
-            val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val on = f?.switchOn == true
-            buttons.addView(Button(this).apply { text = if (on) "Fermer" else "Ouvrir"; setOnClickListener { flagDialog(name, !on) } })
-            row.addView(buttons)
-            box.addView(row)
+            val enabled = f?.enabled == true
+            val card = Prok.card(this)
+            card.addView(Prok.titleRow(this, FlagsView.label(name), if (enabled) "ouverte" else if (on) "interrupteur on, bloquée" else "fermée", if (enabled) Prok.Tone.OK else if (on) Prok.Tone.WARN else Prok.Tone.MUTED))
+            card.addView(Prok.muted(this, s.why(name)))
+            card.addView(Prok.actions(this, if (on) Prok.secondary(this, "Fermer") { flagDialog(name, false) } else Prok.primary(this, "Ouvrir") { flagDialog(name, true) }))
+            box.addView(card)
         }
-        val decisions = if (console == null) "(console injoignable)" else LedgerView.objects(console, "decisions").joinToString("\n") { d ->
-            BrainPayload.field(d, "kind") + " · " + BrainPayload.field(d, "summary") + " · " + BrainPayload.field(d, "document") + " · " +
+        val decisions = if (console == null) "(console injoignable)" else LedgerView.objects(console, "decisions").joinToString("\n\n") { d ->
+            BrainPayload.field(d, "kind") + " · " + BrainPayload.field(d, "summary") + "\n" + BrainPayload.field(d, "document") + " · " +
                 BrainPayload.field(d, "accountable") + (if (BrainPayload.field(d, "revoked_at") != "0") " · RÉVOQUÉE" else "")
-        }.ifEmpty { "aucune" }
+        }.ifEmpty { "Aucune décision enregistrée." }
         text(R.id.opDecisions, decisions)
         val queues = findViewById<LinearLayout>(R.id.opQueues); queues.removeAllViews()
-        queues.addView(Button(this).apply { text = "Trésorerie (retraits, recharges, rapprochement)"; setOnClickListener { startActivity(Intent(this@OperatorActivity, TreasuryActivity::class.java)) } })
-        for ((label, cls) in QUEUE_SCREENS) {
+        queues.addView(Prok.link(this, "Trésorerie", "Retraits, recharges, rapprochement", R.drawable.ic_wallet) { startActivity(Intent(this@OperatorActivity, TreasuryActivity::class.java)) })
+        for ((label, sub, icon, cls) in QUEUE_SCREENS) {
             val c = try { Class.forName(cls) } catch (e: Exception) { null }
-            if (c != null) queues.addView(Button(this).apply { text = label; setOnClickListener { startActivity(Intent(this@OperatorActivity, c)) } })
+            if (c != null) queues.addView(Prok.link(this, label, sub, icon) { startActivity(Intent(this@OperatorActivity, c)) })
         }
         text(R.id.opFooter, "Identité : prok-" + node.identity.shortIdHex + " · dernier état " + (if (s.fetchedAt > 0) "reçu" else "jamais reçu"))
+    }
+
+    private fun form(vararg fields: android.view.View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; val p = Prok.dp(context, 20); setPadding(p, Prok.dp(context, 8), p, 0)
+        for (f in fields) addView(f, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = Prok.dp(context, 8) })
     }
 
     private fun flagDialog(function: String, enable: Boolean) {
         val reason = EditText(this).apply { hint = "Motif (obligatoire) — c'est une décision datée" }
         AlertDialog.Builder(this).setTitle((if (enable) "Ouvrir " else "Fermer ") + FlagsView.label(function))
             .setMessage(if (enable) "Une fonction restreinte n'ouvre qu'avec les décisions externes enregistrées. Les obligations déjà acceptées continuent quoi qu'il arrive." else "Fermer arrête les NOUVELLES sessions/annonces ; les obligations acceptées sont honorées.")
-            .setView(reason)
+            .setView(form(reason))
             .setPositiveButton("Confirmer") { _, _ -> run { node.flagsSync.setFlag(function, enable, reason.text.toString().trim()) } }
             .setNegativeButton("Annuler", null).show()
     }
@@ -89,8 +95,7 @@ class OperatorActivity : Activity() {
     private fun cohortDialog() {
         val fn = EditText(this).apply { hint = "fonction (ex. market_paid_publish)" }
         val id = EditText(this).apply { hint = "identité complète (32 hex)" }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(fn); addView(id) }
-        AlertDialog.Builder(this).setTitle("Cohorte").setView(col)
+        AlertDialog.Builder(this).setTitle("Cohorte").setView(form(fn, id))
             .setPositiveButton("Ajouter") { _, _ -> run { node.flagsSync.cohort(fn.text.toString().trim(), id.text.toString().trim(), true) } }
             .setNeutralButton("Retirer") { _, _ -> run { node.flagsSync.cohort(fn.text.toString().trim(), id.text.toString().trim(), false) } }
             .setNegativeButton("Annuler", null).show()
@@ -101,9 +106,8 @@ class OperatorActivity : Activity() {
         val summary = EditText(this).apply { hint = "Résumé de la décision" }
         val document = EditText(this).apply { hint = "Document (nom/référence, version)" }
         val who = EditText(this).apply { hint = "Personne responsable" }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(kind); addView(summary); addView(document); addView(who) }
         AlertDialog.Builder(this).setTitle("Enregistrer une décision externe")
-            .setMessage("Le fait externe qu'aucun ingénieur ne peut fabriquer : ce qui a été décidé, le document, la personne, la date (aujourd'hui).").setView(col)
+            .setMessage("Le fait externe qu'aucun ingénieur ne peut fabriquer : ce qui a été décidé, le document, la personne, la date (aujourd'hui).").setView(form(kind, summary, document, who))
             .setPositiveButton("Enregistrer") { _, _ ->
                 run { node.flagsSync.decision(kind.text.toString().trim(), summary.text.toString().trim(), document.text.toString().trim(), who.text.toString().trim(), System.currentTimeMillis()) }
             }.setNegativeButton("Annuler", null).show()
@@ -120,10 +124,11 @@ class OperatorActivity : Activity() {
 
     companion object {
         /** Work-queue screens other modules provide; shown only when the class exists in this build. */
+        data class Queue(val label: String, val sub: String, val icon: Int, val cls: String)
         val QUEUE_SCREENS = listOf(
-            "Vérification des lieux (carte)" to "net.prok.proknet.ui.PlacesReviewActivity",
-            "Modération Prok Market" to "net.prok.proknet.ui.MarketModerationActivity",
-            "Offres relais et fonds" to "net.prok.proknet.ui.RelayOffersActivity",
+            Queue("Vérification des lieux", "Brouillons, demandes, signalements, contestations", R.drawable.ic_place, "net.prok.proknet.ui.PlacesReviewActivity"),
+            Queue("Modération Prok Market", "Relecture, signalements, factures ouvertes", R.drawable.ic_bag, "net.prok.proknet.ui.MarketModerationActivity"),
+            Queue("Offres relais", "Ce que ce téléphone voit comme relais", R.drawable.ic_bolt, "net.prok.proknet.ui.RelayOffersActivity"),
         )
     }
 }

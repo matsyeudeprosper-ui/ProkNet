@@ -1,34 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 
-        <TextView android:id="@+id/opTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="18sp" android:textStyle="bold" android:text="Console opérateur — Brazzaville" />
-        <TextView android:id="@+id/opNote" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" android:textSize="13sp"
-            android:text="Chaque interrupteur est une décision datée avec un motif. Une fonction restreinte ne s'ouvre qu'avec l'enregistrement de la décision externe (document, responsable, date). Rien ici ne crée d'argent." />
-
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-            <Button android:id="@+id/btnOpRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
-            <Button android:id="@+id/btnOpDecision" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Enregistrer une décision" />
-            <Button android:id="@+id/btnOpCohort" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Cohorte" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <ImageView android:id="@+id/hdBack" android:layout_width="42dp" android:layout_height="42dp" android:src="@drawable/ic_back" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:clickable="true" android:focusable="true" android:contentDescription="Retour" />
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+                <TextView android:id="@+id/opTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Console opérateur" style="@style/ScreenTitle" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Chaque interrupteur est une décision datée" style="@style/Muted" />
+            </LinearLayout>
         </LinearLayout>
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Fonctions" />
-        <LinearLayout android:id="@+id/opFunctions" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+        <TextView android:id="@+id/opNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card_alt" android:padding="16dp" android:text="Une fonction restreinte ne s'ouvre qu'avec l'enregistrement de la décision externe (document, responsable, date). Rien ici ne crée d'argent." style="@style/Muted" />
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Décisions enregistrées" />
-        <TextView android:id="@+id/opDecisions" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <Button android:id="@+id/btnOpDecision" android:text="Enregistrer une décision" style="@style/SmallPrimary" />
+            <Button android:id="@+id/btnOpCohort" android:text="Cohorte" style="@style/SmallSecondary" android:layout_marginStart="8dp" />
+            <Button android:id="@+id/btnOpRefresh" android:text="Actualiser" style="@style/GhostButton" />
+        </LinearLayout>
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Files de travail" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:layout_marginBottom="10dp" android:text="Files de travail" style="@style/Caption" />
         <LinearLayout android:id="@+id/opQueues" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
 
-        <TextView android:id="@+id/opFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:layout_marginBottom="10dp" android:text="Fonctions" style="@style/Caption" />
+        <LinearLayout android:id="@+id/opFunctions" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:layout_marginBottom="10dp" android:text="Décisions enregistrées" style="@style/Caption" />
+        <TextView android:id="@+id/opDecisions" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="18dp" android:text="" style="@style/Muted" />
+
+        <TextView android:id="@+id/opFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="" style="@style/Caption" android:gravity="center" />
     </LinearLayout>
 </ScrollView>

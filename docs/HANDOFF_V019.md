@@ -1,4 +1,4 @@
-# ProkNet v0.19.0 — handoff (the launch contract build)
+# ProkNet v0.19.1 — handoff (the launch contract build, redesigned)
 
 Date: 2026-09-26. From Claude (implementation) to ChatGPT (architect) and Mike (owner).
 Product contract: `ProkNet_Product_Vision_2026-09-26-1.md` §1–§10. Gap map:
@@ -8,11 +8,11 @@ Product contract: `ProkNet_Product_Vision_2026-09-26-1.md` §1–§10. Gap map:
 
 | Item | Value |
 |---|---|
-| Signed release APK | `dist/ProkNet-release.apk` — attached to GitHub release **v0.19.0** |
-| APK SHA-256 | `827e236c1fedc798084a73be91c2d67de9e4b78132f48255f2cf448e9e0c82d7` |
+| Signed release APK | `dist/ProkNet-release.apk` — attached to GitHub release **v0.19.1** (build 84: same features as 0.19.0, every screen in the app design system) |
+| APK SHA-256 | `daccac6524c19f37e4e3d774e0e7da14a210329afa991a61814befa42d75501b` |
 | Signing certificate SHA-256 | `a7e12b2f97af64637a2297e9621fd7a6a5d70ae936567fb030a0d6f7ec3796d3` (keystore `C:\ProkNetKeys\proknet-release.jks`, alias `proknet`, never in git) |
-| versionCode / versionName | 83 / 0.19.0 (`applicationId net.prok.proknet.lab`, unchanged so it installs over 0.18.x) |
-| Debug APK (lab only) | `dist/ProkNetLab-debug.apk`, SHA-256 `2ec571b05f98056f5bc343ab9e9b3b55ed2c71fcf35f142895dc894b9603ffc2` |
+| versionCode / versionName | 84 / 0.19.1 (`applicationId net.prok.proknet.lab`, unchanged so it installs over 0.18.x) |
+| Debug APK (lab only) | `dist/ProkNetLab-debug.apk`, SHA-256 `cc805258bf17575670bf2429fa6289c357c713b3891f21a21109a761285952c6` |
 | Brain | **deployed** `https://proknet.duckdns.org` → `{"ok": true, "version": "0.19.0", "schema": 7}` (PID 16368 on 8081 behind Caddy) |
 | Rollback point | `C:\ProkNetBrain\backups\brain-20260926-141455.db` (schema 6, taken before the upgrade); `deploy/brain/restore.ps1 -From <file>` + the v0.18.2 checkout |
 | Offline map pack | `/v1/map/brazzaville/pack`, 3,027,460 bytes (3.03 MB, contract says < 50 MB), SHA-256 `268e9dfdc1ead4e723ba1828e158720c5648c9adda10fc9e6c555b69f8f611ef`, 133,784 nodes / 149,202 walking edges from Geofabrik OSM (ODbL attribution in the manifest); verified through the public URL byte-for-byte |

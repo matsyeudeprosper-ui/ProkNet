@@ -1,153 +1,157 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v0.19.0: Prok Market. One plain screen, several panes shown one at a time:
-     browse / detail / chat / sell form / payment / my listings / packages. -->
+<!-- v0.19.1: Prok Market in the app's design system. One screen, panes shown one at a time:
+     browse / detail / chat / sell form / payment / my listings / packages. Every id is the one the activity uses. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/mkScroll"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+    android:id="@+id/mkScroll" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 
-        <!-- top bar -->
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-            <Button android:id="@+id/btnMkBrowse" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Parcourir" />
-            <Button android:id="@+id/btnMkSell" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Vendre" />
-            <Button android:id="@+id/btnMkMine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Mes annonces" />
+        <include layout="@layout/view_header" />
+
+        <!-- the three places of the market -->
+        <LinearLayout android:id="@+id/mkTabs" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:background="@drawable/bg_card_alt" android:padding="4dp" android:layout_marginBottom="14dp">
+            <Button android:id="@+id/btnMkBrowse" android:text="Parcourir" style="@style/Segment" />
+            <Button android:id="@+id/btnMkSell" android:text="Vendre" style="@style/Segment" />
+            <Button android:id="@+id/btnMkMine" android:text="Mes annonces" style="@style/Segment" />
         </LinearLayout>
-        <TextView android:id="@+id/mkStatus" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" android:textSize="12sp" android:text="" />
+        <TextView android:id="@+id/mkStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Caption" android:layout_marginBottom="8dp" />
 
         <!-- ================= browse ================= -->
         <LinearLayout android:id="@+id/mkBrowse" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
-                android:textSize="18sp" android:textStyle="bold" android:text="Prok Market - Brazzaville" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp"
-                android:text="Achat et vente entre personnes. Le paiement se fait directement entre vous : Prok ne garde jamais l'argent." />
-            <EditText android:id="@+id/mkQuery" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:hint="Rechercher (ex. vélo, frigo, iPhone)" android:inputType="text" android:imeOptions="actionSearch" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <Spinner android:id="@+id/mkCategory" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
-                <EditText android:id="@+id/mkNeighbourhood" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-                    android:hint="Quartier" android:inputType="text" />
+            <EditText android:id="@+id/mkQuery" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Vélo, frigo, iPhone…" android:inputType="text" android:imeOptions="actionSearch" android:singleLine="true" android:drawableStart="@drawable/ic_search" android:drawableTint="@color/text_muted" android:drawablePadding="12dp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+                <net.prok.proknet.ui.PickerView android:id="@+id/mkCategory" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" style="@style/Input" android:text="Toutes catégories" />
+                <EditText android:id="@+id/mkNeighbourhood" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:hint="Quartier" android:inputType="text" android:singleLine="true" />
             </LinearLayout>
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <EditText android:id="@+id/mkMinPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-                    android:hint="Prix min (F)" android:inputType="number" />
-                <EditText android:id="@+id/mkMaxPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-                    android:hint="Prix max (F)" android:inputType="number" />
-                <Button android:id="@+id/btnMkSearch" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Chercher" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp" android:gravity="center_vertical">
+                <EditText android:id="@+id/mkMinPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:hint="Prix min" android:inputType="number" />
+                <EditText android:id="@+id/mkMaxPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:hint="Prix max" android:inputType="number" />
+                <Button android:id="@+id/btnMkSearch" android:text="Chercher" style="@style/SmallPrimary" android:layout_marginStart="8dp" />
             </LinearLayout>
-            <TextView android:id="@+id/mkResultsInfo" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="" />
-            <LinearLayout android:id="@+id/mkResults" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-            <Button android:id="@+id/btnMkMore" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Plus de résultats" android:visibility="gone" />
+            <TextView android:id="@+id/mkResultsInfo" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/Muted" />
+            <LinearLayout android:id="@+id/mkResults" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginTop="10dp" />
+            <Button android:id="@+id/btnMkMore" android:text="Plus de résultats" style="@style/SecondaryButton" android:visibility="gone" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="Achat et vente entre personnes. Le paiement se fait directement entre vous : Prok ne garde jamais l'argent." style="@style/Muted" android:gravity="center" />
         </LinearLayout>
 
         <!-- ================= listing detail ================= -->
         <LinearLayout android:id="@+id/mkDetail" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <Button android:id="@+id/btnMkBack" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="← Retour" />
-            <TextView android:id="@+id/mkDetailSponsored" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:textSize="12sp" android:textStyle="bold" android:text="Sponsorisé" android:visibility="gone" />
-            <TextView android:id="@+id/mkDetailTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:textSize="20sp" android:textStyle="bold" android:text="" />
-            <TextView android:id="@+id/mkDetailPrice" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:textSize="18sp" android:text="" />
+            <Button android:id="@+id/btnMkBack" android:text="Retour aux annonces" style="@style/GhostButton" android:drawableStart="@drawable/ic_back" android:drawableTint="@color/brand" android:drawablePadding="8dp" android:layout_marginBottom="6dp" />
             <LinearLayout android:id="@+id/mkDetailPhotos" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-            <TextView android:id="@+id/mkDetailMeta" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
-            <TextView android:id="@+id/mkDetailDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="15sp" android:text="" />
-            <TextView android:id="@+id/mkDetailSeller" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="13sp" android:text="" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-                <Button android:id="@+id/btnMkContact" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Contacter" />
-                <Button android:id="@+id/btnMkOffer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Faire une offre" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginTop="6dp">
+                <TextView android:id="@+id/mkDetailSponsored" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/bg_pill_warn" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="4dp" android:paddingBottom="4dp" android:text="Sponsorisé" android:textSize="11sp" android:textStyle="bold" android:textColor="@color/legend_text" android:layout_marginBottom="10dp" android:visibility="gone" />
+                <TextView android:id="@+id/mkDetailTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H2" />
+                <TextView android:id="@+id/mkDetailPrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Big" />
+                <TextView android:id="@+id/mkDetailMeta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Muted" />
+                <TextView android:id="@+id/mkDetailDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/Body" />
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginTop="16dp" android:layout_marginBottom="14dp" />
+                <TextView android:id="@+id/mkDetailSeller" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="16dp">
+                    <Button android:id="@+id/btnMkContact" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:text="Contacter" style="@style/SmallPrimary" />
+                    <Button android:id="@+id/btnMkOffer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:layout_marginStart="8dp" android:text="Faire une offre" style="@style/SmallSecondary" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
+                    <Button android:id="@+id/btnMkReport" android:text="Signaler" style="@style/GhostButton" />
+                    <Button android:id="@+id/btnMkBlock" android:text="Bloquer" style="@style/GhostButton" android:textColor="@color/danger" />
+                </LinearLayout>
             </LinearLayout>
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <Button android:id="@+id/btnMkReport" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Signaler" />
-                <Button android:id="@+id/btnMkBlock" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Bloquer" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_alt" android:padding="20dp" android:layout_marginTop="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Rencontre en personne" style="@style/Caption" />
+                <TextView android:id="@+id/mkSafety" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />
             </LinearLayout>
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
-                android:textStyle="bold" android:text="Rencontre en personne : les règles" />
-            <TextView android:id="@+id/mkSafety" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
         </LinearLayout>
 
         <!-- ================= chat ================= -->
         <LinearLayout android:id="@+id/mkChat" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <Button android:id="@+id/btnMkChatBack" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="← Annonce" />
-            <TextView android:id="@+id/mkChatTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:text="" />
-            <TextView android:id="@+id/mkChatNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp"
-                android:text="Messages relayés par Prok, relevés toutes les 20 s. Ne payez rien avant d'avoir l'article en main." />
-            <LinearLayout android:id="@+id/mkChatRows" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-            <EditText android:id="@+id/mkChatInput" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:hint="Votre message (500 caractères max)" android:inputType="textMultiLine" android:maxLength="500" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <Button android:id="@+id/btnMkSend" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Envoyer" />
-                <Button android:id="@+id/btnMkChatOffer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Faire une offre" />
+            <Button android:id="@+id/btnMkChatBack" android:text="Retour" style="@style/GhostButton" android:drawableStart="@drawable/ic_back" android:drawableTint="@color/brand" android:drawablePadding="8dp" />
+            <TextView android:id="@+id/mkChatTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="" style="@style/H2" />
+            <TextView android:id="@+id/mkChatNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Messages relayés par Prok, relevés toutes les 20 s. Ne payez rien avant d'avoir l'article en main." style="@style/Muted" />
+            <LinearLayout android:id="@+id/mkChatRows" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginTop="14dp" android:layout_marginBottom="8dp" />
+            <EditText android:id="@+id/mkChatInput" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Votre message" android:inputType="textMultiLine|textCapSentences" android:maxLength="500" android:maxLines="4" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+                <Button android:id="@+id/btnMkSend" android:layout_width="0dp" android:layout_weight="1" android:layout_height="50dp" android:text="Envoyer" style="@style/SmallPrimary" />
+                <Button android:id="@+id/btnMkChatOffer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="50dp" android:layout_marginStart="8dp" android:text="Faire une offre" style="@style/SmallSecondary" />
             </LinearLayout>
         </LinearLayout>
 
         <!-- ================= sell form ================= -->
         <LinearLayout android:id="@+id/mkSell" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Vendre un article" />
-            <TextView android:id="@+id/mkSellOffer" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
-            <TextView android:id="@+id/mkSellVoucher" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:textStyle="bold" android:text="" android:visibility="gone" />
-            <EditText android:id="@+id/mkSellTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Titre (80 caractères max)" android:inputType="text" android:maxLength="80" />
-            <EditText android:id="@+id/mkSellDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Description : état, défauts, ce qui est inclus. Pas de numéro de téléphone ni d'adresse exacte." android:inputType="textMultiLine" android:minLines="3" android:maxLength="2000" />
-            <Spinner android:id="@+id/mkSellCategory" android:layout_width="match_parent" android:layout_height="wrap_content" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <EditText android:id="@+id/mkSellPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:hint="Prix demandé (F)" android:inputType="number" />
-                <Spinner android:id="@+id/mkSellCondition" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="18dp" android:layout_marginBottom="14dp">
+                <TextView android:id="@+id/mkSellOffer" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H3" />
+                <TextView android:id="@+id/mkSellVoucher" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" android:textColor="@color/ok" android:visibility="gone" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Relue avant publication. Refusée = non facturée. Aucune commission sur la vente." style="@style/Muted" />
             </LinearLayout>
-            <EditText android:id="@+id/mkSellNeighbourhood" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Quartier de remise (ex. Bacongo)" android:inputType="text" />
-            <EditText android:id="@+id/mkSellPickup" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Lieu public de rencontre (ex. Marché Total, devant la pharmacie)" android:inputType="text" />
-            <EditText android:id="@+id/mkSellPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Votre numéro Mobile Money (9 chiffres, jamais publié)" android:inputType="phone" />
-            <CheckBox android:id="@+id/mkSellAdult" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="J'ai 18 ans ou plus et cet article m'appartient." />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <Button android:id="@+id/btnMkAddPhoto" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Ajouter une photo" />
-                <TextView android:id="@+id/mkSellPhotos" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center_vertical" android:textSize="13sp" android:text="0 / 5 photos" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="L'article" style="@style/Caption" />
+            <EditText android:id="@+id/mkSellTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Titre" android:inputType="textCapSentences" android:maxLength="80" android:singleLine="true" />
+            <EditText android:id="@+id/mkSellDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="État, défauts, ce qui est inclus. Pas de numéro ni d'adresse exacte." android:inputType="textMultiLine|textCapSentences" android:minLines="3" android:gravity="top" android:maxLength="2000" />
+            <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCategory" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" style="@style/Input" android:text="Catégorie" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+                <EditText android:id="@+id/mkSellPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:hint="Prix (F)" android:inputType="number" />
+                <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCondition" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" style="@style/Input" android:text="État" />
             </LinearLayout>
-            <Button android:id="@+id/btnMkSubmit" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Publier - 100 F" />
-            <TextView android:id="@+id/mkSellRules" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp"
-                android:text="Interdit : armes, drogues, objets volés, contrefaçons, services sexuels, documents d'identité. Toute annonce est relue avant publication (une journée ouvrée). Une annonce refusée n'est pas facturée. Prok ne prend aucune commission sur la vente." />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="La remise" style="@style/Caption" />
+            <EditText android:id="@+id/mkSellNeighbourhood" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Quartier (ex. Bacongo)" android:inputType="textCapWords" android:singleLine="true" />
+            <EditText android:id="@+id/mkSellPickup" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Lieu public de rencontre (ex. Marché Total)" android:inputType="textCapSentences" android:singleLine="true" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="Vous" style="@style/Caption" />
+            <EditText android:id="@+id/mkSellPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Numéro Mobile Money (jamais publié)" android:inputType="phone" />
+            <CheckBox android:id="@+id/mkSellAdult" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="J'ai 18 ans ou plus et cet article m'appartient." />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="10dp">
+                <Button android:id="@+id/btnMkAddPhoto" android:text="Ajouter une photo" style="@style/SmallSecondary" android:drawableStart="@drawable/ic_camera" android:drawableTint="@color/text" android:drawablePadding="8dp" />
+                <TextView android:id="@+id/mkSellPhotos" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="12dp" android:text="0 / 5 photos" style="@style/Muted" />
+            </LinearLayout>
+            <Button android:id="@+id/btnMkSubmit" android:text="Publier - 100 F" style="@style/PrimaryButton" android:layout_marginTop="18dp" />
+            <TextView android:id="@+id/mkSellRules" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Interdit : armes, drogues, objets volés, contrefaçons, services sexuels, documents d'identité." style="@style/Muted" android:gravity="center" />
         </LinearLayout>
 
         <!-- ================= pay ================= -->
         <LinearLayout android:id="@+id/mkPay" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Paiement" />
-            <TextView android:id="@+id/mkPayInstruction" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="16sp" android:text="" />
-            <TextView android:id="@+id/mkPayReference" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="26sp" android:textStyle="bold" android:text="" />
-            <Button android:id="@+id/btnMkCopyRef" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Copier la référence" />
-            <TextView android:id="@+id/mkPayState" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="16sp" android:textStyle="bold" android:text="" />
-            <TextView android:id="@+id/mkPayNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp"
-                android:text="Un trésorier Prok vérifie la réception sur le relevé de l'opérateur, puis l'annonce passe en modération. Pas de publication instantanée : cet écran se met à jour tout seul. La facture expire après 24 h." />
-            <Button android:id="@+id/btnMkPayDone" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Voir mes annonces" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="22dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Référence à indiquer" style="@style/Caption" />
+                <TextView android:id="@+id/mkPayReference" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Big" android:letterSpacing="0.04" />
+                <Button android:id="@+id/btnMkCopyRef" android:text="Copier la référence" style="@style/SmallSecondary" android:layout_marginTop="10dp" />
+                <TextView android:id="@+id/mkPayInstruction" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="" style="@style/Body" />
+                <TextView android:id="@+id/mkPayState" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" style="@style/H3" />
+            </LinearLayout>
+            <TextView android:id="@+id/mkPayNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Un trésorier Prok vérifie la réception sur le relevé de l'opérateur, puis l'annonce passe en modération. Cet écran se met à jour tout seul. La facture expire après 24 h." style="@style/Muted" />
+            <Button android:id="@+id/btnMkPayDone" android:text="Voir mes annonces" style="@style/SecondaryButton" android:layout_marginTop="16dp" />
         </LinearLayout>
 
         <!-- ================= my listings ================= -->
         <LinearLayout android:id="@+id/mkMine" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Mes annonces" />
-            <TextView android:id="@+id/mkMineStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
-            <Button android:id="@+id/btnMkPackages" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Forfaits et vitrine" />
-            <Button android:id="@+id/btnMkInbox" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Messages" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Mon compte vendeur" style="@style/Caption" />
+                <TextView android:id="@+id/mkMineStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Body" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="14dp">
+                    <Button android:id="@+id/btnMkPackages" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Forfaits et vitrine" style="@style/SmallSecondary" />
+                    <Button android:id="@+id/btnMkInbox" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:layout_marginStart="8dp" android:text="Messages" style="@style/SmallSecondary" android:drawableStart="@drawable/ic_chat" android:drawableTint="@color/text" android:drawablePadding="8dp" />
+                </LinearLayout>
+            </LinearLayout>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:layout_marginBottom="10dp" android:text="Annonces" style="@style/Caption" />
             <LinearLayout android:id="@+id/mkMineRows" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-            <TextView android:id="@+id/mkMineEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="Aucune annonce pour l'instant." />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textStyle="bold" android:text="Factures" />
+            <TextView android:id="@+id/mkMineEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:text="Aucune annonce pour l'instant." style="@style/Body" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:layout_marginBottom="10dp" android:text="Factures" style="@style/Caption" />
             <LinearLayout android:id="@+id/mkInvoiceRows" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
         </LinearLayout>
 
         <!-- ================= packages ================= -->
         <LinearLayout android:id="@+id/mkPackages" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <Button android:id="@+id/btnMkPackagesBack" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="← Mes annonces" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Forfaits et vitrine" />
-            <TextView android:id="@+id/mkPackagesMine" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
-            <TextView android:id="@+id/mkPackage5Line" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="14sp" android:text="" />
-            <Button android:id="@+id/btnMkBuyPackage5" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Acheter le forfait 5 publications" />
-            <TextView android:id="@+id/mkStorefrontLine" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="14sp" android:text="" />
-            <Button android:id="@+id/btnMkBuyStorefront" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Acheter la vitrine professionnelle" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:layout_marginTop="8dp"
-                android:text="Un forfait est un nombre de publications prépayées, pas un solde d'argent : une publication est décomptée seulement quand l'annonce est publiée ; une annonce refusée ne compte pas." />
+            <Button android:id="@+id/btnMkPackagesBack" android:text="Mes annonces" style="@style/GhostButton" android:drawableStart="@drawable/ic_back" android:drawableTint="@color/brand" android:drawablePadding="8dp" android:layout_marginBottom="6dp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="18dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Mes forfaits" style="@style/Caption" />
+                <TextView android:id="@+id/mkPackagesMine" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Body" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginTop="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Forfait 5 publications" style="@style/H2" />
+                <TextView android:id="@+id/mkPackage5Line" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" />
+                <Button android:id="@+id/btnMkBuyPackage5" android:text="Acheter le forfait" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginTop="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Vitrine professionnelle" style="@style/H2" />
+                <TextView android:id="@+id/mkStorefrontLine" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" />
+                <Button android:id="@+id/btnMkBuyStorefront" android:text="Acheter la vitrine" style="@style/SecondaryButton" android:layout_marginTop="14dp" />
+            </LinearLayout>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Un forfait est un nombre de publications prépayées, pas un solde d'argent : une publication est décomptée seulement quand l'annonce est publiée ; une annonce refusée ne compte pas." style="@style/Muted" />
         </LinearLayout>
 
-        <TextView android:id="@+id/mkFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+        <TextView android:id="@+id/mkFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="" style="@style/Caption" android:gravity="center" />
     </LinearLayout>
 </ScrollView>

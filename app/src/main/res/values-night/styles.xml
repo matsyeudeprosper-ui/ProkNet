@@ -9,5 +9,23 @@
         <item name="android:navigationBarColor">@color/nav_bg</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+        <!-- v0.19.1: every screen and every dialog wears the same system -->
+        <item name="android:alertDialogTheme">@style/ProkDialog</item>
+        <item name="android:editTextStyle">@style/Input</item>
+        <item name="android:checkboxStyle">@style/Check</item>
+        <item name="android:radioButtonStyle">@style/Radio</item>
     </style>
+
+    <style name="ProkDialog" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text_muted</item>
+        <item name="android:editTextStyle">@style/Input</item>
+    </style>
+
+    <!-- inputs and choices -->
+    <style name="Input" parent="android:Widget.Material.EditText"><item name="android:background">@drawable/bg_input</item><item name="android:paddingStart">16dp</item><item name="android:paddingEnd">16dp</item><item name="android:paddingTop">14dp</item><item name="android:paddingBottom">14dp</item><item name="android:textSize">15sp</item><item name="android:textColor">@color/text</item><item name="android:textColorHint">@color/text_muted</item><item name="android:minHeight">52dp</item></style>
+    <style name="Check" parent="android:Widget.Material.CompoundButton.CheckBox"><item name="android:textSize">14sp</item><item name="android:textColor">@color/text</item><item name="android:paddingStart">8dp</item><item name="android:lineSpacingExtra">2dp</item></style>
+    <style name="Radio" parent="android:Widget.Material.CompoundButton.RadioButton"><item name="android:textSize">15sp</item><item name="android:textColor">@color/text</item><item name="android:paddingStart">8dp</item><item name="android:paddingTop">8dp</item><item name="android:paddingBottom">8dp</item></style>
 </resources>

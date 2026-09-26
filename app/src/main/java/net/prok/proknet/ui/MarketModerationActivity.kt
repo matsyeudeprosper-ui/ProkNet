@@ -3,6 +3,7 @@ package net.prok.proknet.ui
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -32,6 +33,7 @@ class MarketModerationActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_market_moderation)
+        Prok.header(this, "Modération", "Prok Market · relecture, signalements, factures")
         findViewById<Button>(R.id.btnMmRefresh).setOnClickListener { load() }
         findViewById<Button>(R.id.btnMmMatch).setOnClickListener { matchDialog() }
     }
@@ -52,73 +54,75 @@ class MarketModerationActivity : Activity() {
         text(R.id.mmSummary, if (queue == null) "File de relecture injoignable ou refusée : " + qErr.ifEmpty { "identité non opérateur" }
             else queue.size.toString() + " annonce(s) à relire · " + (reports?.let { LedgerView.objects(it, "reports").size } ?: 0) + " signalement(s)")
         val qb = findViewById<LinearLayout>(R.id.mmQueue); qb.removeAllViews()
-        if (queue.isNullOrEmpty()) qb.addView(TextView(this).apply { textSize = 13f; text = "rien à relire" })
-        else for (l in queue) qb.addView(listingRow(l, now))
+        if (queue.isNullOrEmpty()) qb.addView(Prok.empty(this, "Rien à relire."))
+        else for (l in queue) qb.addView(listingRow(l))
         val rb = findViewById<LinearLayout>(R.id.mmReports); rb.removeAllViews()
         val rs = reports?.let { LedgerView.objects(it, "reports") }.orEmpty()
-        if (rs.isEmpty()) rb.addView(TextView(this).apply { textSize = 13f; text = "aucun signalement" })
+        if (rs.isEmpty()) rb.addView(Prok.empty(this, "Aucun signalement."))
         else for (r in rs) rb.addView(reportRow(r))
         val ib = findViewById<LinearLayout>(R.id.mmInvoices); ib.removeAllViews()
-        if (invoices == null) ib.addView(TextView(this).apply { textSize = 13f; text = "Trésorerie : " + tErr.ifEmpty { "identité non trésorerie" } })
-        else if (invoices.isEmpty()) ib.addView(TextView(this).apply { textSize = 13f; text = "aucune facture ouverte" })
+        if (invoices == null) ib.addView(Prok.empty(this, "Trésorerie : " + tErr.ifEmpty { "identité non trésorerie" }))
+        else if (invoices.isEmpty()) ib.addView(Prok.empty(this, "Aucune facture ouverte."))
         else for (i in invoices) ib.addView(invoiceRow(i, now))
     }
 
-    private fun listingRow(l: MarketView.Listing, now: Long): LinearLayout {
-        val box = column()
-        box.addView(TextView(this).apply {
-            textSize = 15f
-            text = l.rowTitle + " · " + l.priceText + " · " + MarketView.categoryName(l.category) + " · " + MarketView.conditionName(l.condition) +
-                "\n" + l.description.take(300) + (if (l.description.length > 300) "…" else "") +
-                "\nVendeur prok-" + l.sellerId.take(8) + (if (l.sellerVerified) " (téléphone vérifié)" else " (non vérifié)") + " · " + l.sellerPublished + " publiée(s)" +
-                " · " + l.neighbourhood + " · photos " + l.photoUrls.size + " · état " + l.stateText +
-                (if (l.reviewNote.isNotEmpty()) "\nNote : " + l.reviewNote else "") + (if (l.paidBy.isNotEmpty()) "\nPayé par : " + l.paidBy else "")
-        })
-        val b = row()
-        b.addView(Button(this).apply { text = "Publier"; setOnClickListener { noteDialog("Publier « " + l.title + " »") { n -> run { market.review(l.id, true, n) } } } })
-        b.addView(Button(this).apply { text = "Refuser"; setOnClickListener { noteDialog("Motif du refus (visible par le vendeur)") { n -> run { market.review(l.id, false, n) } } } })
-        b.addView(Button(this).apply { text = "Bloquer vendeur"; setOnClickListener { confirm("Bloquer prok-" + l.sellerId.take(8) + " ? Ses annonces ne seront plus publiées.") { run { market.blockSeller(l.sellerId, true) } } } })
-        box.addView(b); return box
+    private fun listingRow(l: MarketView.Listing): View {
+        val c = this
+        val card = Prok.card(c)
+        card.addView(Prok.titleRow(c, l.rowTitle, l.stateText, Prok.Tone.WARN))
+        card.addView(Prok.stat(c, l.priceText))
+        card.addView(Prok.muted(c, MarketView.categoryName(l.category) + " · " + MarketView.conditionName(l.condition) + " · " + l.neighbourhood + " · " + l.photoUrls.size + " photo(s)", 2))
+        card.addView(Prok.body(c, l.description.take(300) + (if (l.description.length > 300) "…" else ""), 10))
+        card.addView(Prok.muted(c, "Vendeur prok-" + l.sellerId.take(8) + (if (l.sellerVerified) " · téléphone vérifié" else " · non vérifié") + " · " + l.sellerPublished + " publiée(s)" +
+            (if (l.paidBy.isNotEmpty()) " · payé par " + l.paidBy else "") + (if (l.reviewNote.isNotEmpty()) "\nNote : " + l.reviewNote else ""), 8))
+        card.addView(Prok.actions(c,
+            Prok.primary(c, "Publier") { noteDialog("Publier « " + l.title + " »") { n -> run { market.review(l.id, true, n) } } },
+            Prok.secondary(c, "Refuser") { noteDialog("Motif du refus (visible par le vendeur)") { n -> run { market.review(l.id, false, n) } } },
+            Prok.ghost(c, "Bloquer le vendeur", danger = true) { confirm("Bloquer prok-" + l.sellerId.take(8) + " ? Ses annonces ne seront plus publiées.") { run { market.blockSeller(l.sellerId, true) } } }))
+        return card
     }
 
-    private fun reportRow(r: String): LinearLayout {
+    private fun reportRow(r: String): View {
+        val c = this
         val id = BrainPayload.field(r, "id")
-        val box = column()
-        box.addView(TextView(this).apply {
-            textSize = 15f
-            text = BrainPayload.field(r, "kind") + (BrainPayload.field(r, "listing_id").takeIf { it.isNotEmpty() }?.let { " · annonce " + it.take(8) } ?: "") +
-                (BrainPayload.field(r, "user_id").takeIf { it.isNotEmpty() }?.let { " · personne prok-" + it.take(8) } ?: "") +
-                " · par prok-" + BrainPayload.field(r, "reporter").take(8) + "\n" + BrainPayload.field(r, "text")
-        })
-        val b = row()
-        b.addView(Button(this).apply { text = "Rétablir"; setOnClickListener { run { market.resolveReport(id, "restore") } } })
-        b.addView(Button(this).apply { text = "Retirer l'annonce"; setOnClickListener { confirm("Retirer définitivement l'annonce signalée ?") { run { market.resolveReport(id, "reject") } } } })
-        b.addView(Button(this).apply { text = "Écarter"; setOnClickListener { run { market.resolveReport(id, "dismiss") } } })
-        box.addView(b); return box
+        val target = BrainPayload.field(r, "listing_id").takeIf { it.isNotEmpty() }?.let { "annonce " + it.take(8) }
+            ?: BrainPayload.field(r, "user_id").takeIf { it.isNotEmpty() }?.let { "personne prok-" + it.take(8) } ?: ""
+        val card = Prok.card(c)
+        card.addView(Prok.titleRow(c, "Signalement · " + BrainPayload.field(r, "kind"), target, Prok.Tone.WARN))
+        card.addView(Prok.body(c, BrainPayload.field(r, "text").ifEmpty { "(sans texte)" }))
+        card.addView(Prok.muted(c, "Par prok-" + BrainPayload.field(r, "reporter").take(8)))
+        card.addView(Prok.actions(c,
+            Prok.primary(c, "Rétablir") { run { market.resolveReport(id, "restore") } },
+            Prok.secondary(c, "Retirer l'annonce") { confirm("Retirer définitivement l'annonce signalée ?") { run { market.resolveReport(id, "reject") } } },
+            Prok.ghost(c, "Écarter") { run { market.resolveReport(id, "dismiss") } }))
+        return card
     }
 
-    private fun invoiceRow(i: MarketView.Invoice, now: Long): LinearLayout {
-        val box = column()
-        box.addView(TextView(this).apply {
-            textSize = 15f
-            text = "Réf. " + i.reference + " · " + MarketView.fcfa(i.amountCentimes) + " · " + i.service + (if (i.rail.isNotEmpty() && i.rail != "ANY") " · " + i.rail else "") +
-                " · " + i.text + " · expire dans " + i.hoursLeft(now) + " h"
-        })
-        val b = row()
-        b.addView(Button(this).apply { text = "Confirmer paiement"; setOnClickListener { confirmDialog(i) } })
-        b.addView(Button(this).apply { text = "Rembourser"; setOnClickListener { noteDialog("Preuve du remboursement manuel (référence opérateur)") { n -> run { market.treasuryRefund(i.id, n) } } } })
-        box.addView(b); return box
+    private fun invoiceRow(i: MarketView.Invoice, now: Long): View {
+        val c = this
+        val card = Prok.card(c)
+        card.addView(Prok.titleRow(c, "Réf. " + i.reference, i.text, Prok.Tone.BRAND))
+        card.addView(Prok.stat(c, MarketView.fcfa(i.amountCentimes)))
+        card.addView(Prok.muted(c, i.service + (if (i.rail.isNotEmpty() && i.rail != "ANY") " · " + i.rail else "") + " · expire dans " + i.hoursLeft(now) + " h", 2))
+        card.addView(Prok.actions(c,
+            Prok.primary(c, "Confirmer le paiement") { confirmDialog(i) },
+            Prok.ghost(c, "Rembourser") { noteDialog("Preuve du remboursement manuel (référence opérateur)") { n -> run { market.treasuryRefund(i.id, n) } } }))
+        return card
+    }
+
+    private fun form(vararg fields: View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; val p = Prok.dp(context, 20); setPadding(p, Prok.dp(context, 8), p, 0)
+        for (f in fields) addView(f, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = Prok.dp(context, 8) })
     }
 
     private fun confirmDialog(i: MarketView.Invoice) {
-        val txn = EditText(this).apply { hint = "Identifiant de transaction opérateur (obligatoire, unique)" }
+        val txn = EditText(this).apply { hint = "Identifiant de transaction opérateur (unique)" }
         val amount = EditText(this).apply { hint = "Montant vu (CFA)"; setText((i.amountCentimes / 100).toString()) }
         val rail = EditText(this).apply { hint = "MTN ou AIRTEL"; setText(if (i.rail == "ANY") "" else i.rail) }
         val evidence = EditText(this).apply { hint = "Preuve (ligne du relevé, capture)" }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(txn); addView(amount); addView(rail); addView(evidence) }
         AlertDialog.Builder(this).setTitle("Confirmer la réf. " + i.reference)
             .setMessage("Action MANUELLE : vous avez vu ce transfert dans l'application MoMo / Airtel Money. Le Brain refuse si le montant diffère ou si l'identifiant a déjà payé quelque chose.")
-            .setView(col)
+            .setView(form(txn, amount, rail, evidence))
             .setPositiveButton("Confirmer") { _, _ ->
                 val cfa = amount.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L
                 run { market.treasuryConfirm(i.id, txn.text.toString().trim(), cfa * 100, "", rail.text.toString().trim().uppercase(), evidence.text.toString().trim()) }
@@ -129,10 +133,9 @@ class MarketModerationActivity : Activity() {
         val msg = EditText(this).apply { hint = "Collez le SMS / la notification de l'opérateur"; minLines = 3 }
         val txn = EditText(this).apply { hint = "Identifiant de transaction (si absent du message)" }
         val rail = EditText(this).apply { hint = "MTN ou AIRTEL" }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(msg); addView(txn); addView(rail) }
         AlertDialog.Builder(this).setTitle("Rapprocher un message")
             .setMessage("Le Brain cherche une référence et un montant exact. Sans les deux, la ligne va en revue ; rien n'est attribué sur un simple numéro.")
-            .setView(col)
+            .setView(form(msg, txn, rail))
             .setPositiveButton("Analyser") { _, _ ->
                 run { market.treasuryMatch(msg.text.toString(), 0, txn.text.toString().trim(), rail.text.toString().trim().uppercase()) }
             }.setNegativeButton("Annuler", null).show()
@@ -140,7 +143,7 @@ class MarketModerationActivity : Activity() {
 
     private fun noteDialog(title: String, then: (String) -> Unit) {
         val e = EditText(this).apply { hint = "Note (journalisée)" }
-        AlertDialog.Builder(this).setTitle(title).setView(e).setPositiveButton("Confirmer") { _, _ -> then(e.text.toString().trim()) }.setNegativeButton("Annuler", null).show()
+        AlertDialog.Builder(this).setTitle(title).setView(form(e)).setPositiveButton("Confirmer") { _, _ -> then(e.text.toString().trim()) }.setNegativeButton("Annuler", null).show()
     }
 
     private fun confirm(message: String, then: () -> Unit) {
@@ -157,7 +160,5 @@ class MarketModerationActivity : Activity() {
         }
     }
 
-    private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 12, 0, 12) }
-    private fun row() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     private fun text(id: Int, s: String) { findViewById<TextView>(id).text = s }
 }

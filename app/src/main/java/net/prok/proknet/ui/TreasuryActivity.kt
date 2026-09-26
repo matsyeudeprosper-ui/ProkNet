@@ -41,6 +41,7 @@ class TreasuryActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_treasury)
+        findViewById<android.view.View>(R.id.hdBack).setOnClickListener { finish() }
         findViewById<Button>(R.id.btnTrRefresh).setOnClickListener { load() }
         findViewById<Button>(R.id.btnTrBalance).setOnClickListener { balanceDialog() }
         findViewById<Button>(R.id.btnTrTestCredit).setOnClickListener { testCreditDialog() }
@@ -91,21 +92,15 @@ class TreasuryActivity : Activity() {
     }
 
     private fun rowView(r: LedgerView.QueueRow, now: Long): LinearLayout {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 18, 0, 18) }
-        val head = TextView(this).apply {
-            textSize = 15f
-            text = (if (r.kind == "REFUND") "REMBOURSEMENT " else "") + Market.cfa(r.amountCentimes) + " · " + railName(r.rail) + " · " + Msisdn.pretty(r.msisdn).ifEmpty { r.msisdn } +
-                "\n" + LedgerView.statusText(r.state) + (if (r.amber) " · à vérifier dans l'historique MoMo" else "") +
-                " · " + r.ageLine(now) + " · prok-" + r.payeeId.take(8) + (if (r.memo.isNotEmpty()) "\n" + r.memo else "")
-        }
-        box.addView(head)
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(Button(this).apply { text = "Copier n°"; setOnClickListener { copy(r.msisdn) } })
-        for (a in r.actions) buttons.addView(Button(this).apply {
-            text = LedgerView.actionLabel(a)
-            setOnClickListener { act(r, a) }
-        })
-        box.addView(buttons)
+        val tone = when (r.state) { "PAID" -> Prok.Tone.OK; "SENT" -> Prok.Tone.BRAND; "NEEDS_ATTENTION" -> Prok.Tone.DANGER; "APPROVED" -> Prok.Tone.WARN; else -> Prok.Tone.MUTED }
+        val box = Prok.card(this)
+        box.addView(Prok.titleRow(this, (if (r.kind == "REFUND") "Remboursement " else "") + Market.cfa(r.amountCentimes), LedgerView.statusText(r.state), tone))
+        box.addView(Prok.body(this, railName(r.rail) + " · " + Msisdn.pretty(r.msisdn).ifEmpty { r.msisdn }, 4))
+        box.addView(Prok.muted(this, r.ageLine(now) + " · prok-" + r.payeeId.take(8) + (if (r.amber) "\nÀ vérifier dans l'historique MoMo" else "") + (if (r.memo.isNotEmpty()) "\n" + r.memo else "")))
+        val buttons = ArrayList<android.view.View>()
+        for ((i, a) in r.actions.withIndex()) buttons += (if (i == 0) Prok.primary(this, LedgerView.actionLabel(a)) { act(r, a) } else Prok.secondary(this, LedgerView.actionLabel(a)) { act(r, a) })
+        buttons += Prok.ghost(this, "Copier le n°") { copy(r.msisdn) }
+        box.addView(Prok.actions(this, *buttons.toTypedArray()))
         return box
     }
 
@@ -124,33 +119,28 @@ class TreasuryActivity : Activity() {
     }
 
     private fun reviewView(item: Map<String, String>): LinearLayout {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 12, 0, 12) }
         val amount = item["amount"]?.toLongOrNull() ?: 0L
         val claimed = item["customer_id"].orEmpty()
-        box.addView(TextView(this).apply {
-            textSize = 14f
-            text = "Recharge " + Market.cfa(amount) + " · " + railName(item["rail"].orEmpty()) + " · " + item["state"] +
-                (if (claimed.isNotEmpty()) "\nréclamée par prok-" + claimed.take(8) + " · réf. " + item["claim_ref"] else "\nnon attribuée") +
-                (if (item["stale"] == "true") " · plus de 7 jours" else "")
-        })
-        if (claimed.isNotEmpty()) {
-            val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            buttons.addView(Button(this).apply { text = "Créditer"; setOnClickListener { run { ledger.review(item["topup_id"].orEmpty(), true, "") } } })
-            buttons.addView(Button(this).apply { text = "Rejeter"; setOnClickListener { ask("Rejeter", "Motif") { m -> run { ledger.review(item["topup_id"].orEmpty(), false, m) } } } })
-            box.addView(buttons)
-        }
+        val box = Prok.card(this)
+        box.addView(Prok.titleRow(this, "Recharge " + Market.cfa(amount), item["state"].orEmpty(), if (claimed.isNotEmpty()) Prok.Tone.WARN else Prok.Tone.MUTED))
+        box.addView(Prok.muted(this, railName(item["rail"].orEmpty()) +
+            (if (claimed.isNotEmpty()) " · réclamée par prok-" + claimed.take(8) + " · réf. " + item["claim_ref"] else " · non attribuée") +
+            (if (item["stale"] == "true") " · plus de 7 jours" else "")))
+        if (claimed.isNotEmpty()) box.addView(Prok.actions(this,
+            Prok.primary(this, "Créditer") { run { ledger.review(item["topup_id"].orEmpty(), true, "") } },
+            Prok.secondary(this, "Rejeter") { ask("Rejeter", "Motif") { m -> run { ledger.review(item["topup_id"].orEmpty(), false, m) } } }))
         return box
     }
 
     /** A message this phone could not read confidently: the text is here, on Prok's phone, and nowhere else. */
     private fun localReviewView(p: TreasuryWatch.Pending): LinearLayout {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 12, 0, 12) }
-        box.addView(TextView(this).apply { textSize = 14f; text = "Message illisible (" + p.reason + ") :\n" + p.text.take(240) })
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(Button(this).apply { text = "Reçu de…"; setOnClickListener { manualObserve(p, credit = true) } })
-        buttons.addView(Button(this).apply { text = "Envoyé à…"; setOnClickListener { manualObserve(p, credit = false) } })
-        buttons.addView(Button(this).apply { text = "Ignorer"; setOnClickListener { TreasuryWatch.dismiss(p.smsHash); load() } })
-        box.addView(buttons)
+        val box = Prok.card(this)
+        box.addView(Prok.titleRow(this, "Message illisible", p.reason, Prok.Tone.WARN))
+        box.addView(Prok.body(this, p.text.take(240)))
+        box.addView(Prok.actions(this,
+            Prok.primary(this, "Reçu de…") { manualObserve(p, credit = true) },
+            Prok.secondary(this, "Envoyé à…") { manualObserve(p, credit = false) },
+            Prok.ghost(this, "Ignorer") { TreasuryWatch.dismiss(p.smsHash); load() }))
         return box
     }
 
@@ -158,8 +148,7 @@ class TreasuryActivity : Activity() {
         val number = EditText(this).apply { hint = "Numéro (9 chiffres)"; inputType = android.text.InputType.TYPE_CLASS_PHONE }
         val amount = EditText(this).apply { hint = "Montant en CFA"; inputType = android.text.InputType.TYPE_CLASS_NUMBER }
         val rail = EditText(this).apply { hint = "MTN ou AIRTEL"; setText(p.railGuess) }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(rail); addView(number); addView(amount) }
-        AlertDialog.Builder(this).setTitle(if (credit) "Argent reçu" else "Argent envoyé").setMessage(p.text.take(200)).setView(col)
+                AlertDialog.Builder(this).setTitle(if (credit) "Argent reçu" else "Argent envoyé").setMessage(p.text.take(200)).setView(form(rail, number, amount))
             .setPositiveButton("Enregistrer") { _, _ ->
                 val cfa = amount.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L
                 val h = Msisdn.hash(number.text.toString())
@@ -176,8 +165,7 @@ class TreasuryActivity : Activity() {
     private fun balanceDialog() {
         val mtn = EditText(this).apply { hint = "Solde MTN MoMo (CFA), tel qu'affiché par *xxx#"; inputType = android.text.InputType.TYPE_CLASS_NUMBER }
         val airtel = EditText(this).apply { hint = "Solde Airtel Money (CFA)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(mtn); addView(airtel) }
-        AlertDialog.Builder(this).setTitle("Solde du jour").setMessage("Consultez le solde dans chaque application ou par USSD, puis tapez-le ici. Le Brain compare avec ce que le registre attend.").setView(col)
+                AlertDialog.Builder(this).setTitle("Solde du jour").setMessage("Consultez le solde dans chaque application ou par USSD, puis tapez-le ici. Le Brain compare avec ce que le registre attend.").setView(form(mtn, airtel))
             .setPositiveButton("Enregistrer") { _, _ ->
                 val m = mtn.text.toString().filter { it.isDigit() }.toLongOrNull()
                 val a = airtel.text.toString().filter { it.isDigit() }.toLongOrNull()
@@ -195,8 +183,7 @@ class TreasuryActivity : Activity() {
         val from = EditText(this).apply { hint = "Ancienne identité (id complet)" }
         val to = EditText(this).apply { hint = "Nouvelle identité (id complet)" }
         val memo = EditText(this).apply { hint = "Comment la personne a prouvé que c'est elle" }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(from); addView(to); addView(memo) }
-        AlertDialog.Builder(this).setTitle("Transférer une identité").setMessage("Téléphone réinstallé ou perdu : les soldes de l'ancienne identité passent à la nouvelle. Refusé tant que l'ancienne a une session ou un retrait en cours. Tout est journalisé.").setView(col)
+                AlertDialog.Builder(this).setTitle("Transférer une identité").setMessage("Téléphone réinstallé ou perdu : les soldes de l'ancienne identité passent à la nouvelle. Refusé tant que l'ancienne a une session ou un retrait en cours. Tout est journalisé.").setView(form(from, to, memo))
             .setPositiveButton("Transférer") { _, _ -> run { ledger.moveIdentity(from.text.toString().trim(), to.text.toString().trim(), memo.text.toString().trim()) } }
             .setNegativeButton("Annuler", null).show()
     }
@@ -204,8 +191,7 @@ class TreasuryActivity : Activity() {
     private fun testCreditDialog() {
         val target = EditText(this).apply { hint = "Identité de test (id complet, 32 caractères hex)" }
         val amount = EditText(this).apply { hint = "Montant en CFA"; inputType = android.text.InputType.TYPE_CLASS_NUMBER }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(target); addView(amount) }
-        AlertDialog.Builder(this).setTitle("Crédit test (pilote)").setMessage("Uniquement pour une identité listée comme test sur le Brain. Ce n'est pas de l'argent : c'est un crédit pour exercer les sessions et les retraits.").setView(col)
+                AlertDialog.Builder(this).setTitle("Crédit test (pilote)").setMessage("Uniquement pour une identité listée comme test sur le Brain. Ce n'est pas de l'argent : c'est un crédit pour exercer les sessions et les retraits.").setView(form(target, amount))
             .setPositiveButton("Poster") { _, _ ->
                 val cfa = amount.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L
                 run { ledger.testCredit(target.text.toString().trim(), cfa * 100, "treasury screen") }
@@ -213,6 +199,12 @@ class TreasuryActivity : Activity() {
     }
 
     // ---- small helpers ---------------------------------------------------------------------------
+
+    /** Dialog fields with the screen's own margins. */
+    private fun form(vararg fields: android.view.View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; val p = Prok.dp(context, 20); setPadding(p, Prok.dp(context, 8), p, 0)
+        for (f in fields) addView(f, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = Prok.dp(context, 8) })
+    }
 
     private fun run(block: () -> net.prok.proknet.node.LedgerSync.Outcome) {
         io.execute {
@@ -228,7 +220,7 @@ class TreasuryActivity : Activity() {
 
     private fun ask(title: String, hint: String, onText: (String) -> Unit) {
         val input = EditText(this).apply { this.hint = hint }
-        AlertDialog.Builder(this).setTitle(title).setView(input)
+        AlertDialog.Builder(this).setTitle(title).setView(form(input))
             .setPositiveButton("OK") { _, _ -> onText(input.text.toString().trim()) }.setNegativeButton("Annuler", null).show()
     }
 

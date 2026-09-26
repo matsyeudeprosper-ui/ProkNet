@@ -3,8 +3,6 @@ package net.prok.proknet.ui
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -29,7 +27,7 @@ import net.prok.proknet.node.JobsSync
 class RelayOffersActivity : Activity() {
 
     private val io = Executors.newSingleThreadExecutor()
-    private val main = Handler(Looper.getMainLooper())
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val node by lazy { ProkNetApp.node(this) }
     private val jobs by lazy { JobsSync(node.identity) { node.brainUrlProvider?.invoke() ?: "" } }
     private var probing: Runnable? = null
@@ -37,6 +35,7 @@ class RelayOffersActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_relay_offers)
+        Prok.header(this, "Offres relais", "Payé sur vérification, jamais pour être en ligne")
         findViewById<Button>(R.id.btnRoRefresh).setOnClickListener { load() }
         findViewById<Button>(R.id.btnRoSettings).setOnClickListener { settingsDialog() }
         findViewById<Button>(R.id.btnRoStop).setOnClickListener { stopAvailability() }
@@ -71,30 +70,39 @@ class RelayOffersActivity : Activity() {
         }
     }
 
+    private fun tone(o: RelayOffersView.Offer): Prok.Tone = when (o.state) {
+        "COMPLETED" -> Prok.Tone.OK
+        "IN_PROGRESS", "ACCEPTED" -> Prok.Tone.BRAND
+        "OFFERED" -> Prok.Tone.WARN
+        "FAILED" -> Prok.Tone.DANGER
+        else -> Prok.Tone.MUTED
+    }
+
     private fun offerView(o: RelayOffersView.Offer): LinearLayout {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 14, 0, 14) }
+        val c = this
+        val card = Prok.card(c)
+        card.addView(Prok.titleRow(c, o.title, o.text, tone(o)))
         val terms = when (o.kind) {
-            "STAY" -> Market.cfa(o.amountCentimes) + " par bloc vérifié de " + o.blockMinutes + " min, max " + o.blocksPerDay + " blocs/jour · " + o.probesRequired + " sondes réussies requises"
-            "MOVE" -> Market.cfa(o.amountCentimes) + " fixes à l'arrivée + gains sur les données livrées · zone de rendez-vous " + o.rendezvousCell
-            else -> "part relais de l'offre signée, payée après règlement de la session"
+            "STAY" -> Market.cfa(o.amountCentimes) + " par bloc vérifié de " + o.blockMinutes + " min · max " + o.blocksPerDay + " blocs/jour · " + o.probesRequired + " sondes réussies requises"
+            "MOVE" -> Market.cfa(o.amountCentimes) + " fixes à l'arrivée + gains sur les données livrées · rendez-vous " + o.rendezvousCell
+            else -> "Part relais de l'offre signée, payée après règlement de la session"
         }
-        box.addView(TextView(this).apply {
-            textSize = 15f
-            text = RelayOffersView.kindWord(o.kind) + " · " + o.zone + "\n" + terms + "\n" + o.text +
-                (if (o.blockRunning) " · sondes ok " + o.probesOk + " / échecs " + o.probesFailed else "") +
-                (if (o.failReason.isNotEmpty()) " · " + o.failReason else "") +
-                "\nBatterie ≥ " + o.batteryFloorPct + " % · fenêtre " + RelayOffersView.Settings.hhmm(o.windowStartMin) + "–" + RelayOffersView.Settings.hhmm(o.windowEndMin)
-        })
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (o.canAccept) buttons.addView(Button(this).apply { text = "Accepter"; setOnClickListener { run { jobs.accept(o.id) } } })
-        if (o.canDecline) buttons.addView(Button(this).apply { text = "Refuser"; setOnClickListener { run { jobs.decline(o.id) } } })
-        if (o.kind == "STAY" && o.state == "ACCEPTED") buttons.addView(Button(this).apply { text = "Démarrer le bloc"; setOnClickListener { run { jobs.startBlock(o.id) } } })
-        if (o.kind == "MOVE" && o.state == "ACCEPTED") buttons.addView(Button(this).apply { text = "Je pars"; setOnClickListener { run { jobs.moveDeparted(o.id) } } })
-        if (o.kind == "MOVE" && o.state == "IN_PROGRESS" && o.arrivedAt == 0L) buttons.addView(Button(this).apply { text = "Arrivé"; setOnClickListener { run { jobs.moveArrived(o.id) } } })
-        if (o.kind == "MOVE" && o.arrivedAt > 0L && o.readyAt == 0L) buttons.addView(Button(this).apply { text = "Prêt"; setOnClickListener { run { jobs.moveReady(o.id) } } })
-        if (o.open && o.kind != "CARRY") buttons.addView(Button(this).apply { text = "Annuler"; setOnClickListener { run { jobs.cancel(o.id) } } })
-        box.addView(buttons)
-        return box
+        card.addView(Prok.body(c, terms))
+        val details = ArrayList<String>()
+        details += "Batterie ≥ " + o.batteryFloorPct + " % · fenêtre " + RelayOffersView.Settings.hhmm(o.windowStartMin) + "–" + RelayOffersView.Settings.hhmm(o.windowEndMin)
+        if (o.blockRunning) details += "Sondes réussies " + o.probesOk + " · échecs " + o.probesFailed
+        if (o.failReason.isNotEmpty()) details += o.failReason
+        card.addView(Prok.muted(c, details.joinToString("\n")))
+        val buttons = ArrayList<android.view.View>()
+        if (o.canAccept) buttons += Prok.primary(c, "Accepter") { run { jobs.accept(o.id) } }
+        if (o.canDecline) buttons += Prok.secondary(c, "Refuser") { run { jobs.decline(o.id) } }
+        if (o.canStartBlock) buttons += Prok.primary(c, "Démarrer le bloc") { run { jobs.startBlock(o.id) } }
+        if (o.canDepart) buttons += Prok.primary(c, "Je pars") { run { jobs.moveDeparted(o.id) } }
+        if (o.canArrive) buttons += Prok.primary(c, "Arrivé") { run { jobs.moveArrived(o.id) } }
+        if (o.canSayReady) buttons += Prok.primary(c, "Prêt") { run { jobs.moveReady(o.id) } }
+        if (o.open && o.kind != "CARRY" && !o.canDecline) buttons += Prok.ghost(c, "Annuler", danger = true) { run { jobs.cancel(o.id) } }
+        if (buttons.isNotEmpty()) card.addView(Prok.actions(c, *buttons.toTypedArray()))
+        return card
     }
 
     private fun settingsDialog() {
@@ -103,7 +111,7 @@ class RelayOffersActivity : Activity() {
         val bat = EditText(this).apply { hint = "Batterie minimum (%)"; setText(cur.batteryFloorPct.toString()) }
         val from = EditText(this).apply { hint = "Disponible de (HH:MM)"; setText(RelayOffersView.Settings.hhmm(cur.windowStartMin)) }
         val to = EditText(this).apply { hint = "à (HH:MM)"; setText(RelayOffersView.Settings.hhmm(cur.windowEndMin)) }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(min); addView(bat); addView(from); addView(to) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; val p = Prok.dp(context, 20); setPadding(p, Prok.dp(context, 8), p, 0); addView(min); addView(bat); addView(from); addView(to) }
         AlertDialog.Builder(this).setTitle("Mes réglages").setMessage("Vous ne fixez pas de tarif : ProkNet propose, vous acceptez ou refusez. Ces réglages filtrent les offres qu'on vous montre.").setView(col)
             .setPositiveButton("Enregistrer") { _, _ ->
                 val s = RelayOffersView.Settings((min.text.toString().filter { it.isDigit() }.toLongOrNull() ?: 0L) * 100,

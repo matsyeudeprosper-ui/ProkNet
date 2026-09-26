@@ -69,6 +69,8 @@ class PlacesActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_places)
+        findViewById<View>(R.id.hdBack).setOnClickListener { finish() }
+        if (intent.getStringExtra("filter") == "working_now") filters.add(PlacesView.Filter.WORKING_NOW)
         findViewById<Button>(R.id.btnPlRefresh).setOnClickListener { refresh() }
         findViewById<Button>(R.id.btnPlContribute).setOnClickListener { contributeDialog() }
         findViewById<Button>(R.id.btnPlLocation).setOnClickListener { requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), REQ_LOCATION) }
@@ -76,13 +78,6 @@ class PlacesActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: Editable?) { query = s?.toString() ?: ""; render() }
-        })
-        val row = findViewById<LinearLayout>(R.id.plFilters)
-        for (f in PlacesView.Filter.values()) row.addView(Button(this).apply {
-            text = PlacesView.filterLabel(f); tag = f
-            // inside apply{} on a Button, a bare `filters` is TextView.getFilters(); name the activity's set
-            val chosen = this@PlacesActivity.filters
-            setOnClickListener { if (f in chosen) chosen.remove(f) else chosen.add(f); render() }
         })
         loadCache()
     }
@@ -145,12 +140,15 @@ class PlacesActivity : Activity() {
         val now = System.currentTimeMillis()
         val idx = index
         val hasLoc = here != null
-        text(R.id.plLocationNote, if (hasLocationPermission()) (if (hasLoc) "" else "Position pas encore connue : distances indisponibles pour l'instant.") else PlacesView.NO_LOCATION_NOTE)
+        val locNote = if (hasLocationPermission()) (if (hasLoc) "" else "Position pas encore connue : distances indisponibles pour l'instant.") else PlacesView.NO_LOCATION_NOTE
+        text(R.id.plLocationNote, locNote)
+        show(R.id.plLocationCard, locNote.isNotEmpty())
         show(R.id.btnPlLocation, !hasLocationPermission())
+        val filterRow = findViewById<LinearLayout>(R.id.plFilters)
+        filterRow.removeAllViews()
         for (f in PlacesView.Filter.values()) {
-            val b = findViewById<LinearLayout>(R.id.plFilters).findViewWithTag<Button>(f) ?: continue
-            b.isEnabled = PlacesView.filterAvailable(f, hasLoc)
-            b.text = (if (f in filters) "✓ " else "") + PlacesView.filterLabel(f)
+            val on = f in filters
+            filterRow.addView(Prok.chip(this, PlacesView.filterLabel(f), on, PlacesView.filterAvailable(f, hasLoc)) { if (on) filters.remove(f) else filters.add(f); render() })
         }
         if (idx == null) {
             text(R.id.plHeader, PlacesView.headerLine(sync.city, 0))
@@ -165,11 +163,8 @@ class PlacesActivity : Activity() {
         text(R.id.plRefreshed, PlacesView.refreshedText(refreshedAt, now))
         val chips = findViewById<LinearLayout>(R.id.plNeighbourhoods)
         chips.removeAllViews()
-        chips.addView(Button(this).apply { text = (if (neighbourhood.isEmpty()) "✓ " else "") + "Tous quartiers"; setOnClickListener { neighbourhood = ""; render() } })
-        for (n in idx.neighbourhoods) chips.addView(Button(this).apply {
-            text = (if (neighbourhood == n) "✓ " else "") + n
-            setOnClickListener { neighbourhood = if (neighbourhood == n) "" else n; render() }
-        })
+        chips.addView(Prok.chip(this, "Tous quartiers", neighbourhood.isEmpty()) { neighbourhood = ""; render() })
+        for (n in idx.neighbourhoods) chips.addView(Prok.chip(this, n, neighbourhood == n) { neighbourhood = if (neighbourhood == n) "" else n; render() })
         val cards = PlacesView.list(idx.venues, filters, neighbourhood, query, here, now)
         val box = findViewById<LinearLayout>(R.id.plCards)
         box.removeAllViews()
@@ -181,19 +176,20 @@ class PlacesActivity : Activity() {
     private fun cardView(c: PlacesView.Card, now: Long): LinearLayout {
         val pos = here
         val route = routeTo(c)
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 18, 0, 18) }
-        box.addView(TextView(this).apply { textSize = 16f; text = c.name + (if (c.neighbourhood.isNotEmpty()) " · " + c.neighbourhood else "") })
+        val tone = when (c.status) { "WORKING_NOW" -> Prok.Tone.OK; "RECENTLY_VERIFIED" -> Prok.Tone.BRAND; "OLDER_CHECK" -> Prok.Tone.WARN; "UNAVAILABLE" -> Prok.Tone.DANGER; else -> Prok.Tone.MUTED }
+        val box = Prok.card(this)
+        box.addView(Prok.titleRow(this, c.name, c.statusText, tone))
+        box.addView(Prok.muted(this, listOfNotNull(c.neighbourhood.takeIf { it.isNotEmpty() }, c.hoursLine(now)).joinToString(" · "), 2))
         val lines = ArrayList<String>()
-        lines += c.freshnessLine() + " · confiance " + c.confidence + " %"
         lines += c.accessText + (if (c.accessRule == "FREE_AFTER_SIGNIN" && c.signinPath.isNotEmpty()) " (" + c.signinPath + ")" else "")
-        lines += c.hoursLine(now)
+        lines += c.freshnessLine() + " · confiance " + c.confidence + " %"
         PlacesView.distanceLine(c, pos, route).takeIf { it.isNotEmpty() }?.let { lines += it + (if (route == null) " · " + PlacesView.directionLine(c, pos) else "") }
-        if (c.prokDeliverable) lines += "Livrable par Prok ici"
-        box.addView(TextView(this).apply { textSize = 13f; text = lines.joinToString("\n") })
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (pos != null && c.hasEntrance) buttons.addView(Button(this).apply { text = "M'y guider"; setOnClickListener { guide(c) } })
-        buttons.addView(Button(this).apply { text = "Signaler"; setOnClickListener { reportDialog(c) } })
-        box.addView(buttons)
+        box.addView(Prok.body(this, lines.joinToString("\n"), 10))
+        if (c.prokDeliverable) box.addView(Prok.pills(this, "Livrable par Prok ici" to Prok.Tone.BRAND))
+        val buttons = ArrayList<View>()
+        if (pos != null && c.hasEntrance) buttons += Prok.primary(this, "M'y guider") { guide(c) }
+        buttons += Prok.ghost(this, "Signaler") { reportDialog(c) }
+        box.addView(Prok.actions(this, *buttons.toTypedArray()))
         return box
     }
 
@@ -206,7 +202,7 @@ class PlacesActivity : Activity() {
     // ---- M'y guider ----------------------------------------------------------------------------
 
     private fun guide(c: PlacesView.Card) {
-        val view = TextView(this).apply { setPadding(40, 24, 40, 24); textSize = 15f }
+        val view = TextView(this).apply { val p = Prok.dp(context, 22); setPadding(p, Prok.dp(context, 12), p, 0); textSize = 15f; setTextColor(getColor(R.color.text)) }
         var arrivedChecked = false
         fun update() {
             val route = routeTo(c)
@@ -280,7 +276,7 @@ class PlacesActivity : Activity() {
     private fun contributeDialog() {
         val zone = coverage.zone()
         val wifi = coverage.connectedWifi()
-        val view = TextView(this).apply { setPadding(40, 24, 40, 24); textSize = 14f; text = "Vérification de l'offre scout…" }
+        val view = TextView(this).apply { val p = Prok.dp(context, 22); setPadding(p, Prok.dp(context, 12), p, 0); textSize = 14f; setTextColor(getColor(R.color.text)); text = "Vérification de l'offre scout…" }
         val body = StringBuilder()
         if (zone == CoverageModel.NO_ZONE) body.append("Zone inconnue : autorisez la position (500 m près) pour contribuer.\n\n")
         if (wifi == null) body.append("Aucun Wi-Fi connecté. Connectez-vous d'abord au réseau du lieu, puis revenez ici.\n\n")

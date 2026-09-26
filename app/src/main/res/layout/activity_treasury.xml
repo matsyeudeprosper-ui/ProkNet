@@ -1,41 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 
-        <!-- the honest first line: N retraits en attente = N envois manuels -->
-        <TextView android:id="@+id/trSentence" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="18sp" android:textStyle="bold" android:text="…" />
-        <TextView android:id="@+id/trNote" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" android:textSize="13sp"
-            android:text="Le registre ne peut pas envoyer d'argent. Chaque retrait ci-dessous est un envoi Mobile Money à faire à la main, puis à marquer ici." />
-        <TextView android:id="@+id/trSummary" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="8dp" android:textSize="13sp" android:text="" />
-
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-            <Button android:id="@+id/btnTrRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
-            <Button android:id="@+id/btnTrBalance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Solde du jour" />
-            <Button android:id="@+id/btnTrTestCredit" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Crédit test" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <ImageView android:id="@+id/hdBack" android:layout_width="42dp" android:layout_height="42dp" android:src="@drawable/ic_back" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:clickable="true" android:focusable="true" android:contentDescription="Retour" />
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Trésorerie" style="@style/ScreenTitle" />
+                <TextView android:id="@+id/trNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Le registre ne peut pas envoyer d'argent : chaque retrait est un envoi à faire à la main." style="@style/Muted" />
+            </LinearLayout>
         </LinearLayout>
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
-            android:textStyle="bold" android:text="Retraits" />
+        <!-- the honest first line: N retraits en attente = N envois manuels -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="20dp" android:layout_marginBottom="12dp">
+            <TextView android:id="@+id/trSentence" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="…" style="@style/H2" />
+            <TextView android:id="@+id/trSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Muted" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="14dp">
+                <Button android:id="@+id/btnTrBalance" android:text="Solde du jour" style="@style/SmallPrimary" />
+                <Button android:id="@+id/btnTrTestCredit" android:text="Crédit test" style="@style/SmallSecondary" android:layout_marginStart="8dp" />
+                <Button android:id="@+id/btnTrRefresh" android:text="Actualiser" style="@style/GhostButton" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Retraits" style="@style/Caption" />
         <LinearLayout android:id="@+id/trRows" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:id="@+id/trEmpty" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="13sp" android:text="Aucun retrait en attente." />
+        <TextView android:id="@+id/trEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="12dp" android:text="Aucun retrait en attente." style="@style/Body" />
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
-            android:textStyle="bold" android:text="Messages à vérifier" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Messages à vérifier" style="@style/Caption" />
         <LinearLayout android:id="@+id/trReview" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:id="@+id/trReviewEmpty" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="13sp" android:text="Rien à vérifier." />
+        <TextView android:id="@+id/trReviewEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="12dp" android:text="Rien à vérifier." style="@style/Body" />
 
-        <TextView android:id="@+id/trFooter" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+        <TextView android:id="@+id/trFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Caption" android:gravity="center" />
     </LinearLayout>
 </ScrollView>

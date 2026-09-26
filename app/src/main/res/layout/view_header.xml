@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v0.19.1: the one header every secondary screen wears - a back circle, a title, one quiet line. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="18dp">
+    <ImageView android:id="@+id/hdBack" android:layout_width="42dp" android:layout_height="42dp" android:src="@drawable/ic_back" android:background="@drawable/bg_icon_circle" android:padding="10dp" android:tint="@color/brand" android:clickable="true" android:focusable="true" android:contentDescription="Retour" />
+    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="14dp">
+        <TextView android:id="@+id/hdTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/ScreenTitle" android:maxLines="1" android:ellipsize="end" />
+        <TextView android:id="@+id/hdSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="" style="@style/Muted" />
+    </LinearLayout>
+</LinearLayout>

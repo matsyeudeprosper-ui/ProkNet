@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Vérification des lieux" />
-        <TextView android:id="@+id/prSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
-        <Button android:id="@+id/btnPrRefresh" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Rafraîchir" />
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Lieux à vérifier (brouillons, en attente, masqués)" />
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+
+        <include layout="@layout/view_header" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_alt" android:padding="16dp" android:layout_marginBottom="12dp">
+            <TextView android:id="@+id/prSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Body" />
+            <Button android:id="@+id/btnPrRefresh" android:text="Actualiser" style="@style/GhostButton" android:layout_marginTop="6dp" />
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Lieux à vérifier" style="@style/Caption" />
         <LinearLayout android:id="@+id/prVenues" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Demandes de propriétaires" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Demandes de propriétaires" style="@style/Caption" />
         <LinearLayout android:id="@+id/prClaims" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Signalements ouverts" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Signalements ouverts" style="@style/Caption" />
         <LinearLayout android:id="@+id/prReports" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Contestations de récompense" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Contestations de récompense" style="@style/Caption" />
         <LinearLayout android:id="@+id/prAppeals" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:id="@+id/prFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textSize="12sp" android:text="Chaque décision est signée par votre identité et journalisée par le Brain. Publier un lieu exige son entrée, ses conditions d'accès et, pour un lieu privé, le consentement enregistré." />
+
+        <TextView android:id="@+id/prFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Chaque décision est signée par votre identité et journalisée par le Brain. Publier un lieu exige son entrée, ses conditions d'accès et, pour un lieu privé, le consentement enregistré." style="@style/Muted" android:gravity="center" />
     </LinearLayout>
 </ScrollView>

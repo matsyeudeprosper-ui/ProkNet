@@ -13,8 +13,8 @@ android {
         applicationId = "net.prok.proknet.lab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 83
-        versionName = "0.19.0"
+        versionCode = 84
+        versionName = "0.19.1"
     }
 
     // v0.19.0: the production build is signed with a key that lives OUTSIDE the repository

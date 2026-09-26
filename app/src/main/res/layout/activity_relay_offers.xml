@@ -1,20 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Offres relais" />
-        <TextView android:id="@+id/roFlag" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
-        <TextView android:id="@+id/roSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textSize="13sp" android:text="" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="6dp">
-            <Button android:id="@+id/btnRoRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
-            <Button android:id="@+id/btnRoSettings" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Mes réglages" />
-            <Button android:id="@+id/btnRoStop" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Arrêter" />
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:scrollbars="none">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+
+        <include layout="@layout/view_header" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="12dp">
+            <TextView android:id="@+id/roFlag" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Muted" />
+            <TextView android:id="@+id/roSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Body" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="14dp">
+                <Button android:id="@+id/btnRoSettings" android:text="Mes réglages" style="@style/SmallSecondary" />
+                <Button android:id="@+id/btnRoRefresh" android:text="Actualiser" style="@style/GhostButton" android:layout_marginStart="6dp" />
+                <Button android:id="@+id/btnRoStop" android:text="Arrêter" style="@style/GhostButton" android:textColor="@color/danger" />
+            </LinearLayout>
         </LinearLayout>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Offres" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Offres" style="@style/Caption" />
         <LinearLayout android:id="@+id/roOffers" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
-        <TextView android:id="@+id/roEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="Aucune offre. Être en ligne ne rapporte rien : seule une offre acceptée et vérifiée paie." />
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Mes gains" />
-        <TextView android:id="@+id/roPipeline" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
-        <TextView android:id="@+id/roCap" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+        <LinearLayout android:id="@+id/roEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp" android:layout_marginBottom="12dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Aucune offre pour l'instant" style="@style/H2" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Être en ligne ne rapporte rien : seule une offre acceptée et vérifiée paie." style="@style/Muted" />
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_marginBottom="10dp" android:text="Mes gains" style="@style/Caption" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="20dp">
+            <TextView android:id="@+id/roPipeline" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Body" />
+            <TextView android:id="@+id/roCap" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>
