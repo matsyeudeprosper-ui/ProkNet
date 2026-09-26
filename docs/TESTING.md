@@ -3943,3 +3943,37 @@ unset; both phones on build 81; test credit posted to the buyer from TRÉSORERIE
 | 81p | **The v0.17 acceptance still open** | Sections 75, 76, 77, 78, 79 as written. They are unchanged by v0.18 except: a PAID session now needs credit (post test credit first), and a FREE session needs nothing. |
 
 Report all of 81a–81p in one message, in order, PASS / FAIL / could not be tested.
+
+## 82. v0.19.0 launch acceptance (the contract's §8, run by trusted customers)
+
+Everything in sections 80 and 81 still applies to the delivery/money functions. This
+section is what the launch contract adds. **Nothing here has been run by Claude.** Each
+line is reported PASS / FAIL (what was seen) / could not be tested (why), with the phone
+model and Android version.
+
+**Before starting:** Brain on v0.19.0 (`status.ps1` shows `schema=7`); `PROK_OPERATOR_IDS`
+holds the verifier/moderator phone; the offline Brazzaville pack is served
+(`/v1/map/brazzaville/manifest` answers); at least two consenting venues are PUBLISHED
+in Bacongo with recorded consent; the signed release APK (`ProkNet-release.apk`) is
+installed on two phone models from the release page, not a debug build.
+
+| # | Test | What must be seen |
+|---|---|---|
+| 82a | **Free map, no bundle** | On a phone with mobile data OFF and Wi-Fi OFF, open the app: the cached town index opens, says when it was refreshed, counts the known places and says the town is not fully surveyed. Search a neighbourhood and a landmark. Filters work. |
+| 82b | **Freshness labels** | A venue checked 3 min ago reads "Fonctionne maintenant"; at 6 min it reads "Vérifié récemment" with the age; a venue last checked 25 h ago reads "Ancien contrôle — confirmez avant de vous déplacer"; at 8 days it leaves the recommended list. Two independent failure reports within 24 h → "Indisponible". |
+| 82c | **Offline walking guidance** | With no data, tap "M'y guider" on a Bacongo venue: a route along streets with distance and ETA; walk it; the remaining distance updates; on arrival the app re-checks the venue and offers the permitted direct connection or shows alternatives. Compare the displayed distance with the real walk. Outside the pack's graph (or with weak GPS) the app shows "≈ … à vol d'oiseau" and NO ETA. |
+| 82d | **No-location state** | Deny location: the town search and the cards work; no distance, no arrow, no "near me". |
+| 82e | **Sighting is not a place** | A scout submits a sighting of an open SSID: it appears as a coarse cell only, never as a pin, never with a name; no reward. |
+| 82f | **Publication needs consent + two checks** | An operator records a venue without consent → cannot publish; with consent but one check → cannot publish; second independent check → published with the exact entrance. |
+| 82g | **Scout reward once, after independent use** | The earliest validated finder of a NEW venue gets 10 FCFA promo credit only after the second check; a duplicate sighting of the same spot earns 0; a refresh after 7 days earns 3 FCFA once; the daily/monthly caps hold; when the cap is hit the app says "pas d'offre scout payée" and still accepts the report. |
+| 82h | **Owner removal / safety** | The owner removes the pin: hidden immediately. A safety report: hidden pending review. |
+| 82i | **Private home stays coarse** | A provider at home appears as a coarse cell, never an address; no route ends at a home. |
+| 82j | **Market: post and pay** | Seller posts a low-risk item with 2 photos → invoice PK-… for 100 FCFA, 24 h expiry, "En attente de confirmation" → the treasurer matches the transfer (reference + amount + txn id) → "En attente de modération" → moderator approves → published for 30 days. A second confirmation with the same txn id is refused. |
+| 82k | **Market: rejection and package** | A rejected listing: not published, the invoice moves to refund (second approver) or the package slot is restored. A 5-post package consumes one slot only at publication. The first-post voucher works once. |
+| 82l | **Market: boost, ranking, chat, report** | A boost is labelled "Sponsorisé" in a chosen zone; organic results remain; buyer and seller chat, agree, meet, pay each other directly; Prok takes nothing; report/block works; the safety guide is shown. |
+| 82m | **Fund** | Confirmed market fees show in the fund dashboard: 40 % of net allocated; a sponsored campaign must be cleared before any free-delivery promise; the dashboard shows reserved/spent/remaining. |
+| 82n | **Owner quote** | "Partager mon Wi-Fi": the checks run; the upstream-terms attestation is required; the quote shows customer X / owner Y / relay Z / Prok W with 200 MB and 1 GB examples and expiry; the owner accepts or declines without typing a tariff; a residential line whose terms forbid sharing is refused. |
+| 82o | **Centime pricing end to end** | At 0.25 FCFA/MB: the advert reads "0,25 CFA/Mo", the quote for 200 MB is 50 FCFA, both phones settle the same centimes, the Brain posts the same. 20 MB = 5, 1 GB = 250, 6 GB = 1,500 (and the bundle comparison says 6 GB is not cheaper). |
+| 82p | **Relay offers** (cohort) | Carry now: paid only after settlement from the quote's relay share; Stay available: a 30-min block with probes completes and pays 20 FCFA, a block with lost reachability pays 0, a 5th block in a day is refused; Move to help: no invitation without the 100 FCFA reserved and the customer's acceptance of the all-in quote; earned only on arrival + ready. |
+| 82q | **Switches** | Closing `market_paid_publish` stops new invoices but a paid, approved listing stays published; closing `customer_paid_delivery` refuses new paid sessions with the server's sentence while a running session finishes and settles. |
+| 82r | **Signed build and update** | The installed APK's certificate SHA-256 equals the one in the release notes; installing the next release over it keeps the identity and the cached map. |

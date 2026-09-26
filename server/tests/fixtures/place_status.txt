@@ -1,0 +1,16 @@
+# v0.19.0: what a free-Internet place card says about its freshness, per server status.
+#
+# Both halves read this file. The server (server/brain/places.py STATUS_TEXT) is the only
+# source of the status; the phone (core/PlacesView.kt STATUS_TEXT) shows exactly the text on
+# the same line and nothing else. The product rule: "Fonctionne maintenant" is said only for
+# a real probe in the last 5 minutes at an open venue; a place nobody has checked for 7 days
+# says so and leaves the default list; a reported or demoted place is never a green dot.
+#
+# One STATE|text per line. Blank lines and lines starting with # are ignored.
+
+WORKING_NOW|Fonctionne maintenant
+RECENTLY_VERIFIED|Vérifié récemment
+OLDER_CHECK|Ancien contrôle — confirmez avant de vous déplacer
+UNVERIFIED_STALE|Non vérifié depuis plus de 7 jours
+REPORTED|Signalé, à vérifier
+UNAVAILABLE|Indisponible

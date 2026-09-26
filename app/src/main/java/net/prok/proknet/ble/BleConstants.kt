@@ -31,7 +31,15 @@ object BleConstants {
      * Scan-response payload: v1 = [1][shortId x4]; v2 = [2][fullId x16].
      */
     const val MANUFACTURER_ID = 0xFFFF
-    const val ADV_VERSION = 2
+    /**
+     * v0.19.0: version 3 carries the rate in CENTIMES per MB (u16, up to 655.35 CFA/MB)
+     * where version 2 carried whole CFA. The launch target is 0.25 CFA/MB, which whole
+     * francs cannot express: a v2 advert rounded it UP to 1 CFA/MB (four times the
+     * price). A v3 phone reads a v2 advert as price × 100; a v2 phone reads a v3 advert
+     * wrongly, which is why every pilot phone updates together.
+     */
+    const val ADV_VERSION = 3
+    const val ADV_VERSION_CFA = 2
     const val ADV_VERSION_SHORT = 1
 
     /** Largest MTU Android allows; a 512-byte packet fits in one write when granted. */
@@ -61,11 +69,13 @@ class Peer(
     @Volatile var fullId: String? = null,
     /** v0.6/0.7 capability bits from the scan response: Market.flags(). */
     @Volatile var capabilities: Int = 0,
-    /** v0.7: advertised price in CFA per MB. */
+    /** v0.7: advertised price in whole CFA per MB, rounded UP from the rate - for old screens only. */
     @Volatile var pricePerMb: Int = 0,
+    /** v0.19.0: the advertised rate in centimes per MB - what the quote and the contract use. */
+    @Volatile var rateCentimesPerMb: Int = 0,
 ) {
     val providesInternet: Boolean get() = capabilities and CAP_INTERNET != 0
-    fun offer(): net.prok.proknet.core.Market.Offer = net.prok.proknet.core.Market.Offer(shortId, pricePerMb, capabilities, rssi, lastSeen)
+    fun offer(): net.prok.proknet.core.Market.Offer = net.prok.proknet.core.Market.Offer(shortId, pricePerMb, capabilities, rssi, lastSeen, rateCentimesPerMb)
     val label: String get() = "prok-" + shortId
 
     /** False for devices seen without a scan response: they have no ProkNet ID yet and cannot be addressed. */

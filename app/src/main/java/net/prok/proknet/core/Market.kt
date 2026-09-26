@@ -28,7 +28,17 @@ object Market {
     const val MAX_MIN_PRICE = 1_000_000       // CFA
     const val MAX_MB_PER_SESSION = 100_000    // 100 GB cap; 0 = unlimited
     const val MAX_FEE_PCT = 50
-    const val DEFAULT_FEE_PCT = 5
+    /**
+     * v0.19.0: the launch contract's split (§10.3). Direct: source 80, platform 10, reserve
+     * 10 - so the fee both phones sign is 20 % of the customer amount. One relay: source 64,
+     * relay 20, platform 10, reserve 6 - the signed fee is 16 % and the Brain pays the relay
+     * 20 % out of the seller's side from the same evidence. These are dated settings on
+     * the Brain (quotes.RateConfig); the phone holds the same numbers so a contract is
+     * proposed with the fee the seller will accept.
+     */
+    const val DEFAULT_FEE_PCT = 20
+    const val FEE_PCT_RELAYED = 16
+    fun feePctFor(viaRelay: Boolean): Int = if (viaRelay) FEE_PCT_RELAYED else DEFAULT_FEE_PCT
     const val MAX_BILLABLE_BYTES = 1L shl 40  // 1 TB: beyond this a checkpoint is malformed
     /** v0.14.1: 1 000 000 CFA. A budget beyond this is malformed, and bounding it keeps every product in Long. */
     const val MAX_BUDGET_CENTIMES = 100_000_000L
@@ -55,8 +65,12 @@ object Market {
     fun upstreamOf(flags: Int): Int = (flags shr UPSTREAM_SHIFT) and 3
 
     /** What a buyer sees in the scan before any connection. */
-    class Offer(val sellerShort: String, val pricePerMb: Int, val flags: Int, val rssi: Int, val lastSeen: Long) {
+    class Offer(val sellerShort: String, val pricePerMb: Int, val flags: Int, val rssi: Int, val lastSeen: Long,
+                /** v0.19.0: the exact advertised rate in centimes per MB; pricePerMb is that rounded UP to whole CFA for old screens. */
+                val rateCentimesPerMb: Int = pricePerMb * 100) {
         val selling get() = flags and FLAG_SELL != 0
+        /** "0,25 CFA/Mo" - the rate a customer actually sees. */
+        val rateText: String get() = rateTextFor(rateCentimesPerMb)
         val relaying get() = flags and FLAG_RELAY != 0
         val validated get() = flags and FLAG_VALIDATED != 0
         val viaRelay get() = flags and FLAG_VIA_RELAY != 0
@@ -65,8 +79,15 @@ object Market {
         /** v0.10: the provider can serve this customer over a Bluetooth bulk link. */
         val bulkBt get() = flags and FLAG_BULK_BT != 0
         val upstreamType get() = upstreamOf(flags)
-        fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + (if (viaRelay) " via relay" else "") + "  " + pricePerMb + " CFA/MB  signal " + signalWord(rssi) + "  " +
+        fun describe(): String = "prok-" + sellerShort + "  " + Tunnel.upstreamName(upstreamType) + (if (viaRelay) " via relay" else "") + "  " + rateText + "  signal " + signalWord(rssi) + "  " +
             (if (selling) (if (validated) "available" else "available (unverified)") else "not selling")
+    }
+
+    /** v0.19.0: a rate in centimes per MB as people read it: "0,25 CFA/Mo", "3 CFA/Mo", "gratuit". */
+    fun rateTextFor(rateCentimesPerMb: Int): String {
+        if (rateCentimesPerMb <= 0) return "gratuit"
+        val whole = rateCentimesPerMb / 100; val cents = rateCentimesPerMb % 100
+        return (if (cents == 0) whole.toString() else whole.toString() + "," + (if (cents < 10) "0" else "") + cents.toString().trimEnd('0')) + " CFA/Mo"
     }
 
     fun signalWord(rssi: Int): String = when { rssi >= -60 -> "good"; rssi >= -75 -> "ok"; rssi >= -90 -> "weak"; else -> "poor" }
@@ -80,13 +101,13 @@ object Market {
     fun score(o: Offer): Int {
         if (!o.selling) return -1
         val validated = if (o.validated) 100 else 0
-        val price = 60 - o.pricePerMb.coerceIn(0, 20) * 3 // 0 CFA -> 60, 20+ CFA -> 0
+        val price = 60 - (o.rateCentimesPerMb / 100).coerceIn(0, 20) * 3 // 0 CFA -> 60, 20+ CFA -> 0 (v0.19.0: from the exact rate)
         val signal = ((o.rssi.coerceIn(-100, -40) + 100) * 40) / 60 // -100 -> 0, -40 -> 40
         val relayed = if (o.viaRelay) 10 else 0                        // v0.9: one more hop, same price -> direct first
         return validated + price + signal - relayed
     }
 
-    fun rank(offers: List<Offer>): List<Offer> = offers.sortedWith(compareByDescending<Offer> { score(it) }.thenBy { it.pricePerMb }.thenBy { it.sellerShort })
+    fun rank(offers: List<Offer>): List<Offer> = offers.sortedWith(compareByDescending<Offer> { score(it) }.thenBy { it.rateCentimesPerMb }.thenBy { it.sellerShort })
 
     // ---- pricing ------------------------------------------------------------------------------------
 
@@ -405,7 +426,9 @@ object Market {
         }
         if (c.budgetSession) {
             // v0.14: the seller checks that the rate really covers its floor, not that a price list matches
-            if (c.feePct != myFee) return "fee differs from my offer"
+            // v0.19.0: a relayed session carries the relayed fee (the relay's share comes out of the seller's side)
+            val expectedFee = if (relayPeerId != null && c.usableRule) FEE_PCT_RELAYED else myFee
+            if (c.feePct != expectedFee) return "fee differs from my offer"
             if (c.rateCentimesPerMb > 0) {
                 if (c.maxBillableBytes <= 0 || c.buyerBudgetCentimes <= 0) return "budget ceiling invalid"
                 if (c.uncappedCostFor(c.maxBillableBytes) > c.buyerBudgetCentimes) return "budget ceiling invalid"

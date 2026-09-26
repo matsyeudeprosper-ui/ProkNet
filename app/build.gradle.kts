@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,18 +13,36 @@ android {
         applicationId = "net.prok.proknet.lab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 82
-        versionName = "0.18.2"
+        versionCode = 83
+        versionName = "0.19.0"
     }
 
+    // v0.19.0: the production build is signed with a key that lives OUTSIDE the repository
+    // (C:\ProkNetKeys\release.properties -> storeFile/storePassword/keyAlias/keyPassword).
+    // When the file is absent the release build type stays unsigned, so a checkout on any
+    // other machine still compiles and only the VPS can produce an installable release.
+    // (inside android {} the name `java` is Gradle's Java extension, hence the import above)
+    val releaseProps = Properties()
+    val releasePropsFile = file("C:/ProkNetKeys/release.properties")
+    if (releasePropsFile.exists()) releasePropsFile.inputStream().use { releaseProps.load(it) }
+    signingConfigs {
+        if (releaseProps.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(releaseProps.getProperty("storeFile"))
+                storePassword = releaseProps.getProperty("storePassword")
+                keyAlias = releaseProps.getProperty("keyAlias")
+                keyPassword = releaseProps.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ""
         }
         release {
-            // Release is unsigned for now; the lab uses the debug build.
             isMinifyEnabled = false
+            if (releaseProps.getProperty("storeFile") != null) signingConfig = signingConfigs.getByName("release")
         }
     }
 

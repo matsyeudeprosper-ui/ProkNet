@@ -563,10 +563,10 @@ class MsisdnTest(unittest.TestCase):
     def test_a_withdrawal_needs_a_real_number_and_only_the_treasurer_sees_it(self):
         L = fresh()
         L.test_credit(TREASURER, BUYER, 100_000, T0)
-        L.post_settlement(derived(gross=100_000), T0)
+        L.post_settlement(derived(gross=400_000), T0)
         with self.assertRaises(LedgerError):
-            L.request_withdrawal(SELLER, "MTN", "12", 50_000, T0)
-        w = L.request_withdrawal(SELLER, "MTN", "+242 06 612 34 56", 50_000, T0)["withdrawal"]
+            L.request_withdrawal(SELLER, "MTN", "12", 100_000, T0)
+        w = L.request_withdrawal(SELLER, "MTN", "+242 06 612 34 56", 100_000, T0)["withdrawal"]
         self.assertNotIn("msisdn", w)
         self.assertEqual("3456", w["msisdn_tail"])
         row = L.queue(TREASURER, T0)["rows"][0]
@@ -596,7 +596,7 @@ class LedgerUpgradeTest(unittest.TestCase):
                   "gross": 7_300, "fee_pct": 5, "expires_at": 9_999_999_999_999}, "buyer", T0)
         before = [tuple(r) for r in sqlite3.connect(path).execute("SELECT * FROM settlements")]
         b = braindb.Brain(path)
-        self.assertEqual(6, b.schema_version())
+        self.assertEqual(7, b.schema_version())
         names = set(r[0] for r in b.db.execute("SELECT name FROM sqlite_master WHERE type='table'"))
         for t in ("ledger_postings", "ledger_holds", "ledger_withdrawals", "ledger_topups", "ledger_intents",
                   "ledger_bindings", "ledger_audit", "ledger_balance_checks"):

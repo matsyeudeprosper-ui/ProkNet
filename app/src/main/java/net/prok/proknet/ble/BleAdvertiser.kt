@@ -55,14 +55,15 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
     @Volatile var capabilityFlags = 0
         private set
 
-    @Volatile var pricePerMb = 0
+    /** v0.19.0: the advertised rate in CENTIMES per MB (was whole CFA up to v0.18). */
+    @Volatile var rateCentimesPerMb = 0
         private set
 
-    /** Change the advertised capability bits and price (restarts advertising). */
-    fun setCapabilities(flags: Int, price: Int = pricePerMb) {
-        val p = price.coerceIn(0, 65535)
-        if (flags == capabilityFlags && p == pricePerMb) return
-        capabilityFlags = flags; pricePerMb = p
+    /** Change the advertised capability bits and rate in centimes per MB (restarts advertising). */
+    fun setCapabilities(flags: Int, rateCentimes: Int = rateCentimesPerMb) {
+        val p = rateCentimes.coerceIn(0, 65535)
+        if (flags == capabilityFlags && p == rateCentimesPerMb) return
+        capabilityFlags = flags; rateCentimesPerMb = p
         if (isAdvertising) { stop(); startInternal() }
     }
 
@@ -98,12 +99,12 @@ class BleAdvertiser(private val adapter: BluetoothAdapter, private val identity:
             payload[0] = BleConstants.ADV_VERSION_SHORT.toByte()
             System.arraycopy(identity.shortIdBytes, 0, payload, 1, Identity.SHORT_ID_LEN)
         } else {
-            // v0.7: [2][id 16][flags 1][price u16] = 20 bytes payload, 24 with headers, fits 31.
+            // v0.19.0: [3][id 16][flags 1][rate centimes/MB u16] = 20 bytes payload, 24 with headers, fits 31.
             payload = ByteArray(1 + Identity.ID_LEN + 1 + 2)
             payload[0] = BleConstants.ADV_VERSION.toByte()
             System.arraycopy(identity.idBytes, 0, payload, 1, Identity.ID_LEN)
             payload[1 + Identity.ID_LEN] = capabilityFlags.toByte()   // Market.flags(): sell/relay/validated/upstream
-            payload[2 + Identity.ID_LEN] = (pricePerMb ushr 8).toByte(); payload[3 + Identity.ID_LEN] = pricePerMb.toByte()
+            payload[2 + Identity.ID_LEN] = (rateCentimesPerMb ushr 8).toByte(); payload[3 + Identity.ID_LEN] = rateCentimesPerMb.toByte()
         }
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)

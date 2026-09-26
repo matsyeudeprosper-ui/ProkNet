@@ -108,12 +108,38 @@
             android:launchMode="singleTop"
             android:label="Prok Developer"
             android:windowSoftInputMode="adjustResize" />
+        <!-- v0.19.0: the owner's onboarding (Partager mon Wi-Fi), the relay's offers, the operator queues -->
+        <activity android:name=".ui.OwnerOnboardingActivity" android:exported="false" android:launchMode="singleTop" android:label="Partager mon Wi-Fi" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.RelayOffersActivity" android:exported="false" android:launchMode="singleTop" android:label="Offres relais" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.PlacesReviewActivity" android:exported="false" android:launchMode="singleTop" android:label="Vérification des lieux" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.MarketModerationActivity" android:exported="false" android:launchMode="singleTop" android:label="Modération Prok Market" android:windowSoftInputMode="adjustResize" />
+        <!-- v0.19.0: the operator console. Reachable only when the Brain says this identity is an operator. -->
+        <activity
+            android:name=".ui.OperatorActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Prok Opérateur"
+            android:windowSoftInputMode="adjustResize" />
         <!-- v0.18.0: the treasurer's queue. Reachable only when the Brain says this identity is treasury. -->
         <activity
             android:name=".ui.TreasuryActivity"
             android:exported="false"
             android:launchMode="singleTop"
             android:label="Prok Trésorerie"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- v0.19.0: the free Internet finder. Public: no account, no payment, no location needed to browse. -->
+        <activity
+            android:name=".ui.PlacesActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Internet gratuit"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- v0.19.0: Prok Market - browse without an account, sell with a paid, reviewed publication. -->
+        <activity
+            android:name=".ui.MarketActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Prok Market"
             android:windowSoftInputMode="adjustResize" />
 
         <!-- v0.6: buyer-side VPN. Only the system may bind it. -->

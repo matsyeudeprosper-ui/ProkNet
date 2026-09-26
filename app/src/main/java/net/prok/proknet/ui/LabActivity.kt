@@ -118,6 +118,9 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         // v0.18.0: the treasurer's queue, shown only once the Brain has said this identity is treasury
         findViewById<Button>(R.id.btnTreasury).setOnClickListener { startActivity(Intent(this, TreasuryActivity::class.java)) }
         findViewById<Button>(R.id.btnTreasury).visibility = if (node.ledgerSync.view?.treasury == true) android.view.View.VISIBLE else android.view.View.GONE
+        // v0.19.0: the operator console, shown only once the Brain has said this identity is an operator
+        findViewById<Button>(R.id.btnOperator).setOnClickListener { startActivity(Intent(this, OperatorActivity::class.java)) }
+        findViewById<Button>(R.id.btnOperator).visibility = if (node.flags.operator) android.view.View.VISIBLE else android.view.View.GONE
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         // v0.15: simulated payments. Developer screen only, off by default, and a long

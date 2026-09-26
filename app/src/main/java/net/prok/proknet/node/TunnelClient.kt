@@ -139,8 +139,9 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         val maxMb = minOf(Market.MAX_MB_PER_SESSION.toLong(), (q.maxBillableBytes + Market.MB - 1) / Market.MB).toInt()
         // v0.18.0: version 3 - the usable-Internet rule, and the relay (if any) in the signature
         val relay = hooks.relayFullId()?.let { try { it.hexToBytes() } catch (e: Exception) { null } }?.takeIf { it.size == 16 } ?: ByteArray(16)
+        val viaRelay = relay.any { it != 0.toByte() }
         return propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), advertisedPrice, 0, maxMb,
-            hooks.feePct(), System.currentTimeMillis(), Market.PRICING_VERSION_USABLE,
+            if (viaRelay) Market.FEE_PCT_RELAYED else hooks.feePct(), System.currentTimeMillis(), Market.PRICING_VERSION_USABLE,
             q.rateCentimesPerMb, q.budgetCentimes, q.maxBillableBytes, q.sourceCostPerMb, sellerPolicy, 1, relay))
     }
 

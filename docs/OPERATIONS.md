@@ -175,6 +175,10 @@ counts processes afterwards for the same reason.
 | `PROK_TEST_IDS` | v0.18.0: node ids that may receive audited **test credit** (pilot phones only) | none |
 | `PROK_PAYMENTS_LIVE` | v0.18.0: `1` lets an observed top-up credit a customer. Anything else records it as REJECTED (`payments_disabled`) and credits nobody | off |
 | `PROK_TREASURY_MSISDN_MTN` / `PROK_TREASURY_MSISDN_AIRTEL` | v0.18.1: the treasury wallet numbers a customer is told to send to. Shown by the app ONLY while `PROK_PAYMENTS_LIVE=1` AND the identity is in the pilot allowlist; before that the app says top-ups are not open | none |
+| `PROK_OPERATOR_IDS` | v0.19.0: node ids that may use the **operator console** - switches, cohorts, decision records, venue verification, market moderation, relay jobs. Separate from treasury on purpose: the person who opens a switch is not the person who sends money | none - nobody |
+| `PROK_QUOTE_SECRET` | v0.19.0: the HMAC secret that signs quotes (rates, splits). Set once, keep out of git; changing it invalidates unexpired quotes (10 min) and nothing else | a random value generated on first start and stored in `C:\ProkNetKeys\quote_secret.txt` |
+| `PROK_MEDIA_DIR` | v0.19.0: where Prok Market photos are stored | `C:\ProkNetBrain\media` |
+| `PROK_MAPS_DIR` | v0.19.0: where offline map packs and manifests live | `C:\ProkNetBrain\maps` |
 | `PROK_PILOT_IDS` | v0.18.2: the **pilot allowlist** - node ids that may move real money. Even with `PROK_PAYMENTS_LIVE=1`, an identity not listed here is shown no treasury number, and a valid operator message for it is held for review, never credited automatically (and a treasurer cannot credit it until it is listed). Enforced on the server | none - nobody |
 
 No credential is ever a command-line argument, and none is in git.

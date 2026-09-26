@@ -74,6 +74,8 @@
             android:layout_height="wrap_content" android:text="BRAIN URL" />
         <Button android:id="@+id/btnTreasury" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="TRÉSORERIE" android:visibility="gone" />
+        <Button android:id="@+id/btnOperator" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="OPÉRATEUR" android:visibility="gone" />
     </LinearLayout>
 
     <TextView

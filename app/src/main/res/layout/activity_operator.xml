@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView android:id="@+id/opTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="18sp" android:textStyle="bold" android:text="Console opérateur — Brazzaville" />
+        <TextView android:id="@+id/opNote" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" android:textSize="13sp"
+            android:text="Chaque interrupteur est une décision datée avec un motif. Une fonction restreinte ne s'ouvre qu'avec l'enregistrement de la décision externe (document, responsable, date). Rien ici ne crée d'argent." />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnOpRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
+            <Button android:id="@+id/btnOpDecision" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Enregistrer une décision" />
+            <Button android:id="@+id/btnOpCohort" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Cohorte" />
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Fonctions" />
+        <LinearLayout android:id="@+id/opFunctions" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Décisions enregistrées" />
+        <TextView android:id="@+id/opDecisions" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textStyle="bold" android:text="Files de travail" />
+        <LinearLayout android:id="@+id/opQueues" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+
+        <TextView android:id="@+id/opFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+    </LinearLayout>
+</ScrollView>

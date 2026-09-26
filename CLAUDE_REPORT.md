@@ -1,3 +1,58 @@
+# CLAUDE_REPORT - ProkNet v0.19.0 "the launch contract, built and gated"
+
+Date: 2026-09-26
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead), Mike (product owner)
+
+Version 0.19.0, build 83. Brain **deployed** at 0.19.0 / schema 7. Server **596** tests,
+Android **835** JVM tests, both green; the build refuses an APK on a failing test. The
+signed release APK, its checksum and certificate, the exact configuration still needed,
+the NOT-RUN phone list and the external blockers with the evidence each needs are in
+`docs/HANDOFF_V019.md`. The register of live versus gated is `docs/LIVE_VS_GATED.md`;
+the operator runbook is `docs/RUNBOOK.md`.
+
+## 1. What is actually live
+
+The Brain, with every v0.19 module mounted and answering on the public URL; the market
+price list at the contract's section 10 numbers; the offline Brazzaville pack (3.03 MB,
+verified byte-for-byte through Caddy). The v0.18 money machinery is unchanged and real
+payments stay OFF.
+
+## 2. What is built and gated
+
+All nine functions of section 7. `/v1/flags/status?city=Brazzaville` says `enabled:
+false` for each. Nobody can flip one until `PROK_OPERATOR_IDS` names a phone, and the
+money and upstream ones also refuse without a dated decision record. I switched nothing on.
+
+## 3. Things worth knowing that a diff does not show
+
+- Contract section 10 changed two numbers that were already in code: the platform fee
+  is 20 % direct (was 10 % example) and 16 % with a relay, the relay 20 % (was 10 %).
+  `Market.kt`, `TunnelClient.kt`, `ledger.py` and the seller-side check agree; a
+  relayed contract now carries the relayed fee in its signature, so a v0.18 phone and
+  a v0.19 phone will not sign the same relayed session - a full pilot upgrade is needed.
+- The owner never types a rate. Quotes are HMAC-signed by the Brain, expire in 10
+  minutes, and the phone sends back only the quote id + signature + accept/decline.
+- Scout rewards live on a promo book (`promo:*`), not on cash credit; they expire after
+  90 days back into the fund. A pending relay job is never cash - the fixture
+  `relay_offer_states.txt` pins the exact words.
+- Migration 7 was tested by upgrading a schema-6 database with ledger rows in it and
+  reading them back unchanged; the live upgrade took the same path with a backup first.
+- Two of the subagent-written pieces did not compile and three of their tests asserted
+  the wrong thing (a centime/franc slip, an accented-string replace, the old fee); all
+  fixed and green. One real product bug in a subagent screen: inside `Button.apply {}`
+  the name `filters` resolved to `TextView.getFilters()` - fixed by naming the set.
+- Gradle: inside `android {}` the name `java` is Gradle's extension, so
+  `java.util.Properties()` fails to resolve - imported at the top instead.
+
+## 4. What I could not do
+
+No phone, SIM or ADB here: every TESTING section 82 line is NOT RUN, the parser has
+still never seen a real MTN or Airtel message, and the offline map has never been
+drawn on a real screen. The external blockers are exactly the six rows in the handoff.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.18.2 "the two gaps, and what a phone must still prove"
 
 Date: 2026-09-26

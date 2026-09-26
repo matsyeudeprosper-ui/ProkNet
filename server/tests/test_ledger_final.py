@@ -181,8 +181,8 @@ class ReconcileTest(unittest.TestCase):
         L = live()
         topup(L, BUYER, 100_000)                                 # float MTN = tagged amount
         expected = L.balance("float:mtn")
-        L.post_settlement(derived(gross=60_000), T0 + 2)
-        w = L.request_withdrawal(SELLER, "MTN", "055987654", 50_000, T0 + 3)["withdrawal"]
+        L.post_settlement(derived(gross=400_000), T0 + 2)
+        w = L.request_withdrawal(SELLER, "MTN", "055987654", 100_000, T0 + 3)["withdrawal"]
         L.balance_check(TREASURER, "MTN", expected, T0 + 3)      # today's wallet, matching
         r = L.reconcile(TREASURER, T0 + 3)
         self.assertFalse(r["alert"])
@@ -203,11 +203,11 @@ class ReconcileTest(unittest.TestCase):
     def test_test_credit_is_cover_not_a_hole(self):
         L = fresh()
         L.test_credit(TREASURER, BUYER, 100_000, T0)
-        L.post_settlement(derived(gross=60_000), T0 + 1)
+        L.post_settlement(derived(gross=400_000), T0 + 1)
         r = L.reconcile(TREASURER, T0 + 2)
         self.assertEqual(0, r["shortfall"])
         self.assertFalse(r["approvals_blocked"])
-        w = L.request_withdrawal(SELLER, "MTN", NUM, 50_000, T0 + 3)["withdrawal"]
+        w = L.request_withdrawal(SELLER, "MTN", NUM, 100_000, T0 + 3)["withdrawal"]
         self.assertEqual(APPROVED, L.treasury_withdrawal(TREASURER, w["id"], "approve", T0 + 4)["withdrawal"]["state"])
 
     def test_an_unmatched_debit_shows_per_rail(self):
@@ -256,7 +256,7 @@ class SchemaSixUpgradeTest(unittest.TestCase):
         before = {t: [tuple(r) for r in con.execute("SELECT * FROM %s" % t)] for t in ("ledger_postings", "ledger_holds")}
         con.close()
         b = braindb.Brain(path)
-        self.assertEqual(6, b.schema_version())
+        self.assertEqual(7, b.schema_version())
         cols = [r[1] for r in b.db.execute("PRAGMA table_info(ledger_withdrawals)")]
         self.assertIn("kind", cols)
         self.assertEqual("kind", cols[-1], "ALTER appends; a fresh CREATE must not put it elsewhere")
@@ -273,7 +273,7 @@ class SchemaSixUpgradeTest(unittest.TestCase):
         from brain import db as braindb
         fresh_path = os.path.join(tempfile.mkdtemp(), "fresh.db")
         b = braindb.Brain(fresh_path)
-        self.assertEqual(6, b.schema_version())
+        self.assertEqual(7, b.schema_version())
         cols = [r[1] for r in b.db.execute("PRAGMA table_info(ledger_withdrawals)")]
         self.assertEqual("kind", cols[-1])
         b.db.close()

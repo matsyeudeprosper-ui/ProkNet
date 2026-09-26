@@ -15,7 +15,8 @@
 param(
     [switch]$Clean,
     [switch]$Offline,
-    [switch]$SkipTests   # emergency only; the report must say so
+    [switch]$SkipTests,  # emergency only; the report must say so
+    [switch]$Release     # v0.19.0: also assemble the SIGNED release APK (needs C:\ProkNetKeys\release.properties)
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +37,10 @@ $tasks = @()
 if ($Clean) { $tasks += "clean" }
 if (-not $SkipTests) { $tasks += "testDebugUnitTest" }
 $tasks += "assembleDebug"
+if ($Release) {
+    if (-not (Test-Path "C:\ProkNetKeys\release.properties")) { throw "-Release needs C:\ProkNetKeys\release.properties (the signing key is not in the repository)" }
+    $tasks += "assembleRelease"
+}
 $args = @("--no-daemon", "--console=plain", "--warning-mode=none") + $tasks
 if ($Offline) { $args += "--offline" }
 
@@ -83,3 +88,19 @@ Write-Host "BUILD OK in $([int]$sw.Elapsed.TotalSeconds)s"
 Write-Host "APK:    $dest  ($size MB)"
 Write-Host "SHA256: $sha"
 Write-Host "TESTS:  $summary"
+if ($Release) {
+    $rel = Join-Path $root "app\build\outputs\apk\release\ProkNetLab-release.apk"
+    if (-not (Test-Path $rel)) { $rel = Get-ChildItem (Join-Path $root "app\build\outputs\apk\release") -Filter "*.apk" | Select-Object -First 1 -ExpandProperty FullName }
+    if (-not $rel -or -not (Test-Path $rel)) { throw "release APK not found" }
+    $relDest = Join-Path $root "dist\ProkNet-release.apk"
+    Copy-Item $rel $relDest -Force
+    # a release that is not actually signed by the release key must never be handed out as one
+    $apksigner = Join-Path $env:ANDROID_HOME "build-tools\34.0.0\apksigner.bat"
+    $verify = & $apksigner verify --print-certs $relDest 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "release APK signature verification FAILED: $verify" }
+    $cert = ($verify | Select-String "SHA-256 digest" | Select-Object -First 1).ToString()
+    $relSha = (Get-FileHash $relDest -Algorithm SHA256).Hash.ToLower()
+    Write-Host "RELEASE APK: $relDest ($([math]::Round((Get-Item $relDest).Length / 1MB, 2)) MB)"
+    Write-Host "RELEASE SHA256: $relSha"
+    Write-Host "RELEASE CERT: $cert"
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Modération Prok Market" />
+        <TextView android:id="@+id/mmSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
+        <Button android:id="@+id/btnMmRefresh" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Rafraîchir" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Annonces à relire (payées, en attente de publication)" />
+        <LinearLayout android:id="@+id/mmQueue" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Signalements ouverts" />
+        <LinearLayout android:id="@+id/mmReports" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textStyle="bold" android:text="Trésorerie : factures ouvertes (références uniques)" />
+        <TextView android:id="@+id/mmTreasuryNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="Visible seulement pour une identité trésorerie. Une facture n'est payée que sur une référence ET un montant exacts, avec un identifiant de transaction opérateur jamais utilisé. Rien n'est deviné." />
+        <Button android:id="@+id/btnMmMatch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Coller un message MoMo / Airtel Money" />
+        <LinearLayout android:id="@+id/mmInvoices" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+        <TextView android:id="@+id/mmFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:textSize="12sp" android:text="Refuser une annonce ne laisse jamais le vendeur débité : la facture payée passe en remboursement, un crédit de forfait revient. Chaque décision est journalisée." />
+    </LinearLayout>
+</ScrollView>

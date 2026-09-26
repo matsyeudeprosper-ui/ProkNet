@@ -44,6 +44,25 @@ supply; no table has a coordinate column; shared status GREEN only with a
 provider sharing now, YELLOW then nothing as time passes; the download
 renders and the request line still verifies.
 
+## Offline map pack (v0.19)
+
+The phones' offline street map is built from OpenStreetMap DATA (never tiles) by an
+admin tool, outside the running Brain:
+
+```
+cd server
+python -m tools.build_map_pack --city brazzaville --out C:\ProkNetBrain\maps
+python -m tools.build_map_pack --city brazzaville --out C:\ProkNetBrain\maps --dry-run
+```
+
+It downloads the Geofabrik Congo-Brazzaville extract once to `<out>/source/` (ODbL,
+not committed), clips it to the city box, keeps the walkable ways and the named
+places, and writes `<city>.prokmap` (format: `tools/prokmap.py`) plus
+`<city>.manifest.json` (size, sha256, attribution, source timestamp, counts). The
+Brain serves both through `brain/mappack.py` (`MapPacks(dir).manifest(city)` /
+`.open(city)`; `validate(path)` re-reads a pack against its manifest). Brazzaville is
+about 3 MB. `pip install osmium` is needed for the builder only.
+
 ## Deploy (when a hostname exists)
 
 1. A VPS with Python 3.11 and `pip install cryptography`.

@@ -27,6 +27,19 @@
                     <net.prok.proknet.ui.PulseButtonView android:id="@+id/btnGetInternet" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_marginBottom="4dp" />
                 </LinearLayout>
 
+                <!-- v0.19.0: the four home actions of the launch contract, in its order -->
+                <LinearLayout android:id="@+id/homeActions" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="14dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                        <Button android:id="@+id/btnFreeNearMe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Gratuit près de moi" android:textSize="13sp" />
+                        <Button android:id="@+id/btnExploreTown" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="Explorer la ville" android:textSize="13sp" />
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="6dp">
+                        <Button android:id="@+id/btnMarket" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Prok Market" android:textSize="13sp" />
+                        <Button android:id="@+id/btnShareWifi" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="Partager mon Wi-Fi" android:textSize="13sp" />
+                    </LinearLayout>
+                    <TextView android:id="@+id/homeActionsNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Caption" android:visibility="gone" />
+                </LinearLayout>
+
                 <!-- the status card while searching / connecting / connected / failed -->
                 <LinearLayout android:id="@+id/homeStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="22dp" android:layout_marginTop="12dp" android:layout_marginBottom="14dp" android:visibility="gone">
                     <TextView android:id="@+id/homeTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textSize="24sp" android:textStyle="bold" android:textColor="@color/text" android:letterSpacing="-0.02" />

@@ -18,8 +18,10 @@ class MarketV3Test {
     private val seller = ByteArray(16) { 3 }
     private val relay = ByteArray(16) { 4 }
 
-    private fun v3(rate: Int = 300, budget: Long = 5_000, relayId: ByteArray = ByteArray(16)) = Market.Contract(
-        ByteArray(8) { 1 }, buyer, seller, (rate + 99) / 100, 0, 10, 5, 1_700_000_000_000L,
+    // v0.19.0: a contract that names a relay carries the relayed fee (64/20/10/6), a direct one the direct fee
+    private fun v3(rate: Int = 300, budget: Long = 5_000, relayId: ByteArray = ByteArray(16),
+                   fee: Int = if (relayId.any { it != 0.toByte() }) Market.FEE_PCT_RELAYED else 5) = Market.Contract(
+        ByteArray(8) { 1 }, buyer, seller, (rate + 99) / 100, 0, 10, fee, 1_700_000_000_000L,
         version = Market.PRICING_VERSION_USABLE, rateCentimesPerMb = rate, buyerBudgetCentimes = budget,
         maxBillableBytes = if (rate > 0) budget * Market.MB / rate else 0, pricingMode = 1, relayId = relayId)
 

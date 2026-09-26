@@ -8,8 +8,14 @@ import sqlite3
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import flags
+from . import fund
+from . import jobs
 from . import ledger
+from . import market
 from . import matching
+from . import places
+from . import quotes
 from . import network
 from .protocol import Availability, Coverage, Request, verify_request
 
@@ -62,6 +68,12 @@ MIGRATIONS = [
     # 6: v0.18.0 final. A queue row is a WITHDRAWAL or a REFUND: one added column with a
     # default, so every row the pilot Brain already holds is untouched.
     ledger.MIGRATION_6,
+    # 7: v0.19.0. The launch books, all new tables (CREATE IF NOT EXISTS, no ALTER): the
+    # operator's switches, the free finder (venues, sightings, checks, rewards), Prok Market
+    # (listings, invoices, packages, chat, reports), the rate config and signed quotes, the
+    # Free Internet Fund (campaigns, reservations) and relay jobs (offers, blocks). Every
+    # existing row is untouched; the v0.18 ledger tables are the same ledger.
+    flags.SCHEMA + places.SCHEMA + market.SCHEMA + quotes.SCHEMA + fund.SCHEMA + jobs.SCHEMA,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000

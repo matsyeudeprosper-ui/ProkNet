@@ -1075,7 +1075,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
             main.post {
                 val want = buyerWanted
                 if (want != null && want == wifi.linkedPeer && tunnel.session == null && tunnel.contract == null) {
-                    if (pricePerMb != buyPrice) DiagLog.w(tag, "relay's seller price " + pricePerMb + " differs from the advertised " + buyPrice + " CFA/MB: proposing the advertised price")
+                    // v0.19.0: the relay's INFO carries the seller's rate in centimes per MB
+                    if (pricePerMb != buyRateCentimes) DiagLog.w(tag, "relay's seller rate " + pricePerMb + " c/MB differs from the advertised " + buyRateCentimes + " c/MB: proposing the advertised rate")
                     DiagLog.i(tag, "relay prok-" + want + " introduced seller prok-" + sellerShort + ": proposing the contract end to end")
                     // v0.18.0: a relayed purchase is a budget (v3) contract like any other, so it
                     // settles, is paid from the buyer's credit and pays the relay. v1 never settled.
@@ -1166,6 +1167,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     fun dropUpstream() { wifiUp.disconnect("dropped by user") }
 
     @Volatile private var buyPrice = 0
+    /** v0.19.0: the advertised rate in centimes per MB of the offer being bought. */
+    @Volatile private var buyRateCentimes = 0
 
     /** Offers visible right now, best first. */
     fun offers(): List<Market.Offer> = Market.rank(ble.visiblePeers().filter { it.inRange && it.hasId && it.offer().selling }.map { it.offer() })
@@ -1174,7 +1177,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     fun refreshAdvert() {
         val ro = relay.lastUpstreamOffer
         if (relay.upstreamReady && ro != null) {
-            ble.setCapabilities(Market.flags(sell = true, relay = relayOn, validated = ro.validated, upstreamType = ro.upstreamType, viaRelay = true), ro.pricePerMb)
+            ble.setCapabilities(Market.flags(sell = true, relay = relayOn, validated = ro.validated, upstreamType = ro.upstreamType, viaRelay = true), ro.rateCentimesPerMb)
             return
         }
         val up = gateway.upstream
@@ -1184,7 +1187,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
             // started a doomed admission and was refused.
             upstreamType = Tunnel.upstreamType(up), p2p = p2pFallbackActive && p2p.groupFormed,
             bulkBt = gateway.providing && up != null && bulk.supported && bulk.isBluetoothOn)
-        ble.setCapabilities(flags, if (gateway.providing) sellPrice else 0)
+        ble.setCapabilities(flags, if (gateway.providing) autoRateCentimesPerMb() else 0)   // v0.19.0: centimes on the air
     }
 
     /** SELL on/off with the given terms. */
@@ -1199,7 +1202,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         var q = buyQuote
         if (q == null || age > QUOTE_FRESH_MS || age < 0) {
             if (q != null) DiagLog.w(tag, "BUY quote was " + (age / 1000) + " s old: taking it again before signing")
-            q = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, buyPrice * 100)
+            q = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, buyRateCentimes)
             if (!q.admissible) { DiagLog.w(tag, "BUY refused on the fresh quote: " + q.reason); lastBuyError = q.reason; return false }
             buyQuoteAt = System.currentTimeMillis()
         }
@@ -1252,7 +1255,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         if (!offer.selling) { DiagLog.w(tag, "prok-" + peer.shortId + " is not selling Internet right now"); return false }
         // v0.14: economics before transport. A deal that cannot fit the budget is refused here,
         // not after a Bluetooth channel, a handshake and a probe have been paid for.
-        val quote = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, offer.pricePerMb * 100)
+        val quote = net.prok.proknet.core.Pricing.quoteForOffer(buyBudgetCentimes, offer.rateCentimesPerMb)
         if (!quote.admissible) {
             DiagLog.w(tag, "BUY refused before any setup: " + quote.reason)
             lastBuyError = quote.reason
@@ -1304,6 +1307,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         DiagLog.i(tag, "BUY admitted: budget " + Market.cfa(buyBudgetCentimes) + ", rate " + Market.cfa(quote.rateCentimesPerMb.toLong()) +
             "/MB, ceiling " + Market.mb(quote.maxBillableBytes))
         buyPrice = offer.pricePerMb
+        buyRateCentimes = offer.rateCentimesPerMb      // v0.19.0: the exact rate, never the whole-CFA rounding
         buyerWanted = peer.shortId
         buyViaRelay = offer.viaRelay
         clearLastFailure()
@@ -1454,7 +1458,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     }
 
     /** v0.14.1: after any failed or finished purchase, no economics may leak into the next tap. */
-    private fun clearPurchaseEconomics() { buyQuote = null; buyQuoteAt = 0; buyPrice = 0 }
+    private fun clearPurchaseEconomics() { buyQuote = null; buyQuoteAt = 0; buyPrice = 0; buyRateCentimes = 0 }
 
     /**
      * v0.14.2: one teardown path, in one order.
@@ -1589,6 +1593,20 @@ class ProkNetNode(private val context: Context) : TransportListener {
     val ledgerSync: net.prok.proknet.node.LedgerSync by lazy {
         net.prok.proknet.node.LedgerSync(identity, { brainUrlProvider?.invoke() ?: "" }) { main.post { pushStatus() } }
     }
+
+    /** v0.19.0: the city this phone is in - Brazzaville is the launch city; searchable citywide. */
+    val city: String get() = marketPrefs.getString("city", net.prok.proknet.core.FlagsView.LAUNCH_CITY) ?: net.prok.proknet.core.FlagsView.LAUNCH_CITY
+
+    /**
+     * v0.19.0: the operator's switches as the Brain last said them. Cached in the
+     * preferences so a phone with no signal still knows what it may do; nothing here
+     * ever turns a function on by itself.
+     */
+    val flagsSync: net.prok.proknet.node.FlagsSync by lazy {
+        net.prok.proknet.node.FlagsSync(identity, { brainUrlProvider?.invoke() ?: "" }, { city },
+            { marketPrefs.getString("flags_json", "") ?: "" }, { marketPrefs.edit().putString("flags_json", it).apply() })
+    }
+    val flags: net.prok.proknet.core.FlagsView.Status get() = flagsSync.status
 
     /** v0.16.2: the same signed payment objects, carried by the Brain when phones are apart. */
     val paymentSync: net.prok.proknet.node.PaymentSync by lazy {

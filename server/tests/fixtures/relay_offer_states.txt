@@ -1,0 +1,18 @@
+# v0.19.0: what a relay's screen says about an offer, per server state.
+#
+# Both halves read this file. The server (server/brain/jobs.py OFFER_TEXT) is the only
+# source of the state; the phone (core/RelayOffersView.kt) shows exactly the text on the
+# same line and nothing else. The product rule (contract §4): a pending job is never
+# spendable cash - "Vérifié — gagné" is said only for a block or a move the Brain verified
+# and settled; anything it did not verify reads "Non vérifié — rien gagné".
+#
+# One STATE|text per line. Blank lines and lines starting with # are ignored.
+
+OFFERED|Proposé
+ACCEPTED|Accepté — en attente
+IN_PROGRESS|En cours
+COMPLETED|Vérifié — gagné
+DECLINED|Refusé
+CANCELLED|Annulé
+EXPIRED|Expiré
+FAILED|Non vérifié — rien gagné

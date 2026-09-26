@@ -115,7 +115,7 @@ MAX_HOLDS_PER_PAIR_PER_HOUR = 3
 HOLD_WINDOW_MS = 3_600_000
 
 #: The provider chooses when to withdraw; below this it is not worth an operator fee.
-WITHDRAW_MIN_CENTIMES = 500 * 100
+WITHDRAW_MIN_CENTIMES = 1_000 * 100      # v0.19.0: launch contract §10.3 - 1,000 FCFA
 #: A withdrawal marked sent with no evidence for a day turns amber; after a week Mike is told.
 SENT_AMBER_MS = 24 * 3_600_000
 SENT_ATTENTION_MS = 7 * 24 * 3_600_000
@@ -128,8 +128,12 @@ UNCLAIMED_REVIEW_MS = 7 * 24 * 3_600_000
 TOPUP_MAX_AUTO_CENTIMES = 10_000 * 100
 #: A refund of unspent credit goes only to a number already bound to that customer.
 REFUND_MIN_CENTIMES = 500 * 100
-#: The relay's share of a relayed session's gross, taken from the seller's side (ex.).
-RELAY_SHARE_PCT = 10
+#: v0.19.0: the relay's share of a relayed session's gross, taken from the seller's side.
+#: Launch contract §10.3 one-relay split 64/20/10/6: the phones sign a 16 % fee on a
+#: relayed contract (platform 10 + reserve 6) and the Brain moves 20 % of the gross from
+#: the seller's earnings to the relay's, leaving the seller 64 %. quotes.RateConfig
+#: carries the same numbers as dated settings.
+RELAY_SHARE_PCT = 20
 
 # queue row kinds
 WITHDRAWAL = "WITHDRAWAL"
@@ -233,7 +237,16 @@ def msisdn_hash(raw: str) -> str:
 
 
 def _liability(account: str) -> bool:
-    return not (account.startswith("float:") or account in ("fees", "prok:testcredit"))
+    """Liability accounts (customer credit, earnings, the fund's budget, promo credit,
+    market revenue, campaign budgets) read credits minus debits; assets (the float) and
+    expenses (fees, test credit, money the fund spent, promo credit that expired) the
+    reverse. v0.19.0 adds the fund/promo/market/campaign books - separate accounts in
+    the same double-entry ledger, so no book can quietly spend another's money."""
+    if account.startswith("float:"):
+        return False
+    if account in ("fees", "prok:testcredit", "fund:spent", "promo:expired", "market:refunds", "market:collection_costs"):
+        return False
+    return True
 
 
 class Ledger:
@@ -310,6 +323,14 @@ class Ledger:
                             " VALUES(?,?,?,?,?,?,?,?,?)", (pid, now, kind, debit, credit, amount, ref, memo, actor))
         except sqlite3.IntegrityError:
             return None
+        return pid
+
+    def post(self, now: int, kind: str, debit: str, credit: str, amount: int, ref: str = "", memo: str = "", actor: str = "") -> Optional[str]:
+        """v0.19.0: the one door for the other books (fund, promo, market, jobs) into the
+        ledger. Same double entry, same idempotency by (kind, ref), same audit. Committed
+        here because the callers are not inside a ledger transaction."""
+        with self.db:
+            pid = self._post(now, kind, debit, credit, amount, ref=ref, memo=memo, actor=actor)
         return pid
 
     def balance(self, account: str) -> int:

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="18sp" android:textStyle="bold" android:text="Partager mon Wi-Fi" />
+        <TextView android:id="@+id/ooFlag" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textStyle="bold" android:text="1. Le réseau que je contrôle" />
+        <TextView android:id="@+id/ooChecks" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textStyle="bold" android:text="2. Les conditions de mon fournisseur" />
+        <CheckBox android:id="@+id/ooAttest" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textStyle="bold" android:text="3. Mon choix" />
+        <RadioGroup android:id="@+id/ooChoice" android:layout_width="match_parent" android:layout_height="wrap_content">
+            <RadioButton android:id="@+id/ooFree" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+            <RadioButton android:id="@+id/ooEarn" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+            <RadioButton android:id="@+id/ooSponsored" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:text="" />
+        </RadioGroup>
+        <Button android:id="@+id/btnOoQuote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Voir l'offre de ProkNet" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textStyle="bold" android:text="4. L'offre" />
+        <TextView android:id="@+id/ooQuote" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="14sp" android:text="Aucune offre demandée. Vous ne tapez jamais de tarif : ProkNet fixe le prix client et votre part, et vous acceptez ou refusez." />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnOoAccept" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Accepter" android:enabled="false" />
+            <Button android:id="@+id/btnOoDecline" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Refuser" android:enabled="false" />
+        </LinearLayout>
+        <TextView android:id="@+id/ooFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textSize="12sp" android:text="" />
+    </LinearLayout>
+</ScrollView>

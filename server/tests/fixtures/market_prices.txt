@@ -1,0 +1,32 @@
+# v0.19.0: Prok Market launch prices (launch contract 2026-09-26, §10.3) and the state texts.
+#
+# Both halves read this file. The server (server/brain/market.py DEFAULT_PRICES, version 1 of
+# the dated price table) and the phone (core/MarketView.kt PRICES) must equal it exactly; a
+# test on each side holds that line. A price change is a NEW dated version on the server,
+# never an edit here without the corresponding tests.
+#
+# Price lines:   KEY|centimes|duration_days|k=v;k=v   (100 FCFA = 10000 centimes)
+# Text lines:    INVOICE_STATE|STATE|text   and   LISTING_STATE|STATE|text
+# Blank lines and lines starting with # are ignored.
+
+POST|10000|30|photos=5
+BOOST|20000|7|zones=1
+PACKAGE5|40000|90|slots=5
+STOREFRONT|200000|30|catalog=1;slots=30
+VOUCHER|0|30|face_value=10000;limit=100
+
+INVOICE_STATE|OPEN|En attente de confirmation
+INVOICE_STATE|PAID|Payé
+INVOICE_STATE|EXPIRED|Expiré
+INVOICE_STATE|CANCELLED|Annulé
+INVOICE_STATE|REFUND_REQUESTED|Remboursement en cours
+INVOICE_STATE|REFUNDED|Remboursé
+
+LISTING_STATE|DRAFT|Brouillon
+LISTING_STATE|AWAITING_PAYMENT|En attente de paiement
+LISTING_STATE|AWAITING_REVIEW|En attente de modération
+LISTING_STATE|PUBLISHED|Publiée
+LISTING_STATE|REJECTED|Refusée
+LISTING_STATE|EXPIRED|Expirée
+LISTING_STATE|WITHDRAWN|Retirée
+LISTING_STATE|HIDDEN|Masquée

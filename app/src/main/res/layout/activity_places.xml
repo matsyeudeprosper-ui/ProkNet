@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- "Internet gratuit à Brazzaville · N lieux connus" and, underneath, when the cached list was refreshed -->
+        <TextView android:id="@+id/plHeader" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="18sp" android:textStyle="bold" android:text="Internet gratuit à Brazzaville" />
+        <TextView android:id="@+id/plRefreshed" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp" android:textSize="13sp" android:text="" />
+        <TextView android:id="@+id/plNote" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" android:textSize="12sp"
+            android:text="Liste non exhaustive : seuls les lieux vérifiés et consentants figurent ici." />
+        <TextView android:id="@+id/plLocationNote" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" android:textSize="13sp" android:text="" />
+        <Button android:id="@+id/btnPlLocation" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Autoriser la position (500 m près)" android:visibility="gone" />
+
+        <EditText android:id="@+id/plSearch" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:hint="Rechercher un lieu, un quartier…" android:inputType="text"
+            android:imeOptions="actionSearch" android:singleLine="true" />
+
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+            android:scrollbars="none">
+            <LinearLayout android:id="@+id/plNeighbourhoods" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:scrollbars="none">
+            <LinearLayout android:id="@+id/plFilters" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
+            <Button android:id="@+id/btnPlRefresh" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Rafraîchir" />
+            <Button android:id="@+id/btnPlContribute" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Contribuer" />
+        </LinearLayout>
+        <TextView android:id="@+id/plOffer" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:text="" />
+
+        <LinearLayout android:id="@+id/plCards" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:layout_marginTop="8dp" />
+        <TextView android:id="@+id/plEmpty" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="13sp" android:text="Aucun lieu dans cette liste. Essayez un autre quartier ou retirez un filtre." />
+
+        <TextView android:id="@+id/plFooter" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:textSize="12sp" android:text="" />
+    </LinearLayout>
+</ScrollView>

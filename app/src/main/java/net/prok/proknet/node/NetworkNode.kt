@@ -636,6 +636,7 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         try { node.paymentSync.run() } catch (e: Exception) { DiagLog.w(tag, "payment sync: " + e.message) }
         try { node.networkSync.run() } catch (e: Exception) { DiagLog.w(tag, "network sync: " + e.message) }
         try { node.ledgerSync.run() } catch (e: Exception) { DiagLog.w(tag, "ledger sync: " + e.message) }
+        try { node.flagsSync.run() } catch (e: Exception) { DiagLog.w(tag, "flags sync: " + e.message) }
     }
 
     private fun doSync(why: String) {
@@ -788,6 +789,8 @@ class NetworkNode(private val context: Context, private val node: ProkNetNode, p
         sb.append(node.networkSync.describe()).append("\n")
         sb.append(node.settlementSync.describe()).append("\n")
         sb.append(node.ledgerSync.describe()).append("\n")
+        sb.append("flags: ").append(node.flags.functions.filter { it.value.enabled }.keys.joinToString(",").ifEmpty { "none on" })
+            .append(if (node.flags.operator) " (OPERATOR)" else "").append(if (node.flagsSync.lastError.isNotEmpty()) " err=" + node.flagsSync.lastError else "").append("\n")
         sb.append("session shutdown:\n")
             .append("  state: ").append(if (node.stoppingInternet) "STOPPING" else if (node.gateway.finalizing) "FINALIZING" else node.tunnel.state).append("\n")
             .append("  reason: ").append(node.tunnel.lastError.ifEmpty { "user stopped" }).append("\n")

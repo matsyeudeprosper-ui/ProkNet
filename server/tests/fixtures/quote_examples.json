@@ -1,0 +1,71 @@
+{
+ "as_of": "2026-09-26",
+ "examples": [
+  {
+   "bytes": 20000000,
+   "customer_total": 500,
+   "direct_platform": 50,
+   "direct_reserve": 50,
+   "direct_source": 400,
+   "fcfa": 5,
+   "label": "20 Mo",
+   "relay_platform": 50,
+   "relay_relay": 100,
+   "relay_reserve": 30,
+   "relay_source": 320
+  },
+  {
+   "bytes": 200000000,
+   "customer_total": 5000,
+   "direct_platform": 500,
+   "direct_reserve": 500,
+   "direct_source": 4000,
+   "fcfa": 50,
+   "label": "200 Mo",
+   "relay_platform": 500,
+   "relay_relay": 1000,
+   "relay_reserve": 300,
+   "relay_source": 3200
+  },
+  {
+   "bytes": 1000000000,
+   "customer_total": 25000,
+   "direct_platform": 2500,
+   "direct_reserve": 2500,
+   "direct_source": 20000,
+   "fcfa": 250,
+   "label": "1 Go",
+   "relay_platform": 2500,
+   "relay_relay": 5000,
+   "relay_reserve": 1500,
+   "relay_source": 16000
+  },
+  {
+   "bytes": 6000000000,
+   "customer_total": 150000,
+   "direct_platform": 15000,
+   "direct_reserve": 15000,
+   "direct_source": 120000,
+   "fcfa": 1500,
+   "label": "6 Go",
+   "relay_platform": 15000,
+   "relay_relay": 30000,
+   "relay_reserve": 9000,
+   "relay_source": 96000
+  }
+ ],
+ "mb": 1000000,
+ "note": "written by brain.quotes.write_fixture; read by tests/test_quotes.py and OwnerQuoteViewTest.kt",
+ "rate_centimes_per_mb": 25,
+ "split_direct": {
+  "platform": 10,
+  "reserve": 10,
+  "source": 80
+ },
+ "split_one_relay": {
+  "platform": 10,
+  "relay": 20,
+  "reserve": 6,
+  "source": 64
+ }
+}

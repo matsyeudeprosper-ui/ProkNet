@@ -84,11 +84,17 @@ class BleScanner(
         val advVer = if (mfg != null && mfg.isNotEmpty()) (mfg[0].toInt() and 0xFF) else 0
         var fullId: String? = null
         var caps = 0
-        var price = 0
-        val shortId: String = if (mfg != null && advVer == 2 && mfg.size >= 1 + Identity.ID_LEN) {
+        var price = 0        // whole CFA per MB, rounded up, for old screens
+        var rate = 0         // v0.19.0: centimes per MB, what the quote uses
+        val shortId: String = if (mfg != null && (advVer == BleConstants.ADV_VERSION || advVer == BleConstants.ADV_VERSION_CFA) && mfg.size >= 1 + Identity.ID_LEN) {
             fullId = mfg.copyOfRange(1, 1 + Identity.ID_LEN).toHex()
             if (mfg.size >= 2 + Identity.ID_LEN) caps = mfg[1 + Identity.ID_LEN].toInt() and 0xFF
-            if (mfg.size >= 4 + Identity.ID_LEN) price = ((mfg[2 + Identity.ID_LEN].toInt() and 0xFF) shl 8) or (mfg[3 + Identity.ID_LEN].toInt() and 0xFF)
+            if (mfg.size >= 4 + Identity.ID_LEN) {
+                val u16 = ((mfg[2 + Identity.ID_LEN].toInt() and 0xFF) shl 8) or (mfg[3 + Identity.ID_LEN].toInt() and 0xFF)
+                // v3 carries centimes; a v2 advert carried whole CFA
+                rate = if (advVer == BleConstants.ADV_VERSION) u16 else u16 * 100
+                price = (rate + 99) / 100
+            }
             fullId.substring(0, Identity.SHORT_ID_LEN * 2)
         } else if (mfg != null && advVer == 1 && mfg.size >= 1 + Identity.SHORT_ID_LEN) {
             mfg.copyOfRange(1, 1 + Identity.SHORT_ID_LEN).toHex()
@@ -101,11 +107,11 @@ class BleScanner(
         synchronized(peers) {
             val p = peers[shortId]
             if (p == null) {
-                peers[shortId] = Peer(shortId, address, result.rssi, now, fullId = fullId, capabilities = caps, pricePerMb = price); isNew = true
+                peers[shortId] = Peer(shortId, address, result.rssi, now, fullId = fullId, capabilities = caps, pricePerMb = price, rateCentimesPerMb = rate); isNew = true
             } else {
                 if (p.address != address) DiagLog.i(tag, "peer " + p.label + " address changed " + p.address + " -> " + address)
-                if (p.capabilities != caps || p.pricePerMb != price) DiagLog.i(tag, "peer " + p.label + " offer: flags " + caps + " price " + price + " CFA/MB" + (if (caps and 1 != 0) " (SELLING)" else ""))
-                p.address = address; p.rssi = result.rssi; p.lastSeen = now; p.capabilities = caps; p.pricePerMb = price
+                if (p.capabilities != caps || p.rateCentimesPerMb != rate) DiagLog.i(tag, "peer " + p.label + " offer: flags " + caps + " rate " + rate + " c/MB" + (if (caps and 1 != 0) " (SELLING)" else ""))
+                p.address = address; p.rssi = result.rssi; p.lastSeen = now; p.capabilities = caps; p.pricePerMb = price; p.rateCentimesPerMb = rate
                 if (fullId != null) p.fullId = fullId
             }
         }

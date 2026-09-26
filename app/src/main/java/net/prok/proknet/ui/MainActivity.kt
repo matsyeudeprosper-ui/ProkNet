@@ -157,6 +157,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
         v<PulseButtonView>(R.id.btnGetInternet).label = getString(R.string.sphere_idle)
         v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
+        // v0.19.0: the launch contract's home actions. "Bring internet to me" is the sphere above.
+        // A switched-off function opens its screen anyway and the screen shows the Brain's own sentence.
+        v<Button>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java).putExtra("filter", "working_now")) }
+        v<Button>(R.id.btnExploreTown).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
+        v<Button>(R.id.btnMarket).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
+        v<Button>(R.id.btnShareWifi).setOnClickListener { startActivity(Intent(this, OwnerOnboardingActivity::class.java)) }
         v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
         v<View>(R.id.rowShare).setOnClickListener { ensureRunning { select(Tab.EARN) } }
         v<View>(R.id.rowMap).setOnClickListener { select(Tab.MAP) }

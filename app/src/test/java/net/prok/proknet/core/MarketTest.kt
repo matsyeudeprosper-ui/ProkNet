@@ -23,7 +23,7 @@ class MarketTest {
         val o = Market.Offer("24e480e6", 5, f, -55, 0)
         assertTrue(o.selling); assertTrue(o.relaying); assertTrue(o.validated); assertEquals(Tunnel.UP_CELLULAR, o.upstreamType)
         assertEquals(Tunnel.UP_WIFI, Market.upstreamOf(Market.flags(false, false, false, Tunnel.UP_WIFI)))
-        assertTrue(o.describe().contains("5 CFA/MB")); assertTrue(o.describe().contains("mobile data")); assertTrue(o.describe().contains("good"))
+        assertTrue(o.describe(), o.describe().contains("5 CFA/Mo")); assertTrue(o.describe().contains("mobile data")); assertTrue(o.describe().contains("good"))
         assertEquals("weak", Market.signalWord(-85)); assertEquals("poor", Market.signalWord(-95))
     }
 

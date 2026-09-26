@@ -34,8 +34,15 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import evidence
+from . import flags
+from . import fund
+from . import jobs
 from . import ledger
+from . import mappack
+from . import market
 from . import network
+from . import places
+from . import quotes
 from . import paybox
 from . import protocol
 from . import ruleconfig
@@ -44,7 +51,7 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.18.2"
+VERSION = "0.19.0"
 
 
 def _network_error(e) -> dict:
@@ -122,6 +129,76 @@ CONFIG_PUBLIC_KEY = os.environ.get("PROK_CONFIG_PUBLIC_KEY", "").strip() or (
 RATE_WINDOW_MS = 60_000
 RATE_MAX_PER_NODE = 30
 
+#: v0.19.0: where the other books keep their files. Never inside the repository.
+MEDIA_DIR = os.environ.get("PROK_MEDIA_DIR", r"C:\ProkNetBrain\media")
+MAPS_DIR = os.environ.get("PROK_MAPS_DIR", r"C:\ProkNetBrain\maps")
+
+
+def quote_secret() -> bytes:
+    """The HMAC secret that signs quotes. From the environment, else from a file under the
+    key directory, generated once. Never in git, never logged."""
+    env = os.environ.get("PROK_QUOTE_SECRET", "").strip()
+    if env:
+        return env.encode("utf-8")
+    path = os.environ.get("PROK_QUOTE_SECRET_FILE", r"C:\ProkNetKeys\quote_secret.txt")
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = f.read().strip()
+                if data:
+                    return data
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        import secrets
+        data = secrets.token_hex(32).encode("ascii")
+        with open(path, "wb") as f:
+            f.write(data)
+        return data
+    except Exception:
+        # a Brain that cannot persist a secret still signs quotes for its own lifetime
+        import secrets
+        return secrets.token_hex(32).encode("ascii")
+
+
+class _PathFirst:
+    """Adapts a module whose dispatchers take (path, who, ...) to the (who, path, ...) mount shape."""
+    def __init__(self, module):
+        self.module = module
+
+    def handle_get(self, who, path, query, now):
+        return self.module.handle_get(path, who, query, now)
+
+    def handle_post(self, who, path, body, now):
+        return self.module.handle_post(path, who, body, now)
+
+    def __getattr__(self, name):
+        return getattr(self.module, name)
+
+
+class _MapMount:
+    """GET /v1/map/<city>/manifest (JSON) and /v1/map/<city>/pack (bytes, served by the handler)."""
+    def __init__(self, packs):
+        self.packs = packs
+
+    def handle_get(self, who, path, query, now):
+        parts = path.split("/")
+        if len(parts) >= 5 and parts[4] == "manifest":
+            m = self.packs.manifest(parts[3])
+            return (200, m) if m else (404, {"error": "no pack for that city"})
+        if len(parts) >= 4 and parts[3] == "cities":
+            return 200, {"cities": self.packs.cities()}
+        return 404, {"error": "not found"}
+
+    def handle_post(self, who, path, body, now):
+        return 404, {"error": "not found"}
+
+    def open(self, city):
+        info = self.packs.open(city)
+        if not info:
+            raise FileNotFoundError("no pack for that city")
+        path, length = info
+        m = self.packs.manifest(city) or {}
+        return {"path": path, "bytes": length, "sha256": m.get("sha256", "")}
+
 
 class State:
     def __init__(self, db_path: str):
@@ -134,6 +211,32 @@ class State:
         # v0.18.0: the ledger shares the Brain's connection and schema (migration 5). Roles
         # and the payments switch come from the environment; see ledger.py.
         self.ledger = ledger.Ledger.from_env(self.brain.db)
+        # v0.19.0: the operator's switches - per city, per function, per cohort, dated
+        self.flags = flags.Flags.from_env(self.brain.db)
+        # v0.19.0: the launch books, all on the Brain's connection and in the SAME ledger
+        # (separate accounts, one double entry). Roles: operators from flags, treasury from
+        # the ledger. The quote secret and the media/map directories live outside git.
+        self.rates = quotes.RateConfig(self.brain.db)
+        self.fund = fund.Fund(self.brain.db, self.ledger.post, self.ledger.balance, self.rates, treasury_ids=self.ledger.treasury_ids)
+        self.quotes = quotes.Quote(self.brain.db, self.rates, quote_secret(),
+                                   fund_reserve=lambda purpose, ref, amount, campaign_id, now: self.fund.reserve(purpose, ref, amount, campaign_id, now))
+        self.jobs = jobs.Jobs(self.brain.db, self.fund, self.quotes, self.rates, post=self.ledger.post,
+                              operator_ids=self.flags.operator_ids)
+        self.places = places.Places(self.brain.db, self.flags.is_operator, ledger=self.ledger)
+        self.market = market.Market(self.brain.db, self.flags.is_operator, self.ledger.is_treasury, MEDIA_DIR, ledger_post=self.ledger.post)
+        self.maps = mappack.MapPacks(MAPS_DIR)
+        # the modules mounted under /v1/<prefix>/ by the generic dispatcher. Each answers
+        # handle_get(who, path, query, now) / handle_post(who, path, body, now) -> (code, dict);
+        # quotes, fund and jobs take the path first, so they are adapted here.
+        self.mounts = {
+            "flags": self.flags,
+            "places": self.places,
+            "market": self.market,
+            "quotes": _PathFirst(self.quotes),
+            "fund": _PathFirst(self.fund),
+            "jobs": _PathFirst(self.jobs),
+            "map": _MapMount(self.maps),
+        }
         self.rules = ruleconfig.RuleStore(self.pay.db, CONFIG_PUBLIC_KEY)
         self.lock = threading.Lock()
         self.rate = {}          # node_id -> [timestamps]
@@ -493,7 +596,57 @@ class Handler(BaseHTTPRequestHandler):
         except ledger.LedgerError as e:
             self._ledger_error(e)
 
+    #: v0.19.0: prefixes whose GETs may be read WITHOUT a signature (public browsing of the
+    #: free map, the market, the map pack and the flag status). A signature, when present,
+    #: still identifies the caller. Every POST is signed, everywhere.
+    PUBLIC_GET_PREFIXES = ("places", "market", "map", "flags")
+
+    def _mounted(self):
+        """The module mounted under /v1/<prefix>/, or None."""
+        parts = self.path.split("?", 1)[0].split("/")
+        if len(parts) >= 3 and parts[1] == "v1" and parts[2] in STATE.mounts:
+            return parts[2], STATE.mounts[parts[2]]
+        return None, None
+
+    def _mount_get(self, prefix, module):
+        who = self._who() if self.headers.get("X-Prok-Identity") else None
+        if who is None and prefix not in self.PUBLIC_GET_PREFIXES:
+            self._json(401, {"error": "this endpoint requires a signed request"})
+            return
+        query = {}
+        if "?" in self.path:
+            from urllib.parse import parse_qsl
+            query = dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True))
+        path = self.path.split("?", 1)[0]
+        now = int(time.time() * 1000)
+        try:
+            with STATE.lock:
+                code, out = module.handle_get(who or "", path, query, now)
+        except Exception as e:  # a module's own error class carries reason/code
+            code = getattr(e, "code", 400)
+            out = {"error": str(e)}
+            if getattr(e, "reason", ""):
+                out["reason"] = e.reason
+            if code >= 500:
+                LOG.exception("mount %s GET failed", prefix)
+        if isinstance(out, dict) or isinstance(out, list):
+            self._json(code, out)
+        else:
+            # a module may answer with a file: (code, {"file": path, "content_type": ...})
+            self._json(500, {"error": "bad module answer"})
+
     def do_GET(self):
+        # ---- v0.19.0: mounted modules (places, market, jobs, quotes, map, flags) ----
+        prefix, module = self._mounted()
+        if module is not None:
+            if prefix == "map" and self.path.split("?", 1)[0].endswith("/pack"):
+                self._serve_map_pack(module)
+                return
+            if prefix == "market" and "/photo/" in self.path:
+                self._serve_market_photo(module)
+                return
+            self._mount_get(prefix, module)
+            return
         # ---- v0.18.0: the ledger, signed and per caller ----
         if self.path.startswith("/v1/ledger/"):
             who = self._who()
@@ -621,7 +774,104 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found\n")
 
+    def _serve_map_pack(self, module):
+        """GET /v1/map/<city>/pack - the offline pack bytes, unsigned, with its sha256 in a header."""
+        city = self.path.split("?", 1)[0].split("/")[3]
+        try:
+            info = module.open(city)
+        except Exception as e:
+            self._json(404, {"error": str(e)})
+            return
+        path, length, sha = info["path"], info["bytes"], info["sha256"]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(length))
+        self.send_header("X-Prok-Sha256", sha)
+        self.end_headers()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
+    def _serve_market_photo(self, module):
+        """GET /v1/market/photo/<listing>/<n> - a published listing's photo, unsigned."""
+        parts = self.path.split("?", 1)[0].split("/")
+        try:
+            path = module.photo_path(parts[4], int(parts[5]))
+        except Exception as e:
+            self._json(404, {"error": str(e)})
+            return
+        if not path or not os.path.exists(path):
+            self._json(404, {"error": "no such photo"})
+            return
+        data = open(path, "rb").read()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _mount_post(self, prefix, module):
+        now = int(time.time() * 1000)
+        ctype = self.headers.get("Content-Type", "")
+        if prefix == "market" and ctype.startswith("image/jpeg"):
+            # a photo upload: raw bytes, signed over those bytes
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length <= 0 or length > 400 * 1024:
+                self._json(413, {"error": "photo too large (300 KB max)"})
+                return
+            raw = self.rfile.read(length)
+            try:
+                with STATE.lock:
+                    who = signed_request.verify(self.headers, raw, STATE.nonces, now, method="POST", path=self.path, require_bound=True)
+            except signed_request.AuthError as e:
+                self._json(401, {"error": str(e)})
+                return
+            query = {}
+            if "?" in self.path:
+                from urllib.parse import parse_qsl
+                query = dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True))
+            try:
+                with STATE.lock:
+                    out = module.store_photo(who, query.get("listing", ""), raw, now)
+                    code = 200
+            except Exception as e:
+                code = getattr(e, "code", 400)
+                out = {"error": str(e)}
+                if getattr(e, "reason", ""):
+                    out["reason"] = e.reason
+            self._json(code, out)
+            return
+        body, raw = self._body()
+        if body is None:
+            self._json(400, {"error": "bad or oversized JSON body"})
+            return
+        try:
+            with STATE.lock:
+                who = signed_request.verify(self.headers, raw, STATE.nonces, now, method="POST", path=self.path, require_bound=True)
+        except signed_request.AuthError as e:
+            self._json(401, {"error": str(e)})
+            return
+        try:
+            with STATE.lock:
+                code, out = module.handle_post(who, self.path.split("?", 1)[0], body, now)
+        except Exception as e:
+            code = getattr(e, "code", 400)
+            out = {"error": str(e)}
+            if getattr(e, "reason", ""):
+                out["reason"] = e.reason
+            if code >= 500:
+                LOG.exception("mount %s POST failed", prefix)
+        self._json(code, out)
+
     def do_POST(self):
+        prefix, module = self._mounted()
+        if module is not None:
+            self._mount_post(prefix, module)
+            return
         if (self.path.startswith("/v1/settlements") or self.path.startswith("/v1/payments")
                 or self.path.startswith("/v1/pay/") or self.path.startswith("/v1/device/")
                 or self.path.startswith("/v1/network/") or self.path.startswith("/v1/ledger/")):
@@ -858,6 +1108,12 @@ def cleanup_loop(state: State, every_s: int):
                 n["payment_windows_swept"] = state.pay.sweep(now_ms)
                 n.update(state.net.sweep(now_ms))
                 n.update(state.ledger.sweep(now_ms))
+                # v0.19.0: the launch books' clocks - reward expiry, invoice expiry, blocks
+                for name, mod in (("places", state.places), ("market", state.market), ("jobs", state.jobs)):
+                    try:
+                        n.update({name + "_" + k: v for k, v in mod.sweep(now_ms).items()})
+                    except Exception as e:
+                        LOG.warning("%s sweep failed: %s", name, e)
             if any(n.values()):
                 LOG.info("cleanup %s", n)
         except Exception as e:  # never let the timer die

@@ -129,7 +129,8 @@ class RelayNode(private val identity: Identity, private val hooks: Hooks) {
         val offer = lastUpstreamOffer
         val sellerRec = Wire.identityRecord(sellerFull.hexToBytes(), sellerKey, hooks.peerName(s.upPeer))
         val buyerRec = Wire.identityRecord(buyerFull.hexToBytes(), buyerKey, hooks.peerName(s.downPeer))
-        val okDown = hooks.sendDown(Wire.FRAME_RELAY_INFO, Relay.info(Relay.ROLE_UPSTREAM_SELLER, offer?.pricePerMb ?: 0, offer?.flags ?: 0, sellerRec))
+        // v0.19.0: the rate travels in centimes per MB (u16), never rounded to whole CFA
+        val okDown = hooks.sendDown(Wire.FRAME_RELAY_INFO, Relay.info(Relay.ROLE_UPSTREAM_SELLER, offer?.rateCentimesPerMb ?: 0, offer?.flags ?: 0, sellerRec))
         val okUp = hooks.sendUp(Wire.FRAME_RELAY_INFO, Relay.info(Relay.ROLE_DOWNSTREAM_BUYER, 0, 0, buyerRec))
         if (okDown) s.introductionsDown++
         if (okUp) s.introductionsUp++
@@ -291,8 +292,8 @@ class RelayNode(private val identity: Identity, private val hooks: Hooks) {
         relayMode -> "RELAY MODE on" + (session?.let { " | session " + it.id + " prok-" + it.downPeer + " -> me -> prok-" + it.upPeer + ": to seller " + it.bytesToUp + " B, to buyer " + it.bytesToDown + " B, " +
             "intro " + it.introductionsDown + "/" + it.introductionsUp + " ack " + (if (it.ackedDown) "buyer" else "-") + "/" + (if (it.ackedUp) "seller" else "-") + ", " + (it.durationMs / 1000) + " s" }
             ?: " | waiting for both links (down " + (hooks.downPeer() ?: "-") + ", up " + (hooks.upPeer() ?: "-") + ")") +
-            (lastUpstreamOffer?.let { " | seller advert " + it.pricePerMb + " CFA/MB" } ?: " | no seller advert seen")
-        providerShort != null -> "buying through relay prok-" + (hooks.downPeer() ?: "?") + " from seller prok-" + providerShort + " at " + providerPrice + " CFA/MB"
+            (lastUpstreamOffer?.let { " | seller advert " + it.rateText } ?: " | no seller advert seen")
+        providerShort != null -> "buying through relay prok-" + (hooks.downPeer() ?: "?") + " from seller prok-" + providerShort + " at " + Market.rateTextFor(providerPrice)
         relayedBuyer != null -> "selling through relay prok-" + (hooks.downPeer() ?: "?") + " to buyer prok-" + relayedBuyer
         else -> "no relay role"
     }
