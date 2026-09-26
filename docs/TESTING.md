@@ -3813,3 +3813,101 @@ entry. That dead end is the thing this section exists to prevent.
 - An upgrade leaving the app unable to show Android's dialog.
 - The settings route offered before the user has actually refused.
 - A build without the permission pretending settings will help.
+
+## 80. v0.18.0 the ledger: credit, earnings, withdrawal on request (two phones + the Brain)
+
+**What this version is, in one sentence:** the Brain now keeps a ledger; a provider's
+earnings accumulate there; the provider chooses when to withdraw; a treasurer sends the
+transfer **by hand** and the app records it. Nothing here sends money.
+
+**Before any of this**, on the Brain (see docs/OPERATIONS.md, v0.18.0): set
+`PROK_TEST_IDS` to the full node ids of the two test phones and `PROK_TREASURY_IDS` to
+the full node id of the phone that will act as treasury (one of the two is fine for
+T80–T83), restart it, and check `https://proknet.duckdns.org/health` says `"schema": 5`.
+Leave `PROK_PAYMENTS_LIVE` **unset** for T80–T83.
+
+Words to use in the report: **PASS**, **FAIL**, or **could not be tested** (say why).
+
+### 80a. T80 – a session becomes earnings, to the centime
+
+1. On the treasury phone: Lab → TRÉSORERIE (the button appears only once the Brain has
+   recognised the identity; if it is missing, tap BRAIN URL → Sync now and reopen Lab).
+   Tap **Crédit test**, paste the BUYER phone's full node id, 2 000 CFA, Poster. Expect
+   "Crédit test posté".
+2. Run one ordinary PAID session between the phones (section 73/75 style: seller
+   PARTAGER, buyer GET INTERNET, load a page, stop).
+3. When both phones show the session settled, wait one sync (≤ 30 s while sharing).
+   On the SELLER's Gagner: **"Gagné sur le réseau Prok : X · Retirable : X"** must appear
+   under the money card, and X must equal the seller-net figure the seller's own session
+   detail shows ("Détails techniques"), to the centime.
+4. FAIL if X differs from the phone's own figure, or if a second sync changes X without
+   a second session.
+
+### 80b. T81 – a hold survives a long session and a dead seller
+
+1. Start a paid session and **leave it running 40 minutes** with the buyer browsing now
+   and then. The seller's network diagnostic (Lab → COPY NETWORK) has a `ledger:` line
+   and the log has `HOLD for prok-…: hold …`; the session must still be running at 35+
+   minutes (the Brain would have expired an unstarted hold at 30).
+2. Now **force-stop the seller app** mid-session (Android settings → Force stop). Wait
+   16 minutes. Ask Claude to read the hold on the Brain: it must be **STALE**, not
+   released - the buyer's credit is still reserved.
+3. Let the buyer's phone sync (it holds the signed final checkpoint): the session settles,
+   the seller's Gagné rises by that session, and the hold is CONSUMED.
+4. FAIL if the hold was released before the session settled, or if the session never
+   posted.
+
+### 80c. T82 – withdrawal on request, sent by hand, confirmed by the operator's message
+
+Needs: the seller phone has earned ≥ 500 CFA in test-credit sessions (run T80 twice if
+not); the treasury phone holds a real SIM whose Mobile Money can send 100 CFA to Mike's
+own second number. This moves **Mike's own money between Mike's own numbers**; nobody
+else's.
+
+1. Seller: Gagner → **Retirer**. Enter 500 (CFA) and the payout number (Mike's second
+   number), choose the rail. Expect toast "Retrait demandé" and the line under the card
+   to read **"Retrait demandé · 500 F · n° …xxxx"**. The Retirer button now shows that
+   text and is disabled.
+2. Treasury phone: TRÉSORERIE. First line must read **"1 retrait en attente = 1 envoi
+   manuel"**. Row shows the amount, the rail, the number with a *Copier n°* button.
+   Tap **Approuver**.
+3. Tap **Marquer envoyé** → confirm. **Now send the transfer by hand** from the operator's
+   app or USSD to that number, for that amount. Seller's line must read **"Envoi en
+   cours"** on its next sync. The queue's first line now reads "0 retraits en attente =
+   0 envois manuels" and "Envoyés, non confirmés : 1".
+4. When the operator's "vous avez envoyé …" message arrives on the treasury phone, the
+   row must turn **Payé** by itself within a minute, and the seller's line must read
+   **"Payé"** on its next sync, with Retirable back to 0.
+   If it does not turn Payé by itself (the parser has never seen a real message: see
+   T85), tap **Confirmer payé** and type the operator's reference. Report **which of the
+   two** happened.
+5. FAIL if any screen shows "Payé" before step 4, or "Envoi en cours" before step 3.
+
+### 80d. T83 – a withdrawal cannot be sent twice
+
+1. With a withdrawal in APPROVED, tap **Marquer envoyé** and confirm. Go back and
+   forward and look at the row: **there must be no Marquer envoyé on a SENT row.**
+2. Ask Claude to read `ledger_audit` on the Brain: any second attempt is a refused row.
+   The first line's count must not have changed.
+3. Seller: try **Retirer** again while the first is open: the button is disabled and the
+   hint says why. FAIL otherwise.
+
+### 80e. T85 – twenty real messages (before T84, before any customer)
+
+On the treasury phone, with `RECEIVE_SMS` or notification access granted, make and
+receive **twenty** real transfers of 100 CFA between Mike's own numbers across both
+operators (received and sent, MTN and Airtel). For each, Lab → TRÉSORERIE → "Messages à
+vérifier": a message the parser could not read appears there with its reason. Copy the
+exact text of every such message into the report (the text is on the phone and nowhere
+else). Those texts become the parser corpus; nothing about T84 is attempted until the
+parser reads real messages.
+
+### 80f. T84 – a customer's top-up (ONLY with `PROK_PAYMENTS_LIVE=1`, ONLY Mike's numbers)
+
+Not to be run until docs/PAYMENTS_V018_DESIGN.md Appendix B items 1–6 have written
+answers and Mike has set the switch himself. Then: the Recharger screen is a later build;
+for now Claude runs `POST /v1/ledger/intent` for the buyer's identity and reads back the
+tagged amount; Mike transfers exactly that amount to the treasury number from his second
+number; the treasury phone's message must credit the buyer's identity within a minute; a
+second identical message must credit nothing; a claim with a number alone must be
+refused.

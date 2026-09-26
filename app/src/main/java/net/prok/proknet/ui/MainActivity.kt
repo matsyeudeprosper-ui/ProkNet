@@ -43,7 +43,9 @@ import net.prok.proknet.core.Evidence
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
+import net.prok.proknet.core.LedgerView
 import net.prok.proknet.core.Market
+import net.prok.proknet.core.Msisdn
 import net.prok.proknet.core.PayWire
 import net.prok.proknet.core.PaymentExpectation
 import net.prok.proknet.core.PaymentRails
@@ -940,6 +942,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         text(R.id.earnSub, money.history); show(R.id.earnSub, money.history.isNotEmpty())
         v<TextView>(R.id.btnEarnWallet).text = money.link
         v<TextView>(R.id.btnEarnWallet).setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
+        renderLedgerEarnings()
 
         // ---- v0.16.0: how this phone gets paid, and how it notices ----
         val claim = node.payments.myDestination()
@@ -1342,6 +1345,67 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         Settlement.Rail.MTN_MOMO -> "MTN Mobile Money"
         Settlement.Rail.AIRTEL_MONEY -> "Airtel Money"
         else -> "Mobile Money"
+    }
+
+    // ---- v0.18.0: earnings at the Brain, withdrawal on request ----------------------------------
+
+    /**
+     * What the ledger says, and nothing it does not. The status line is `LedgerView.text`
+     * for the server's state - "Retrait demandé", "Envoi en cours", "Payé" - never a guess.
+     */
+    private fun renderLedgerEarnings() {
+        val lv = node.ledgerSync.view
+        val have = lv != null
+        show(R.id.earnLedger, have); show(R.id.earnWithdrawal, have); show(R.id.btnWithdraw, have); show(R.id.btnWithdrawCancel, false)
+        if (lv == null) return
+        text(R.id.earnLedger, "Gagné sur le réseau Prok : " + Market.cfa(lv.earnedLifetimeCentimes) + " · Retirable : " + Market.cfa(lv.withdrawableCentimes))
+        val w = lv.withdrawal
+        text(R.id.earnWithdrawal, if (w != null && (w.open || w.state == "PAID" || w.state == "DENIED"))
+            w.text + " · " + Market.cfa(w.amountCentimes) + (if (w.msisdnTail.isNotEmpty()) " · n° …" + w.msisdnTail else "") +
+                (if (w.amber) " · vérification en cours" else "") + (if (w.state == "DENIED" && w.memo.isNotEmpty()) " · " + w.memo else "")
+            else lv.withdrawHint)
+        val btn = v<Button>(R.id.btnWithdraw)
+        btn.isEnabled = lv.canWithdraw
+        btn.text = if (lv.hasOpenWithdrawal) w!!.text else "Retirer"
+        btn.setOnClickListener { withdrawDialog(lv) }
+        show(R.id.btnWithdrawCancel, w?.cancellable == true)
+        v<TextView>(R.id.btnWithdrawCancel).setOnClickListener {
+            val id = w?.id ?: return@setOnClickListener
+            ledgerIo.execute { val out = node.ledgerSync.cancelWithdrawal(id); runOnUiThread { toast(out.message); refresh() } }
+        }
+    }
+
+    private val ledgerIo = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    private fun withdrawDialog(lv: LedgerView.View) {
+        if (!lv.canWithdraw) { toast(lv.withdrawHint); return }
+        val amount = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText((lv.withdrawableCentimes / 100).toString())
+        }
+        val number = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+            hint = "Numéro Mobile Money (9 chiffres)"
+            setText(node.store.paymentDestination(node.identity.idHex)?.msisdn ?: "")
+        }
+        val col = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; addView(amount); addView(number) }
+        AlertDialog.Builder(this).setTitle("Retirer mes gains")
+            .setMessage("Montant en CFA (minimum " + Market.cfa(lv.withdrawMinCentimes) + "). Le trésorier Prok envoie le transfert à la main ; vous verrez ici « Retrait demandé », puis « Envoi en cours », puis « Payé ».")
+            .setView(col)
+            .setPositiveButton("MTN MoMo") { _, _ -> requestWithdrawal("MTN", number.text.toString(), amount.text.toString(), lv) }
+            .setNeutralButton("Airtel Money") { _, _ -> requestWithdrawal("AIRTEL", number.text.toString(), amount.text.toString(), lv) }
+            .setNegativeButton(R.string.close, null).show()
+    }
+
+    private fun requestWithdrawal(rail: String, number: String, amountText: String, lv: LedgerView.View) {
+        val cfa = amountText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        val centimes = cfa * 100
+        if (centimes < lv.withdrawMinCentimes || centimes > lv.withdrawableCentimes) { toast("Montant entre " + Market.cfa(lv.withdrawMinCentimes) + " et " + Market.cfa(lv.withdrawableCentimes)); return }
+        if (Msisdn.digits(number).isEmpty()) { toast("Numéro invalide : 9 chiffres attendus"); return }
+        ledgerIo.execute {
+            val out = node.ledgerSync.requestWithdrawal(rail, number, centimes)
+            runOnUiThread { toast(out.message); refresh() }
+        }
     }
 
     private fun receiveWithDialog() {

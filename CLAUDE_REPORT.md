@@ -1,3 +1,114 @@
+# CLAUDE_REPORT - ProkNet v0.18.0 "a ledger cannot send money"
+
+Date: 2026-09-25
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead), Mike (product owner)
+
+Version 0.18.0, build 80. **760 Android tests, 405 server tests, all passing** (floors
+739 + 360; nothing removed). New Android tests: `LedgerViewTest`, `MsisdnTest`,
+`HoldGateTest`, `ReceiptParserTreasuryTest`; 45 new server tests in `test_ledger.py`. **Nothing in this version
+moves real customer money**: `PROK_PAYMENTS_LIVE` is off, no operator API exists anywhere
+in the code, and the pilot flow is exercised with audited test credit on listed test
+identities and with transfers between Mike's own numbers.
+
+## 1. What was built, in the order you specified
+
+**Ledger + signed-session posting** (`server/brain/ledger.py`, migration 5). Double-entry,
+integer centimes, append-only; a balance is a sum. Verified evidence at `POST
+/v1/settlements` posts once per settlement id (buyer's corroboration posts nothing
+twice); the split is Prok's fee from the evidence, so the seller's earned balance is the
+`seller_net` the server derived, not a phone's number. A session with no hold still
+posts and may take the buyer negative - the report shows it rather than hiding a session
+that happened. An upgrade test takes a real schema-4 database with money rows to 5.
+
+**Holds that cannot release credit while a session may still settle** (`/v1/ledger/hold`
++ `started` / `keepalive` / `release`). Atomic (`BEGIN IMMEDIATE` plus a partial unique
+index on open holds - a concurrency test races two connections). PRE_SESSION expires at
+30 min if no session ever starts; IN_SESSION lives as long as the seller's 30-second
+sharing heartbeat carries the hold id; when keepalives stop it becomes **STALE, still
+reserved**, and only a full day without evidence releases it. The seller may release a
+hold only from PRE_SESSION. Rate limits: 6 holds/hour per customer, 3 per pair. On the
+phone, `Gateway` asks for the hold **off the link thread** before agreeing a PAID
+contract; `HoldGate` (pure) turns the answer into admit / reject-with-a-sentence; an
+unreachable Brain admits on the pre-v0.18 local rule and says so in the log.
+
+**Provider earnings UI and withdrawal requests.** Gagner shows what the ledger says -
+"Gagné sur le réseau Prok" and "Retirable" - and a **Retirer** button enabled only when
+withdrawable ≥ the server's minimum and no withdrawal is open. The line under it is
+`LedgerView.statusText(state)`: exactly one text per server state, read from the same
+fixture the server holds (`withdrawal_states.txt`), and "Payé" only for PAID. A state
+this build does not know reads "En vérification". Requesting reserves the amount at once
+(`earned → inflight`), so the same earnings cannot be requested twice; cancel is allowed
+only while REQUESTED.
+
+**Treasury queue with duplicate-payment protection and audit trail.** `TreasuryActivity`,
+reachable from the Lab screen only when the Brain has said this identity is treasury.
+First line: **"N retraits en attente = N envois manuels."** Per row: Approuver → Marquer
+envoyé (once; the second tap is a 409 and an audit row, and a SENT row is never offered
+that button again) → Payé from the operator's "vous avez envoyé" message, or Confirmer
+payé with the operator's reference typed. One open withdrawal per payee is a DB unique
+index. Every treasury action, and every refused one, is a row in `ledger_audit` with the
+actor. Refusals are audited **durably**: my first version wrote the refusal inside the
+transaction it then rolled back, so the audit row that matters most vanished - a test
+now counts them.
+
+**SMS matching with unmatched payments held for review.** `ReceiptParser.parseTreasury`
+returns direction, amount and the other party's number (as nine digits; only its hash
+leaves the phone). Matching order on the server: a sender already bound to a customer;
+else an open intent with a unique amount tag ("envoyez exactement 503 F"); else
+**UNASSIGNED**, and the money sits in `unassigned:topups`, a liability like any credit,
+never in anybody's credit. **A number alone claims nothing**: a claim needs the number,
+the exact amount and the operator's reference, becomes NEEDS_REVIEW, and credits only
+when a treasurer confirms it. A duplicate message is one row by `sms_hash`. Messages the
+parser cannot read stay on Prok's phone for the treasurer; their text goes nowhere.
+
+## 2. What is deliberately NOT in this build
+
+- Real customer payments (`PROK_PAYMENTS_LIVE` off; an observed top-up is recorded as
+  REJECTED / `payments_disabled` and credits nobody).
+- The `MIN_SESSION_CENTIMES` / `bytesDown == 0` charging rule from the design. It
+  changes what a valid checkpoint costs, which both phones verify byte-for-byte and the
+  server re-derives: that is a pricing-version bump on three sides, not a quiet edit.
+  Scheduled after this build is hardware-proven.
+- Relay share posting exists on the server, but the signed contract carries no
+  `relayId` yet, so no relay is ever paid in this build.
+- The 24-hour kiosk gate and the offline authorisation. Not built; the kiosk path is
+  exactly what it was.
+- Any operator API, sandbox, or registration dependency.
+
+## 3. Honest limits
+
+- The treasury parser has seen **only synthetic messages**. T85 (twenty real MTN Congo
+  and Airtel Congo messages on the treasury phone) comes before T84.
+- The rail of a message is taken from the sender name or the text; failing both, the
+  numbering plan (06 MTN / 05 Airtel) is a guess and is treated as one.
+- The withdrawal row stores the payee's number in clear on the server, because the
+  treasurer must type it. It is returned only to treasury identities and never audited
+  or logged; that is a privacy trade the design makes on purpose and says so.
+- The queue reduces admin work; it does not automate sending. Fifty withdrawals are
+  fifty manual sends, and the screen and the summary say that number.
+
+## 4. Numbers
+
+Server: 405 tests. Android: 760. New fixtures: `withdrawal_states.txt`,
+`msisdn_hash.txt` (Python writes, Kotlin reads; a Kotlin test fails if either side
+drifts). One parser change outside the new code: `ReceiptParser.score` took the minimum
+*signed* distance to a balance word, so a "solde" later in a message cancelled the
+penalty for a number sitting right after "frais"; it now takes the nearest balance word
+*before* the number, as its comment always said. `PARSER_VERSION` is 2. Every existing
+parser test still passes.
+
+## 5. Hardware status
+
+Nothing in v0.18 is hardware-proven. NEXT = TESTING 80 (T80–T83 need `PROK_TEST_IDS`
+and `PROK_TREASURY_IDS` set on the Brain; T85 before T84; T84 only with
+`PROK_PAYMENTS_LIVE=1` and Mike's own numbers). The v0.17 acceptance runs (77, 79, 78,
+75/76) are still open and unaffected: a phone that is not a test identity behaves as
+before, except that a PAID session is now refused when the Brain answers that the buyer
+has no credit.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.17.11 "nobody types the Brain address"
 
 Date: 2026-09-25

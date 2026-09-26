@@ -4921,3 +4921,76 @@ Six defects in three days, all one family:
 Each was correct when written. Each stopped being correct when something else changed, and
 nothing went back to check. The defence in every case was the same: make the decision pure
 and testable, and re-run it on a sweep rather than trusting that a single call site fires.
+
+## v0.18.0 a ledger cannot send money
+
+The product decision (Mike and ChatGPT, 2026-09-25, recorded in
+docs/PAYMENTS_V018_DESIGN.md revision 4): customers top up Prok credit; verified usage
+creates provider and relay earnings; the provider **chooses when to withdraw**; a
+treasurer sends each approved amount **by hand** through Mobile Money and the app records
+the result. No MTN or Airtel API is a dependency of anything. Real customer payments stay
+disabled until the legal and operational questions are answered.
+
+### The ledger is the server's (schema 5)
+
+`server/brain/ledger.py`. Double-entry over string accounts (`credit:<node>`,
+`held:<node>`, `earned:<node>`, `inflight:withdrawals`, `unassigned:topups`,
+`prok:revenue`, `float:mtn`, `float:airtel`, `fees`, `prok:testcredit`). A balance is a
+sum with the account's sign convention; a test sums every account and gets zero.
+Nothing is deleted. A posting has a `(kind, ref)` unique index, which is how a settlement
+posts once whichever phone submits first.
+
+Roles come from the environment (`PROK_TREASURY_IDS`, `PROK_TEST_IDS`), never from the
+app: the app only shows a screen the Brain will honour. Every treasury action and every
+refusal is a row in `ledger_audit` with the actor; refusals are committed **outside** the
+transaction they refuse, because the first version rolled them back with it.
+
+### Holds: reserved until a session cannot settle any more
+
+The seller has Internet, so it asks the Brain for a hold before agreeing a PAID contract.
+`Gateway.onProposal` moves that question off the link's read thread (`pool.execute`) and
+`HoldGate` decides what the answer means: GRANTED admits and the contract remembers the
+hold; REFUSED rejects with a sentence; UNREACHABLE admits on the pre-v0.18 local rule -
+a network hiccup must not make every paid session a refusal.
+
+The hold's clocks are the point. PRE_SESSION expires after 30 minutes if no session ever
+starts. IN_SESSION is kept alive by the seller's ticker every 30 seconds whether or not
+bytes moved (an idle but connected buyer keeps its hold). When keepalives stop the hold
+becomes STALE and **stays reserved**: a session may still settle from either phone. Only
+a full day without evidence releases it, and a settlement arriving later still posts.
+The seller may release a hold only from PRE_SESSION.
+
+### Withdrawal on request; the queue counts manual sends
+
+`earned:<node>` is what may be withdrawn. A request moves the amount to
+`inflight:withdrawals` at once (the same money cannot be requested twice) and a partial
+unique index allows one open withdrawal per payee. States: REQUESTED, APPROVED, SENT,
+PAID, with DENIED / CANCELLED / NEEDS_ATTENTION. `sent` is allowed only from APPROVED
+and exactly once; the second attempt is a 409 and an audit row. PAID comes either from
+the operator's "vous avez envoyé" message matched to **exactly one** SENT row (two
+candidates are flagged, none auto-paid) or from the treasurer typing the operator's
+reference.
+
+The provider's screen shows `LedgerView.statusText(state)` and nothing else: one text per
+state, from the fixture `withdrawal_states.txt` that the server also asserts against;
+"Payé" only for PAID; an unknown state reads "En vérification". The treasurer's screen
+opens with "N retraits en attente = N envois manuels", computed and tested.
+
+### Top-ups: the operator's message is the only evidence
+
+Under a treasury identity, `ReceiptParser.parseTreasury` reads direction, amount and
+the other party's number from an operator message; the number leaves the phone only as
+`Msisdn.hash` (fixture `msisdn_hash.txt`, written by Python, read by Kotlin). The seller
+path is untouched and its privacy test still holds. Matching: bound sender, credit;
+unbound sender with a unique amount tag on an open intent, credit and bind; otherwise
+UNASSIGNED, and the money sits in `unassigned:topups` as a liability until a person
+assigns it. A claim needs number + exact amount + the operator's reference and still
+credits nothing until a treasurer confirms. While `PROK_PAYMENTS_LIVE` is off, an
+observed top-up is recorded as REJECTED and credits nobody.
+
+### What this version does not decide
+
+Charging rule changes (a per-session minimum, zero at `bytesDown == 0`) are a pricing
+version bump verified on both phones and the server, and are not in this build. The
+signed contract does not carry a relay id yet, so the server's relay-share posting is
+unused. The offline authorisation and the kiosk gate are not built.

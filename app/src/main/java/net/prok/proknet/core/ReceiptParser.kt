@@ -28,7 +28,7 @@ import java.text.Normalizer
 object ReceiptParser {
 
     /** Bumped whenever scoring changes, and recorded on every receipt for the audit trail. */
-    const val PARSER_VERSION = 1
+    const val PARSER_VERSION = 2
 
     /**
      * The words the parser knows, kept as data so they can later be replaced by a **signed**
@@ -248,9 +248,13 @@ object ReceiptParser {
         // both together is what a real receipt looks like
         if (nearCredit < 40 && nearCurrency < 20) s += 15
 
-        // a number right after "solde"/"balance" is the running total, not the payment
-        val nearBalance = balanceAt.minOfOrNull { a.at - it } ?: Int.MIN_VALUE
-        if (nearBalance in 0..24) s -= 95
+        // a number right after "solde"/"balance" is the running total, not the payment.
+        // v0.18.0 (parser version 2): the nearest such word BEFORE the number decides. The
+        // old form took the minimum signed distance, so a "solde" later in the message
+        // made the distance negative and quietly cancelled the penalty for a number that
+        // did sit right after "frais".
+        val nearBalance = balanceAt.filter { it <= a.at }.minOfOrNull { a.at - it } ?: Int.MAX_VALUE
+        if (nearBalance <= 24) s -= 95
 
         val nearDebit = debitAt.minOfOrNull { Math.abs(it - a.at) } ?: Int.MAX_VALUE
         if (nearDebit < 24) s -= 60
@@ -272,5 +276,91 @@ object ReceiptParser {
         val m = Regex("(?:ref|reference|txn|transaction|id)[^a-z0-9]{0,3}([a-z0-9][a-z0-9.-]{5,30})")
             .find(normalized) ?: return ""
         return m.groupValues[1].uppercase()
+    }
+
+    // ---- v0.18.0: the treasury phone ---------------------------------------------------------------
+
+    /**
+     * On Prok's own phone the question is different from a seller's: not "did my buyer pay
+     * me" but "what did the operator just tell me happened on Prok's wallet". Money in
+     * ("vous avez reçu 503 F de 066123456") becomes a customer's credit; money out ("vous
+     * avez envoyé 5 000 F à 055987654") confirms a withdrawal the treasurer sent by hand.
+     * Both need the amount AND the other party's number.
+     *
+     * The seller-side [parse] deliberately never returns a number and a test holds that
+     * line; this path is separate, used only under the treasury identity, and the number
+     * leaves the phone only as a hash (see [Msisdn]). Same scoring, same bias: unclear
+     * means AMBIGUOUS and a person looks, never a credit nobody can explain.
+     */
+    enum class Direction { CREDIT, DEBIT, NONE }
+
+    class TreasuryParsed(
+        val direction: Direction,
+        val amountCentimes: Long,
+        /** Nine national digits of the other party, or "". */
+        val counterpartyDigits: String,
+        val confidence: Int,
+        val reason: String,
+    ) {
+        val usable: Boolean get() = direction != Direction.NONE && amountCentimes > 0 && counterpartyDigits.isNotEmpty() && confidence >= MIN_CONFIDENCE
+    }
+
+    /** A Congolese mobile number however the operator prints it: optional +242/00242, then 0 and eight more digits. */
+    private val PHONE = Regex("(?:\\+?242[ .-]?|00242[ .-]?)?0[ .-]?[1-9](?:[ .-]?\\d){7}")
+
+    /** The other party's number in [normalized], as nine national digits, or "". */
+    fun counterparty(normalized: String): String {
+        val found = PHONE.findAll(normalized).map { Msisdn.digits(it.value) }.filter { it.isNotEmpty() }.toList()
+        return found.firstOrNull() ?: ""
+    }
+
+    private fun maskPhones(t: String): String = PHONE.replace(t) { " ".repeat(it.value.length) }
+
+    /** Words after which a number is the operator's fee. Treated like a balance: never the transfer. */
+    private val FEE_WORDS = listOf("frais", "fee", "fees", "commission", "taxe")
+
+    fun parseTreasury(raw: String, rules: Rules = ReceiptRules.current()): TreasuryParsed {
+        if (raw.isBlank()) return TreasuryParsed(Direction.NONE, 0, "", 0, "empty")
+        val t = normalize(raw)
+        val rejected = rules.reject.firstOrNull { t.contains(it) }
+        if (rejected != null) return TreasuryParsed(Direction.NONE, 0, "", 0, "reject word: " + rejected)
+        val creditAt = hits(t, rules.credit)
+        val debitAt = hits(t, rules.debit)
+        if (creditAt.isEmpty() && debitAt.isEmpty()) return TreasuryParsed(Direction.NONE, 0, "", 0, "no receipt or payment concept")
+
+        val number = counterparty(t)
+        // the number's own digits must never compete to be the amount
+        val masked = maskPhones(t)
+        val currencyAt = hits(masked, rules.currency)
+        // a number right after "frais"/"fee" is the operator's charge, not the transfer -
+        // on a sent-money message it sits next to the verb and would otherwise tie
+        val balanceAt = hits(masked, rules.balance) + hits(masked, FEE_WORDS)
+        val candidates = amounts(masked)
+        if (candidates.isEmpty()) return TreasuryParsed(Direction.NONE, 0, number, 0, "no amount found")
+
+        // decide the direction first, from whichever concept is nearer the strongest amount
+        fun best(wordsAt: List<Int>): Pair<Amount, Int>? =
+            candidates.map { it to score(it, wordsAt, emptyList(), currencyAt, balanceAt, 0, masked) }
+                .sortedByDescending { it.second }.firstOrNull()
+        val asCredit = if (creditAt.isNotEmpty()) best(creditAt) else null
+        val asDebit = if (debitAt.isNotEmpty()) best(debitAt) else null
+        val direction = when {
+            asCredit != null && asDebit == null -> Direction.CREDIT
+            asDebit != null && asCredit == null -> Direction.DEBIT
+            asCredit != null && asDebit != null -> if (asDebit.second >= asCredit.second) Direction.DEBIT else Direction.CREDIT
+            else -> Direction.NONE
+        }
+        val wordsAt = if (direction == Direction.DEBIT) debitAt else creditAt
+        val scored = candidates.map { it to score(it, wordsAt, emptyList(), currencyAt, balanceAt, 0, masked) }
+            .sortedByDescending { it.second }
+        val (bestAmount, bestScore) = scored.first()
+        if (bestScore <= 0) return TreasuryParsed(direction, 0, number, 0, "no amount scored positively")
+        val runnerUp = scored.getOrNull(1)?.second ?: 0
+        if (runnerUp > 0 && bestScore - runnerUp < MARGIN)
+            return TreasuryParsed(direction, 0, number, confidence(bestScore), "two amounts are equally plausible")
+        val conf = confidence(bestScore)
+        if (conf < MIN_CONFIDENCE) return TreasuryParsed(direction, bestAmount.centimes, number, conf, "not confident enough")
+        if (number.isEmpty()) return TreasuryParsed(direction, bestAmount.centimes, "", conf, "no counterparty number")
+        return TreasuryParsed(direction, bestAmount.centimes, number, conf, "scored " + bestScore)
     }
 }

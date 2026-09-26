@@ -43,6 +43,20 @@ object ReceiptCapture {
     fun expecting(): Boolean = try { paymentExpected?.invoke() ?: false } catch (e: Exception) { false }
 
     /**
+     * v0.18.0: the treasury phone. On Prok's own phone every operator message about Prok's
+     * wallet is ProkNet's business, so the "only while a payment is expected" gate does not
+     * apply there - but ONLY there: [treasuryActive] answers true solely when the Brain has
+     * said this identity is a treasury identity, and a seller's phone never sees this path.
+     */
+    @Volatile var treasuryActive: (() -> Boolean)? = null
+    @Volatile var treasurySink: ((DeviceReceipt.Candidate) -> Unit)? = null
+
+    fun treasury(): Boolean = try { treasurySink != null && (treasuryActive?.invoke() ?: false) } catch (e: Exception) { false }
+
+    /** May a source read message content right now, for either purpose? */
+    fun anyoneListening(): Boolean = (sink != null && expecting()) || treasury()
+
+    /**
      * The phone's default SMS application. A notification only counts as payment evidence
      * when this app posted it, because any app at all can post "Vous avez reçu 50 CFA".
      */
@@ -62,8 +76,9 @@ object ReceiptCapture {
 
     fun offer(c: DeviceReceipt.Candidate) {
         val s = sink
-        if (s == null) return
-        try { s(c) } catch (e: Exception) { DiagLog.w("RECEIPT", "sink: " + e) }
+        if (s != null && expecting()) try { s(c) } catch (e: Exception) { DiagLog.w("RECEIPT", "sink: " + e) }
+        val t = treasurySink
+        if (t != null && treasury()) try { t(c) } catch (e: Exception) { DiagLog.w("RECEIPT", "treasury sink: " + e) }
     }
 }
 
@@ -89,7 +104,7 @@ class ReceiptListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         // v0.16.1: nobody is waiting on a payment, so this notification is none of our
         // business. We return before reading the title or the text, not after.
-        if (ReceiptCapture.sink == null || !ReceiptCapture.expecting()) return
+        if (!ReceiptCapture.anyoneListening()) return
         val pkg = sbn.packageName ?: return
         // only the default SMS application may speak for the operator
         if (pkg != ReceiptCapture.defaultSmsPackage(this)) return
@@ -113,7 +128,7 @@ class ReceiptListener : NotificationListenerService() {
 class SmsReceiptReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (ReceiptCapture.sink == null || !ReceiptCapture.expecting()) return
+        if (!ReceiptCapture.anyoneListening()) return
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         try {
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return

@@ -108,6 +108,13 @@
             android:launchMode="singleTop"
             android:label="Prok Developer"
             android:windowSoftInputMode="adjustResize" />
+        <!-- v0.18.0: the treasurer's queue. Reachable only when the Brain says this identity is treasury. -->
+        <activity
+            android:name=".ui.TreasuryActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="Prok Trésorerie"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- v0.6: buyer-side VPN. Only the system may bind it. -->
         <service

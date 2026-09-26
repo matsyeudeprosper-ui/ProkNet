@@ -17,6 +17,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import net.prok.proknet.core.Crypto
 import net.prok.proknet.core.DiagLog
+import net.prok.proknet.core.HoldGate
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.LinkIo
 import net.prok.proknet.core.Market
@@ -49,6 +50,15 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         fun onSettled(o: Settlement.Obligation) {}
         /** v0.16.1: this buyer now owes us; hand it our signed payment destination. */
         fun onDebtorLearned(buyerId: String) {}
+        /**
+         * v0.18.0: reserve the buyer's Prok credit at the Brain before a PAID contract is
+         * agreed. Blocks (bounded); called off the link thread. The default is "no Brain",
+         * which [HoldGate] turns into the pre-v0.18 local rule, never into a refusal.
+         */
+        fun holdCredit(buyerId: String, amountCentimes: Long): HoldGate.Answer = HoldGate.Answer.notConfigured
+        fun holdStarted(holdId: String, sessionHex: String) {}
+        fun holdKeepalive(holdId: String) {}
+        fun holdRelease(holdId: String) {}
         fun onChanged()
     }
 
@@ -83,6 +93,15 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         private set
     private var lastCheckpointAt = 0L
     private var lastCheckpointBytes = 0L
+
+    // ---- v0.18.0: the Brain's hold on the buyer's credit for the current contract ----
+    /** Empty when the contract is free, or the Brain was not reachable and the local rule applied. */
+    @Volatile var holdId = ""
+        private set
+    private var holdStartedSent = false
+    private var lastKeepaliveAt = 0L
+    /** The seller says "still live" this often; the Brain marks a hold stale after 15 min without it. */
+    private val keepaliveMs = 30_000L
 
     // ---- v0.14.2: graceful finalisation, decided by core/Teardown ----
     @Volatile private var teardown = Teardown.State()
@@ -267,6 +286,11 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         }
         if (c != null) finalizeContract(c, reason)
         if (s != null) DiagLog.i(tag, "SESSION END: " + s.summary())
+        // v0.18.0: a hold whose session never started goes straight back to the buyer. One
+        // that backed a real session stays reserved at the Brain until the evidence settles it.
+        val hid = holdId
+        holdId = ""; holdStartedSent = false
+        if (hid.isNotEmpty() && s == null) pool.execute { hooks.holdRelease(hid) }
         session = null; buyerShort = null; contract = null; lastIssued = null; lastSigned = null
         updateState()
     }
@@ -344,17 +368,46 @@ class Gateway(private val context: Context, private val identity: Identity, priv
             return
         }
         val c = a.contract!!
-        val sb = Market.SignedContract(c, a.buyerSig!!)
+        val buyerSig = a.buyerSig!!
+        if (!HoldGate.needsHold(c)) { agree(peerShort, c, buyerSig, ""); return }
+        // v0.18.0: a PAID contract waits for the Brain's word on the buyer's credit. This
+        // runs on the link's read thread, which must not block, so the question is asked
+        // from the pool and the answer - bounded by LedgerSync.HOLD_TIMEOUT_MS - decides.
+        lastContractNote = "asking the Brain for a hold"
+        pool.execute {
+            val answer = try { hooks.holdCredit(c.buyerId.toHex(), c.buyerBudgetCentimes) }
+                         catch (e: Exception) { DiagLog.w(tag, "hold: " + e); HoldGate.Answer.unreachable }
+            val d = HoldGate.decide(true, answer)
+            DiagLog.i(tag, "HOLD for prok-" + peerShort + ": " + d.note)
+            if (!d.admit) {
+                lastContractNote = "hold refused"
+                rejectContract(d.rejectMessage, peerShort, send = d.rejectMessage)
+                return@execute
+            }
+            if (!providing) {
+                // the seller stopped while we were asking; give the credit straight back
+                if (d.holdId.isNotEmpty()) hooks.holdRelease(d.holdId)
+                rejectContract("seller not enabled", peerShort)
+                return@execute
+            }
+            agree(peerShort, c, buyerSig, d.holdId)
+        }
+    }
+
+    /** The contract is agreed: both signatures stored, ACCEPT sent, the hold (if any) remembered. */
+    private fun agree(peerShort: String, c: Market.Contract, buyerSig: ByteArray, hold: String) {
+        val sb = Market.SignedContract(c, buyerSig)
         lastContractNote = "accepted"
         if (session != null) endSession("replaced by a new contract")
         val sellerSig = identity.sign(Market.contractSignData(c))
         contract = c; lastIssued = null; lastSigned = null; finalIssued = false; teardown = Teardown.running(teardown)
+        holdId = hold; holdStartedSent = false; lastKeepaliveAt = 0L
         hooks.store().insertSession(StoredSession(c.sessionHex, "seller", c.encode(), sb.sig, sellerSig, "agreed", c.startTs, 0, 0, 0, 0, null, 0, "", peerShort))
         hooks.send(Tunnel.T_CONTRACT_ACCEPT, 0, Tunnel.signed(c.hash(), sellerSig))
         DiagLog.i(tag, "CONTRACT AGREED with prok-" + peerShort + ": session " + c.sessionHex.substring(0, 8) + ", v" + c.version +
             (if (c.budgetSession) " BUDGET, budget " + Market.cfa(c.buyerBudgetCentimes) + ", rate " + Market.cfa(c.rateCentimesPerMb.toLong()) + "/MB, ceiling " + Market.mb(c.maxBytes)
              else ", " + c.pricePerMb + " CFA/MB, min " + c.minPriceCfa + " CFA, max " + (if (c.maxMb == 0) "unlimited" else c.maxMb.toString() + " MB")) +
-            ", fee " + c.feePct + "% (both signatures stored)")
+            ", fee " + c.feePct + "% (both signatures stored)" + (if (hold.isNotEmpty()) ", hold " + hold.take(8) else ""))
         updateState()
     }
 
@@ -379,6 +432,10 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         buyerShort = peerShort
         lastCheckpointAt = System.currentTimeMillis(); lastCheckpointBytes = 0
         hooks.store().updateSession(c.sessionHex, status = "active")
+        // v0.18.0: the hold is now backing a live session; the Brain keeps it reserved
+        // until the session settles, however long that takes, as long as we keep saying so
+        val hid = holdId
+        if (hid.isNotEmpty() && !holdStartedSent) { holdStartedSent = true; lastKeepaliveAt = System.currentTimeMillis(); pool.execute { hooks.holdStarted(hid, c.sessionHex) } }
         hooks.send(Tunnel.T_SESSION_OK, 0, Tunnel.sessionOk(identity.idBytes, Tunnel.upstreamType(up), up.validated))
         DiagLog.i(tag, "SESSION OK for prok-" + peerShort + " via " + upstreamDescription() + " under contract " + c.sessionHex.substring(0, 8))
         updateState()
@@ -390,6 +447,10 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         val c = contract ?: return
         val s = session ?: return
         val now = System.currentTimeMillis()
+        // v0.18.0: "still live", on the ticker's cadence, whether or not any bytes moved -
+        // an idle but connected buyer must not lose its hold
+        val hid = holdId
+        if (hid.isNotEmpty() && holdStartedSent && now - lastKeepaliveAt >= keepaliveMs) { lastKeepaliveAt = now; pool.execute { hooks.holdKeepalive(hid) } }
         val billable = s.bytesUp + s.bytesDown
         if (!final && now - lastCheckpointAt < Market.CHECKPOINT_INTERVAL_MS && billable - lastCheckpointBytes < Market.CHECKPOINT_INTERVAL_BYTES) return
         if (!final && billable == lastCheckpointBytes && lastIssued != null) return

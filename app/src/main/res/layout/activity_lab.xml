@@ -72,6 +72,8 @@
             android:layout_height="wrap_content" android:text="COPY NETWORK" />
         <Button android:id="@+id/btnBrainUrl" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:text="BRAIN URL" />
+        <Button android:id="@+id/btnTreasury" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="TRÉSORERIE" android:visibility="gone" />
     </LinearLayout>
 
     <TextView

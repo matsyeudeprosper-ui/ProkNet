@@ -131,6 +131,11 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
         override fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) = this@ProkNetNode.onSettled(o)
         override fun onDebtorLearned(buyerId: String) { payments.sendDestinationTo(buyerId) }
+        // v0.18.0: the buyer's Prok credit, reserved at the Brain for the length of the session
+        override fun holdCredit(buyerId: String, amountCentimes: Long) = ledgerSync.hold(buyerId, amountCentimes)
+        override fun holdStarted(holdId: String, sessionHex: String) = ledgerSync.holdStarted(holdId, sessionHex)
+        override fun holdKeepalive(holdId: String) = ledgerSync.holdKeepalive(holdId)
+        override fun holdRelease(holdId: String) = ledgerSync.holdRelease(holdId)
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); recheckSharingIfNetworkChanged() } }
     })
     val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
@@ -1543,6 +1548,14 @@ class ProkNetNode(private val context: Context) : TransportListener {
             { zoneProvider?.invoke()?.takeIf { it != net.prok.proknet.core.CoverageModel.NO_ZONE } ?: "" })
     }
 
+    /**
+     * v0.18.0: the Prok ledger - credit, earnings, withdrawal requests, the treasurer's
+     * queue. Its own failure domain: it records and asks, it never sends money.
+     */
+    val ledgerSync: net.prok.proknet.node.LedgerSync by lazy {
+        net.prok.proknet.node.LedgerSync(identity, { brainUrlProvider?.invoke() ?: "" }) { main.post { pushStatus() } }
+    }
+
     /** v0.16.2: the same signed payment objects, carried by the Brain when phones are apart. */
     val paymentSync: net.prok.proknet.node.PaymentSync by lazy {
         net.prok.proknet.node.PaymentSync(identity, store, payments,
@@ -1815,6 +1828,20 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 } catch (e: Exception) { DiagLog.w(tag, "receipt: " + e) }
             }
         }
+        // v0.18.0: the treasury phone reads every operator message about Prok's wallet -
+        // but only once the Brain has said this identity IS the treasury. A seller's phone
+        // answers false here and the gate above stays exactly what v0.16.1 promised.
+        net.prok.proknet.service.ReceiptCapture.treasuryActive = { ledgerSync.view?.treasury == true }
+        net.prok.proknet.service.ReceiptCapture.treasurySink = { c ->
+            settlementIo.execute {
+                try { treasuryWatch.onCandidate(c) } catch (e: Exception) { DiagLog.w(tag, "treasury: " + e) }
+            }
+        }
+    }
+
+    /** v0.18.0: what the treasury phone does with an operator message. Inert elsewhere. */
+    val treasuryWatch: net.prok.proknet.node.TreasuryWatch by lazy {
+        net.prok.proknet.node.TreasuryWatch(ledgerSync) { ledgerSync.view?.treasury == true }
     }
 
     fun start(): Boolean {

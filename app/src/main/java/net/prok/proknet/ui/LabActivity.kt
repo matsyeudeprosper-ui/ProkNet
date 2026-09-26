@@ -109,6 +109,9 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnHistory).setOnClickListener { historyDialog() }
         findViewById<Button>(R.id.btnRelayLab).setOnClickListener { startActivity(Intent(this, RelayLabActivity::class.java)) }
         findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }
+        // v0.18.0: the treasurer's queue, shown only once the Brain has said this identity is treasury
+        findViewById<Button>(R.id.btnTreasury).setOnClickListener { startActivity(Intent(this, TreasuryActivity::class.java)) }
+        findViewById<Button>(R.id.btnTreasury).visibility = if (node.ledgerSync.view?.treasury == true) android.view.View.VISIBLE else android.view.View.GONE
         findViewById<Button>(R.id.btnCopyLogTop).setOnClickListener { copyLog() }
         findViewById<Button>(R.id.btnCopyDiag).setOnClickListener { copyDiag() }
         // v0.15: simulated payments. Developer screen only, off by default, and a long
