@@ -30,16 +30,60 @@ class PulseButtonView(context: Context, attrs: AttributeSet?) : View(context, at
         set(v) { if (field != v) { field = v; invalidate() } }
     var mode: Mode = Mode.IDLE
         set(v) { if (field != v) { field = v; modeAt = System.currentTimeMillis(); invalidate() } }
-    /** How many usable sources are around: each is a dot orbiting on the arc. */
+    /**
+     * v0.19.3: the radar. Everything the network sees around this phone orbits the globe:
+     * Internet from people sharing (green, inner ring), free Wi-Fi places (cyan, inner ring)
+     * and articles people posted (amber, outer ring). A blip is tappable; the globe underneath
+     * keeps its one tap.
+     */
+    enum class Kind { INTERNET, WIFI, ITEM }
+    class Blip(val kind: Kind, val id: String, val title: String, val sub: String)
+
+    var blips: List<Blip> = emptyList()
+        set(v) { field = v; invalidate() }
+    var onBlipTap: ((Blip) -> Unit)? = null
+    /** Kept for callers that only know a count of usable sources (drawn as INTERNET blips). */
     var sources: Int = 0
         set(v) { if (field != v) { field = v; invalidate() } }
 
+    private val hits = ArrayList<Triple<Float, Float, Blip>>()
+    private var pressedBlip: Blip? = null
     private var modeAt = System.currentTimeMillis()
     private var pressAt = 0L
     private val d = resources.displayMetrics.density
     private val brand = context.getColor(R.color.brand)
     private val ok = context.getColor(R.color.ok)
+    private val cInternet = context.getColor(R.color.radar_internet)
+    private val cWifi = context.getColor(R.color.radar_wifi)
+    private val cItem = context.getColor(R.color.radar_item)
     private val violet = 0xFF7C5CFF.toInt()
+
+    private fun blipAt(x: Float, y: Float): Blip? {
+        val reach = 24f * d
+        var best: Blip? = null; var bestD = Float.MAX_VALUE
+        for ((px, py, b) in hits) {
+            val dx = px - x; val dy = py - y; val dist = dx * dx + dy * dy
+            if (dist < reach * reach && dist < bestD) { best = b; bestD = dist }
+        }
+        return best
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                val b = blipAt(event.x, event.y)
+                if (b != null && onBlipTap != null) { pressedBlip = b; return true }
+                pressedBlip = null
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                val b = pressedBlip
+                if (b != null) { pressedBlip = null; if (blipAt(event.x, event.y) === b) onBlipTap?.invoke(b); return true }
+            }
+            android.view.MotionEvent.ACTION_CANCEL -> pressedBlip = null
+        }
+        if (pressedBlip != null) return true
+        return super.onTouchEvent(event)
+    }
 
     private val ambient = Paint(Paint.ANTI_ALIAS_FLAG)
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.3f * d }
@@ -59,7 +103,7 @@ class PulseButtonView(context: Context, attrs: AttributeSet?) : View(context, at
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
-        setMeasuredDimension(w, (336 * d).toInt())
+        setMeasuredDimension(w, (372 * d).toInt())
     }
 
     override fun drawableStateChanged() {
@@ -121,17 +165,28 @@ class PulseButtonView(context: Context, attrs: AttributeSet?) : View(context, at
             canvas.drawCircle(cx, cy, r + f * (outer - r), pulse)
         }
 
-        // the sources as dots orbiting the first arc
-        if (sources > 0) {
-            val n = minOf(sources, 8)
-            val orbit = (now % (if (mode == Mode.SEARCHING) 8000L else 24000L)) / (if (mode == Mode.SEARCHING) 8000f else 24000f) * 360f
-            for (i in 0 until n) {
-                val ang = (-60.0 + i * (360.0 / n) + orbit) * PI / 180.0
-                val px = cx + arcs[0] * cos(ang).toFloat(); val py = cy + arcs[0] * sin(ang).toFloat()
-                dotGlow.color = a(ok, 160); canvas.drawCircle(px, py, 7f * d, dotGlow)
-                dot.color = ok; canvas.drawCircle(px, py, 4f * d, dot)
+        // the radar: what is around, orbiting. Inner ring = Internet and free Wi-Fi, outer ring = articles.
+        hits.clear()
+        val innerBlips = if (blips.isEmpty() && sources > 0) List(minOf(sources, 8)) { Blip(Kind.INTERNET, "", "", "") }
+            else blips.filter { it.kind != Kind.ITEM }.take(8)
+        val outerBlips = blips.filter { it.kind == Kind.ITEM }.take(12)
+        val fast = mode == Mode.SEARCHING
+        val orbit1 = (now % (if (fast) 8000L else 24000L)) / (if (fast) 8000f else 24000f) * 360f
+        val orbit2 = -((now % 60000L) / 60000f * 360f)
+        fun ring(list: List<Blip>, radius: Float, orbit: Float, offset: Double) {
+            val n = list.size
+            for ((i, b) in list.withIndex()) {
+                val ang = (offset + i * (360.0 / n) + orbit) * PI / 180.0
+                val px = cx + radius * cos(ang).toFloat(); val py = cy + radius * sin(ang).toFloat()
+                val c = when (b.kind) { Kind.INTERNET -> cInternet; Kind.WIFI -> cWifi; Kind.ITEM -> cItem }
+                val big = b === pressedBlip
+                dotGlow.color = a(c, if (big) 220 else 150); canvas.drawCircle(px, py, (if (big) 11f else 8f) * d, dotGlow)
+                dot.color = c; canvas.drawCircle(px, py, (if (big) 7f else 5f) * d, dot)
+                if (b.id.isNotEmpty()) hits.add(Triple(px, py, b))
             }
         }
+        if (innerBlips.isNotEmpty()) ring(innerBlips, arcs[0], orbit1, -60.0)
+        if (outerBlips.isNotEmpty()) ring(outerBlips, arcs[1], orbit2, 15.0)
 
         // the sphere: shadow, halo, body, rim
         canvas.drawOval(RectF(cx - r * 0.82f, cy + r * 0.55f, cx + r * 0.82f, cy + r * 1.2f), shadow)

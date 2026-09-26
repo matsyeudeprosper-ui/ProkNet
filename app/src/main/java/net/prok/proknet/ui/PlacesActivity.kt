@@ -165,6 +165,11 @@ class PlacesActivity : Activity() {
         chips.removeAllViews()
         chips.addView(Prok.chip(this, "Tous quartiers", neighbourhood.isEmpty()) { neighbourhood = ""; render() })
         for (n in idx.neighbourhoods) chips.addView(Prok.chip(this, n, neighbourhood == n) { neighbourhood = if (neighbourhood == n) "" else n; render() })
+        // v0.19.3: opened from a radar blip - go straight to that place
+        intent.getStringExtra("venue")?.let { id ->
+            intent.removeExtra("venue")
+            idx.venues.firstOrNull { it.id == id }?.let { guide(it) }
+        }
         val cards = PlacesView.list(idx.venues, filters, neighbourhood, query, here, now)
         val box = findViewById<LinearLayout>(R.id.plCards)
         box.removeAllViews()

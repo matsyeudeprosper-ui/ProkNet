@@ -103,7 +103,18 @@ class MarketActivity : Activity() {
         spinner(R.id.mkSellCondition, MarketView.CONDITIONS.values.toList())
         findViewById<TextView>(R.id.mkPackage5Line).text = MarketView.offerLine("PACKAGE5")
         findViewById<TextView>(R.id.mkStorefrontLine).text = MarketView.offerLine("STOREFRONT")
+        findViewById<Button>(R.id.btnMkSellMore).setOnClickListener {
+            val more = findViewById<View>(R.id.mkSellMore); val open = more.visibility != View.VISIBLE
+            more.visibility = if (open) View.VISIBLE else View.GONE
+            findViewById<Button>(R.id.btnMkSellMore).text = if (open) "Moins de détails" else "Ajouter des détails"
+        }
         show(R.id.mkBrowse)
+        // v0.19.3: opened from the radar - straight to selling, or straight to one listing
+        val listingExtra = intent.getStringExtra("listing")
+        when {
+            intent.getStringExtra("mode") == "sell" -> openSell()
+            listingExtra != null -> openDetail(listingExtra)
+        }
     }
 
     override fun onResume() {
@@ -320,8 +331,6 @@ class MarketActivity : Activity() {
                     s.slotsFree > 0 -> { v.visibility = View.VISIBLE; v.text = "Forfait : " + s.slotsFree + " publication" + (if (s.slotsFree > 1) "s" else "") + " prépayée" + (if (s.slotsFree > 1) "s" else "") + " - décomptée à la publication."; findViewById<Button>(R.id.btnMkSubmit).text = "Publier - 1 publication du forfait" }
                     else -> v.visibility = View.GONE
                 }
-                if (s.adultAttested) findViewById<CheckBox>(R.id.mkSellAdult).isChecked = true
-                if (s.hasPhone) findViewById<EditText>(R.id.mkSellPhone).hint = "Numéro Mobile Money déjà enregistré (laisser vide pour le garder)"
             }
         }
     }
@@ -342,7 +351,12 @@ class MarketActivity : Activity() {
             runOnUiThread {
                 if (jpeg == null) { toast("Photo illisible"); return@runOnUiThread }
                 pendingPhotos.add(jpeg)
-                findViewById<TextView>(R.id.mkSellPhotos).text = pendingPhotos.size.toString() + " / " + MarketView.MAX_PHOTOS + " photos"
+                findViewById<LinearLayout>(R.id.mkSellPhotoStrip).addView(ImageView(this).apply {
+                    setImageBitmap(BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size))
+                    scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; setBackgroundResource(R.drawable.bg_card)
+                    layoutParams = LinearLayout.LayoutParams(Prok.dp(context, 72), Prok.dp(context, 72)).apply { marginEnd = Prok.dp(context, 8) }
+                })
+                findViewById<Button>(R.id.btnMkAddPhoto).text = if (pendingPhotos.size >= MarketView.MAX_PHOTOS) "5 photos, c'est le maximum" else "Ajouter une autre photo (" + pendingPhotos.size + "/5)"
             }
         }
     }
@@ -366,24 +380,43 @@ class MarketActivity : Activity() {
         }
     }
 
+    /** v0.19.3: what you sell, a price, a photo. The rest is folded; the number and the 18+ line are asked once. */
     private fun submit() {
         val title = text(R.id.mkSellTitle)
-        val desc = text(R.id.mkSellDesc)
+        val desc = text(R.id.mkSellDesc).ifEmpty { title }
         val cat = MarketView.CATEGORIES.keys.toList()[findViewById<PickerView>(R.id.mkSellCategory).selected.coerceAtLeast(0)]
         val cond = conditionKeys[findViewById<PickerView>(R.id.mkSellCondition).selected.coerceAtLeast(0)]
         val price = digits(R.id.mkSellPrice) * 100
         val hood = text(R.id.mkSellNeighbourhood)
         val pickup = text(R.id.mkSellPickup)
-        val phone = text(R.id.mkSellPhone)
-        val adult = findViewById<CheckBox>(R.id.mkSellAdult).isChecked
-        if (title.isEmpty() || desc.isEmpty()) { toast("Titre et description requis"); return }
-        if (!adult) { toast("Cochez l'attestation : 18 ans ou plus"); return }
-        if (phone.isNotEmpty() && Msisdn.digits(phone).isEmpty()) { toast("Numéro invalide : 9 chiffres attendus"); return }
-        if (phone.isEmpty() && seller?.hasPhone != true) { toast("Votre numéro Mobile Money est requis (jamais publié)"); return }
+        if (title.isEmpty()) { toast("Dites ce que vous vendez"); return }
+        if (price <= 0) { toast("Indiquez un prix"); return }
+        val needPhone = seller?.hasPhone != true
+        val needAttest = seller?.adultAttested != true
+        if (needPhone || needAttest) firstTimeDialog(needPhone, needAttest) { phone -> publish(title, desc, cat, cond, price, hood, pickup, phone) }
+        else publish(title, desc, cat, cond, price, hood, pickup, "")
+    }
+
+    private fun firstTimeDialog(needPhone: Boolean, needAttest: Boolean, then: (String) -> Unit) {
+        val phone = EditText(this).apply { hint = "Votre numéro Mobile Money (9 chiffres)"; inputType = InputType.TYPE_CLASS_PHONE }
+        val attest = CheckBox(this).apply { text = "J'ai 18 ans ou plus et cet article m'appartient." }
+        val fields = ArrayList<View>(); if (needPhone) fields += phone; if (needAttest) fields += attest
+        AlertDialog.Builder(this).setTitle("Une fois seulement")
+            .setMessage(if (needPhone) "Votre numéro sert à payer les services Prok. Il n'est jamais publié." else "")
+            .setView(form(*fields.toTypedArray()))
+            .setPositiveButton("Continuer") { _, _ ->
+                val digits = Msisdn.digits(phone.text.toString())
+                if (needPhone && digits.isEmpty()) { toast("Numéro invalide : 9 chiffres attendus"); return@setPositiveButton }
+                if (needAttest && !attest.isChecked) { toast("Cochez la ligne 18 ans ou plus"); return@setPositiveButton }
+                then(if (needPhone) digits else "")
+            }.setNegativeButton("Annuler", null).show()
+    }
+
+    private fun publish(title: String, desc: String, cat: String, cond: String, price: Long, hood: String, pickup: String, phone: String) {
         chooseRail { r ->
             status("Envoi de l'annonce…")
             io.execute {
-                val reg = market.registerSeller(if (phone.isEmpty()) "" else Msisdn.digits(phone), true)
+                val reg = market.registerSeller(phone, true)
                 if (!reg.ok) { runOnUiThread { status(""); toast(reg.message) }; return@execute }
                 val out = market.submitListing(title, desc, cat, price, cond, hood, pickup, 0.0, 0.0, "AUTO", r)
                 if (!out.ok) { runOnUiThread { status(""); toast(out.message) }; return@execute }
@@ -394,7 +427,8 @@ class MarketActivity : Activity() {
                 runOnUiThread {
                     status("")
                     pendingPhotos.clear()
-                    findViewById<TextView>(R.id.mkSellPhotos).text = "0 / 5 photos"
+                    findViewById<LinearLayout>(R.id.mkSellPhotoStrip).removeAllViews()
+                    findViewById<Button>(R.id.btnMkAddPhoto).text = "Ajouter des photos"
                     for (id in listOf(R.id.mkSellTitle, R.id.mkSellDesc, R.id.mkSellPrice, R.id.mkSellPickup)) findViewById<EditText>(id).setText("")
                     if (photoErrors > 0) toast(photoErrors.toString() + " photo(s) non envoyée(s)")
                     if (invoice != null) openPay(invoice)

@@ -102,6 +102,85 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     private val money by lazy { getSharedPreferences("proknet_money", Context.MODE_PRIVATE) }
     /** v0.19.2: which pane of Moi is open - the menu, Mon argent, Historique or Réglages. */
     private var mePane = R.id.meMenu
+
+    // ---- v0.19.3: the radar's feeds - free Wi-Fi places from the cached index, articles from the market -------
+    private val radarIo = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val placesSync by lazy { net.prok.proknet.node.PlacesSync(node.identity, { node.brainUrlProvider?.invoke() ?: "" }, filesDir, node.city) }
+    private val marketSync by lazy { net.prok.proknet.node.MarketSync(node.identity) { node.brainUrlProvider?.invoke() ?: "" } }
+    @Volatile private var radarVenues: List<net.prok.proknet.core.PlacesView.Card> = emptyList()
+    @Volatile private var radarItems: List<net.prok.proknet.core.MarketView.Listing> = emptyList()
+    private var radarFedAt = 0L
+    private var radarFeeding = false
+    private var usableNow: List<GetInternet.Candidate> = emptyList()
+
+    /** Every minute while Home is on screen: the places index (from disk) and the newest articles (one public GET). */
+    private fun feedRadar(now: Long) {
+        if (radarFeeding || now - radarFedAt < 60_000L) return
+        radarFeeding = true
+        radarIo.execute {
+            try {
+                val idx = placesSync.cached()?.let { net.prok.proknet.core.PlacesView.parseIndex(it.text) }
+                val venues = idx?.venues.orEmpty().filter { it.status == "WORKING_NOW" || it.status == "RECENTLY_VERIFIED" }
+                    .sortedBy { net.prok.proknet.core.PlacesView.STATUS_RANK[it.status] ?: 9 }.take(6)
+                val items = if (marketSync.configured) marketSync.search(limit = 12)?.items.orEmpty() else emptyList()
+                radarVenues = venues; radarItems = items
+            } catch (e: Exception) { DiagLog.w(tag, "radar feed: " + e.message) }
+            finally { radarFedAt = System.currentTimeMillis(); radarFeeding = false }
+        }
+    }
+
+    private fun renderRadar(usable: List<GetInternet.Candidate>) {
+        val blips = ArrayList<PulseButtonView.Blip>()
+        for (c in usable.take(8)) blips += PulseButtonView.Blip(PulseButtonView.Kind.INTERNET, c.id, c.name,
+            if (c.priceCentimesPerMb == 0) getString(R.string.offer_free) else CoverageModel.priceBandWord(c.priceCentimesPerMb))
+        for (vn in radarVenues) blips += PulseButtonView.Blip(PulseButtonView.Kind.WIFI, vn.id, vn.name, vn.statusText + (if (vn.neighbourhood.isNotEmpty()) " · " + vn.neighbourhood else ""))
+        for (it in radarItems) blips += PulseButtonView.Blip(PulseButtonView.Kind.ITEM, it.id, it.title, it.priceText + (if (it.neighbourhood.isNotEmpty()) " · " + it.neighbourhood else ""))
+        v<PulseButtonView>(R.id.btnGetInternet).blips = blips
+        text(R.id.chipInternet, usable.size.toString() + " Internet")
+        text(R.id.chipWifi, radarVenues.size.toString() + " Wi-Fi gratuit")
+        text(R.id.chipItems, radarItems.size.toString() + (if (radarItems.size == 1) " article" else " articles"))
+    }
+
+    /** One blip, one sliding card, one button. */
+    private fun blipSheet(b: PulseButtonView.Blip) {
+        val c = this
+        val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        val (word, dot) = when (b.kind) {
+            PulseButtonView.Kind.INTERNET -> "Internet partagé" to R.drawable.dot_ok
+            PulseButtonView.Kind.WIFI -> "Wi-Fi gratuit" to R.drawable.dot_cyan
+            PulseButtonView.Kind.ITEM -> "Article" to R.drawable.dot_amber
+        }
+        box.addView(Prok.caption(c, word).apply { setCompoundDrawablesRelativeWithIntrinsicBounds(dot, 0, 0, 0); compoundDrawablePadding = dp(8); gravity = android.view.Gravity.CENTER_VERTICAL })
+        box.addView(Prok.h2(c, b.title, 10).apply { textSize = 22f })
+        box.addView(Prok.body(c, b.sub, 6))
+        when (b.kind) {
+            PulseButtonView.Kind.INTERNET -> {
+                box.addView(Prok.wide(c, getString(R.string.sphere_idle).replace('\n', ' ')) { Sheet.dismiss(); getInternet() })
+                box.addView(Prok.wideSecondary(c, "Voir toutes les offres") { Sheet.dismiss(); select(Tab.INTERNET) })
+            }
+            PulseButtonView.Kind.WIFI -> {
+                box.addView(Prok.wide(c, "M'y guider") { Sheet.dismiss(); startActivity(Intent(c, PlacesActivity::class.java).putExtra("venue", b.id)) })
+                box.addView(Prok.wideSecondary(c, "Tous les lieux") { Sheet.dismiss(); startActivity(Intent(c, PlacesActivity::class.java)) })
+            }
+            PulseButtonView.Kind.ITEM -> {
+                val photo = radarItems.firstOrNull { it.id == b.id }?.photoUrls?.firstOrNull()
+                val img = ImageView(c).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; setBackgroundResource(R.drawable.bg_card_alt)
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(200)).apply { topMargin = dp(12) }
+                    visibility = View.GONE
+                }
+                box.addView(img)
+                if (photo != null) radarIo.execute {
+                    val bytes = marketSync.photo(photo) ?: return@execute
+                    val bmp = try { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) } catch (e: Exception) { null } ?: return@execute
+                    runOnUiThread { img.setImageBitmap(bmp); img.visibility = View.VISIBLE }
+                }
+                box.addView(Prok.wide(c, "Voir l'annonce") { Sheet.dismiss(); startActivity(Intent(c, MarketActivity::class.java).putExtra("listing", b.id)) })
+                box.addView(Prok.wideSecondary(c, "Tout le marché") { Sheet.dismiss(); startActivity(Intent(c, MarketActivity::class.java)) })
+            }
+        }
+        Sheet.show(c, box)
+    }
     /** v0.15.1: Activité answers "what happened"; Wallet answers "what needs my attention". */
     private var walletTab: Boolean
         get() = mePane == R.id.walletPane
@@ -171,8 +250,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
         // v0.19.0: the launch contract's home actions. "Bring internet to me" is the sphere above.
         // A switched-off function opens its screen anyway and the screen shows the Brain's own sentence.
-        v<View>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
-        v<View>(R.id.btnMarket).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
+        // v0.19.3: the radar legend is three doors; the globe's blips open a sliding card; + publishes
+        v<View>(R.id.chipInternet).setOnClickListener { select(Tab.INTERNET) }
+        v<View>(R.id.chipWifi).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
+        v<View>(R.id.chipItems).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
+        v<View>(R.id.homeFab).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java).putExtra("mode", "sell")) }
+        v<PulseButtonView>(R.id.btnGetInternet).onBlipTap = { b -> blipSheet(b) }
         v<View>(R.id.earnQuoteRow).setOnClickListener { startActivity(Intent(this, OwnerOnboardingActivity::class.java)) }
         v<View>(R.id.earnRelayRow).setOnClickListener { startActivity(Intent(this, RelayOffersActivity::class.java)) }
         v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
@@ -249,6 +332,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         tab = t
         show(R.id.tabHome, t == Tab.HOME); show(R.id.tabInternet, t == Tab.INTERNET); show(R.id.tabMap, t == Tab.MAP)
         show(R.id.tabEarn, t == Tab.EARN); show(R.id.tabActivity, t == Tab.ACTIVITY)
+        show(R.id.homeFab, t == Tab.HOME)
         // Internet is part of Accueil; Carte is part of Moi
         val lit = when (t) { Tab.INTERNET -> Tab.HOME; Tab.MAP -> Tab.ACTIVITY; else -> t }
         val items = listOf(Tab.HOME to (R.id.navHomeIcon to R.id.navHomeText), Tab.EARN to (R.id.navEarnIcon to R.id.navEarnText), Tab.ACTIVITY to (R.id.navActivityIcon to R.id.navActivityText))
@@ -485,6 +569,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     @Deprecated("plain Activity API, by design")
     override fun onBackPressed() {
         when {
+            Sheet.isOpen() -> Sheet.dismiss()
             tab == Tab.INTERNET -> select(Tab.HOME)
             tab == Tab.MAP -> { mePane = R.id.meMenu; select(Tab.ACTIVITY) }
             tab == Tab.ACTIVITY && mePane != R.id.meMenu -> { mePane = R.id.meMenu; refresh() }
@@ -571,7 +656,8 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         val usable = cands.filter { GetInternet.blocker(it, now, null) == null }
         val sourcesWord = if (usable.isEmpty()) getString(R.string.sources_none) else if (usable.size == 1) getString(R.string.sources_one) else getString(R.string.sources_many, usable.size)
         text(R.id.tileAround, usable.size.toString())
-        v<PulseButtonView>(R.id.btnGetInternet).sources = usable.size
+        feedRadar(now)
+        renderRadar(usable)
         text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceBandWord(usable.minOf { it.priceCentimesPerMb }))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))

@@ -25,4 +25,8 @@
     <color name="map_red">#F2B8B8</color>
     <color name="map_unknown">#1B2540</color>
     <color name="legend_text">#0E1424</color>
+    <!-- v0.19.3 radar: the three kinds of blip -->
+    <color name="radar_internet">#2FD08A</color>
+    <color name="radar_wifi">#3DD6F5</color>
+    <color name="radar_item">#F6C34A</color>
 </resources>

@@ -74,32 +74,32 @@
         </LinearLayout>
 
         <!-- ================= sell form ================= -->
+        <!-- v0.19.3: three things and a button. Everything else is folded or asked once. -->
         <LinearLayout android:id="@+id/mkSell" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="18dp" android:layout_marginBottom="14dp">
-                <TextView android:id="@+id/mkSellOffer" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/H3" />
-                <TextView android:id="@+id/mkSellVoucher" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Muted" android:textColor="@color/ok" android:visibility="gone" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Relue avant publication. Refusée = non facturée. Aucune commission sur la vente." style="@style/Muted" />
-            </LinearLayout>
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="L'article" style="@style/Caption" />
-            <EditText android:id="@+id/mkSellTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Titre" android:inputType="textCapSentences" android:maxLength="80" android:singleLine="true" />
-            <EditText android:id="@+id/mkSellDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="État, défauts, ce qui est inclus. Pas de numéro ni d'adresse exacte." android:inputType="textMultiLine|textCapSentences" android:minLines="3" android:gravity="top" android:maxLength="2000" />
-            <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCategory" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" style="@style/Input" android:text="Catégorie" />
+            <Button android:id="@+id/btnMkAddPhoto" android:layout_width="match_parent" android:layout_height="118dp" android:text="Ajouter des photos" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text" android:textAllCaps="false" android:background="@drawable/bg_secondary" android:drawableTop="@drawable/ic_photo" android:drawableTint="@color/brand" android:drawablePadding="6dp" android:paddingTop="22dp" android:paddingBottom="22dp" android:stateListAnimator="@null" />
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:scrollbars="none">
+                <LinearLayout android:id="@+id/mkSellPhotoStrip" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" />
+            </HorizontalScrollView>
+            <TextView android:id="@+id/mkSellPhotos" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" style="@style/Caption" android:visibility="gone" />
+            <EditText android:id="@+id/mkSellTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:hint="Qu'est-ce que vous vendez ?" android:inputType="textCapSentences" android:maxLength="80" android:singleLine="true" android:textSize="17sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-                <EditText android:id="@+id/mkSellPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:hint="Prix (F)" android:inputType="number" />
-                <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCondition" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" style="@style/Input" android:text="État" />
+                <EditText android:id="@+id/mkSellPrice" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:hint="Prix en F" android:inputType="number" android:textSize="17sp" />
+                <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCategory" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" style="@style/Input" android:text="Catégorie" />
             </LinearLayout>
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="La remise" style="@style/Caption" />
-            <EditText android:id="@+id/mkSellNeighbourhood" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Quartier (ex. Bacongo)" android:inputType="textCapWords" android:singleLine="true" />
-            <EditText android:id="@+id/mkSellPickup" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Lieu public de rencontre (ex. Marché Total)" android:inputType="textCapSentences" android:singleLine="true" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="Vous" style="@style/Caption" />
-            <EditText android:id="@+id/mkSellPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Numéro Mobile Money (jamais publié)" android:inputType="phone" />
-            <CheckBox android:id="@+id/mkSellAdult" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="J'ai 18 ans ou plus et cet article m'appartient." />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="10dp">
-                <Button android:id="@+id/btnMkAddPhoto" android:text="Ajouter une photo" style="@style/SmallSecondary" android:drawableStart="@drawable/ic_camera" android:drawableTint="@color/text" android:drawablePadding="8dp" />
-                <TextView android:id="@+id/mkSellPhotos" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="12dp" android:text="0 / 5 photos" style="@style/Muted" />
+            <Button android:id="@+id/btnMkSubmit" android:text="Publier - 100 F" style="@style/PrimaryButton" android:layout_marginTop="16dp" />
+            <TextView android:id="@+id/mkSellVoucher" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="" style="@style/Muted" android:textColor="@color/ok" android:gravity="center" android:visibility="gone" />
+            <TextView android:id="@+id/mkSellOffer" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" style="@style/Muted" android:gravity="center" />
+            <Button android:id="@+id/btnMkSellMore" android:text="Ajouter des détails" style="@style/GhostButton" android:layout_width="match_parent" android:layout_marginTop="6dp" />
+            <LinearLayout android:id="@+id/mkSellMore" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                <EditText android:id="@+id/mkSellDesc" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Détails : état, défauts, ce qui est inclus" android:inputType="textMultiLine|textCapSentences" android:minLines="2" android:gravity="top" android:maxLength="2000" />
+                <net.prok.proknet.ui.PickerView android:id="@+id/mkSellCondition" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" style="@style/Input" android:text="État" />
+                <EditText android:id="@+id/mkSellNeighbourhood" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Quartier (ex. Bacongo)" android:inputType="textCapWords" android:singleLine="true" />
+                <EditText android:id="@+id/mkSellPickup" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Lieu public de rencontre (ex. Marché Total)" android:inputType="textCapSentences" android:singleLine="true" />
             </LinearLayout>
-            <Button android:id="@+id/btnMkSubmit" android:text="Publier - 100 F" style="@style/PrimaryButton" android:layout_marginTop="18dp" />
-            <TextView android:id="@+id/mkSellRules" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Interdit : armes, drogues, objets volés, contrefaçons, services sexuels, documents d'identité." style="@style/Muted" android:gravity="center" />
+            <!-- asked once, in a dialog, the first time somebody publishes -->
+            <EditText android:id="@+id/mkSellPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="phone" android:visibility="gone" />
+            <CheckBox android:id="@+id/mkSellAdult" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:visibility="gone" />
+            <TextView android:id="@+id/mkSellRules" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Relue avant publication · refusée = non facturée · aucune commission sur la vente." style="@style/Caption" android:gravity="center" />
         </LinearLayout>
 
         <!-- ================= pay ================= -->
