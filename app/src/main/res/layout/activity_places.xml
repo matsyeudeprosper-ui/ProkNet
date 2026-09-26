@@ -38,14 +38,14 @@
         <!-- contribute: one card, one action -->
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card_accent" android:padding="20dp" android:layout_marginTop="6dp">
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Vous connaissez un Wi-Fi gratuit ?" style="@style/H2" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Connectez-vous au réseau du lieu, puis signalez-le. Seule une empreinte du réseau et la zone sont envoyées." style="@style/Muted" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Connectez-vous au Wi-Fi du lieu, puis appuyez ici." style="@style/Muted" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="14dp" android:gravity="center_vertical">
                 <Button android:id="@+id/btnPlContribute" android:text="Signaler un lieu" style="@style/SmallPrimary" />
                 <Button android:id="@+id/btnPlRefresh" android:text="Actualiser" style="@style/GhostButton" android:layout_marginStart="8dp" />
             </LinearLayout>
         </LinearLayout>
 
-        <TextView android:id="@+id/plNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Liste non exhaustive : seuls les lieux vérifiés et consentants figurent ici." style="@style/Muted" android:gravity="center" />
-        <TextView android:id="@+id/plFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Caption" android:gravity="center" />
+        <TextView android:id="@+id/plNote" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Seuls les lieux vérifiés figurent ici." style="@style/Caption" android:gravity="center" />
+        <TextView android:id="@+id/plFooter" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="" style="@style/Caption" android:gravity="center" android:visibility="gone" />
     </LinearLayout>
 </ScrollView>

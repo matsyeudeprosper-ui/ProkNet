@@ -100,8 +100,12 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     /** v0.17.5: what to do once a zone becomes possible, if anything. */
     private var pendingAfterLocation: (() -> Unit)? = null
     private val money by lazy { getSharedPreferences("proknet_money", Context.MODE_PRIVATE) }
+    /** v0.19.2: which pane of Moi is open - the menu, Mon argent, Historique or Réglages. */
+    private var mePane = R.id.meMenu
     /** v0.15.1: Activité answers "what happened"; Wallet answers "what needs my attention". */
-    private var walletTab = false
+    private var walletTab: Boolean
+        get() = mePane == R.id.walletPane
+        set(v) { mePane = if (v) R.id.walletPane else R.id.activityPane }
 
     // ---- v0.14: the buyer's budget and the seller's earning policy live here ----------------------
     private var budgetCentimes: Long
@@ -149,20 +153,26 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         }
         v<Switch>(R.id.switchShareCoverage).setOnClickListener { network.shareCoverage = v<Switch>(R.id.switchShareCoverage).isChecked; refresh() }
 
+        // v0.19.2: three places. Internet (the offers) hangs off Home; Carte, Wallet, Historique
+        // and Réglages hang off Moi; each sub-screen has one back arrow and the phone's back key.
         v<View>(R.id.navHome).setOnClickListener { select(Tab.HOME) }
-        v<View>(R.id.navInternet).setOnClickListener { select(Tab.INTERNET) }
-        v<View>(R.id.navMap).setOnClickListener { select(Tab.MAP) }
         v<View>(R.id.navEarn).setOnClickListener { select(Tab.EARN) }
-        v<View>(R.id.navActivity).setOnClickListener { select(Tab.ACTIVITY) }
+        v<View>(R.id.navActivity).setOnClickListener { mePane = R.id.meMenu; select(Tab.ACTIVITY) }
+        v<View>(R.id.homeNet).setOnClickListener { select(Tab.INTERNET) }
+        v<View>(R.id.internetBack).setOnClickListener { select(Tab.HOME) }
+        v<View>(R.id.mapBack).setOnClickListener { mePane = R.id.meMenu; select(Tab.ACTIVITY) }
+        v<View>(R.id.meRowWallet).setOnClickListener { mePane = R.id.walletPane; refresh() }
+        v<View>(R.id.meRowHistory).setOnClickListener { mePane = R.id.activityPane; refresh() }
+        v<View>(R.id.meRowSettings).setOnClickListener { mePane = R.id.meSettings; refresh() }
+        v<View>(R.id.meRowMap).setOnClickListener { select(Tab.MAP) }
+        for (id in listOf(R.id.meBackWallet, R.id.meBackHistory, R.id.meBackSettings)) v<View>(id).setOnClickListener { mePane = R.id.meMenu; refresh() }
 
         v<PulseButtonView>(R.id.btnGetInternet).label = getString(R.string.sphere_idle)
         v<PulseButtonView>(R.id.btnGetInternet).setOnClickListener { getInternet() }
         // v0.19.0: the launch contract's home actions. "Bring internet to me" is the sphere above.
         // A switched-off function opens its screen anyway and the screen shows the Brain's own sentence.
-        v<View>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java).putExtra("filter", "working_now")) }
-        v<View>(R.id.rowMap).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
+        v<View>(R.id.btnFreeNearMe).setOnClickListener { startActivity(Intent(this, PlacesActivity::class.java)) }
         v<View>(R.id.btnMarket).setOnClickListener { startActivity(Intent(this, MarketActivity::class.java)) }
-        v<View>(R.id.rowShare).setOnClickListener { ensureRunning { select(Tab.EARN) } }
         v<View>(R.id.earnQuoteRow).setOnClickListener { startActivity(Intent(this, OwnerOnboardingActivity::class.java)) }
         v<View>(R.id.earnRelayRow).setOnClickListener { startActivity(Intent(this, RelayOffersActivity::class.java)) }
         v<Button>(R.id.btnHomeStop).setOnClickListener { if (node.sellOn) stopSharing() else stopAll() }
@@ -202,8 +212,6 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             if (want) ensureRunning { } else { DiagLog.i(tag, "Keep Prok running switched OFF"); ProkNetService.stop(this) }
             main.postDelayed({ refresh() }, 1500)
         }
-        v<TextView>(R.id.segActivity).setOnClickListener { walletTab = false; refresh() }
-        v<TextView>(R.id.segWallet).setOnClickListener { walletTab = true; refresh() }
         v<Button>(R.id.btnRename).setOnClickListener { renameDialog() }
         v<Button>(R.id.btnBattery).setOnClickListener { batterySettings() }
         v<Button>(R.id.btnDeveloper).setOnClickListener { startActivity(Intent(this, LabActivity::class.java)) }
@@ -241,10 +249,11 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         tab = t
         show(R.id.tabHome, t == Tab.HOME); show(R.id.tabInternet, t == Tab.INTERNET); show(R.id.tabMap, t == Tab.MAP)
         show(R.id.tabEarn, t == Tab.EARN); show(R.id.tabActivity, t == Tab.ACTIVITY)
-        val items = listOf(Tab.HOME to (R.id.navHomeIcon to R.id.navHomeText), Tab.INTERNET to (R.id.navInternetIcon to R.id.navInternetText), Tab.MAP to (R.id.navMapIcon to R.id.navMapText),
-            Tab.EARN to (R.id.navEarnIcon to R.id.navEarnText), Tab.ACTIVITY to (R.id.navActivityIcon to R.id.navActivityText))
+        // Internet is part of Accueil; Carte is part of Moi
+        val lit = when (t) { Tab.INTERNET -> Tab.HOME; Tab.MAP -> Tab.ACTIVITY; else -> t }
+        val items = listOf(Tab.HOME to (R.id.navHomeIcon to R.id.navHomeText), Tab.EARN to (R.id.navEarnIcon to R.id.navEarnText), Tab.ACTIVITY to (R.id.navActivityIcon to R.id.navActivityText))
         val on = getColor(R.color.nav_active); val off = getColor(R.color.nav_inactive)
-        for ((tt, ids) in items) { v<ImageView>(ids.first).setColorFilter(if (tt == t) on else off); v<TextView>(ids.second).setTextColor(if (tt == t) on else off) }
+        for ((tt, ids) in items) { v<ImageView>(ids.first).setColorFilter(if (tt == lit) on else off); v<TextView>(ids.second).setTextColor(if (tt == lit) on else off) }
         if (t == Tab.MAP && !cover.hasLocationPermission() && !locationAsked) askLocation()
         refresh()
     }
@@ -468,7 +477,19 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             Tab.INTERNET -> refreshInternet(b)
             Tab.MAP -> refreshMap()
             Tab.EARN -> refreshEarn(s)
-            Tab.ACTIVITY -> refreshActivity(running)
+            Tab.ACTIVITY -> { refreshActivity(running); if (mePane == R.id.meSettings) refreshEarn(s) }
+        }
+    }
+
+    /** The phone's back key walks out of a sub-screen before it leaves the app. */
+    @Deprecated("plain Activity API, by design")
+    override fun onBackPressed() {
+        when {
+            tab == Tab.INTERNET -> select(Tab.HOME)
+            tab == Tab.MAP -> { mePane = R.id.meMenu; select(Tab.ACTIVITY) }
+            tab == Tab.ACTIVITY && mePane != R.id.meMenu -> { mePane = R.id.meMenu; refresh() }
+            tab != Tab.HOME -> select(Tab.HOME)
+            else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }
 
@@ -554,11 +575,6 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         text(R.id.tilePrice, if (usable.isEmpty()) "—" else CoverageModel.priceBandWord(usable.minOf { it.priceCentimesPerMb }))
         val lastOnline = cover.state.requests.filter { it.state == InternetRequest.State.ONLINE }.maxOfOrNull { it.updatedAt }
         text(R.id.tileLast, if (lastOnline == null) getString(R.string.never) else CoverageModel.ageWord(now - lastOnline).removePrefix("il y a "))
-        v<TextView>(R.id.rowShareSub).apply { text = getString(if (sellerOn) R.string.row_share_caption_on else R.string.row_share_caption); setTextColor(getColor(if (sellerOn) R.color.ok else R.color.text_muted)) }
-        // v0.13.3: a quiet badge so waiting demand is visible without opening Gagner
-        val waiting = ProviderInbox.active(network.inbox, now).count { !it.accepted }
-        v<TextView>(R.id.rowShareBadge).text = if (waiting == 1) getString(R.string.inbox_badge_one) else getString(R.string.inbox_badge_many, waiting)
-        show(R.id.rowShareBadge, waiting > 0)
         // v0.17.5: Bluetooth off and zone unknown are both reasons nothing is happening,
         // and both used to be invisible. Bluetooth first: it stops even the local path.
         val locNote = LocationGate.note(locationNeed())
@@ -1261,11 +1277,10 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun renderWallet(obligations: List<Settlement.Obligation>) {
-        show(R.id.walletPane, walletTab)
-        show(R.id.activityPane, !walletTab)
-        val on = getColor(R.color.text); val off = getColor(R.color.text_muted)
-        v<TextView>(R.id.segActivity).setTextColor(if (walletTab) off else on)
-        v<TextView>(R.id.segWallet).setTextColor(if (walletTab) on else off)
+        show(R.id.meMenu, mePane == R.id.meMenu)
+        show(R.id.walletPane, mePane == R.id.walletPane)
+        show(R.id.activityPane, mePane == R.id.activityPane)
+        show(R.id.meSettings, mePane == R.id.meSettings)
         if (!walletTab) return
 
         val me = node.identity.idHex
