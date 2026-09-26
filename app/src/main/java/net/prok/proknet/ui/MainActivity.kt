@@ -1141,7 +1141,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
             (if (lv.heldCentimes > 0) " (dont " + Market.cfa(lv.heldCentimes) + " réservé pour la session en cours)" else "")
         slot.visibility = android.view.View.VISIBLE
         btn.visibility = android.view.View.VISIBLE
-        btn.text = if (lv.paymentsLive) "Recharger" else "Recharger (bientôt)"
+        btn.text = if (lv.topUpsOpen) "Recharger" else "Recharger (bientôt)"
         btn.setOnClickListener { rechargeDialog(lv) }
         slot.setOnLongClickListener { creditMenu(lv); true }
     }
@@ -1187,7 +1187,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
     }
 
     private fun rechargeDialog(lv: LedgerView.View) {
-        if (!lv.paymentsLive) {
+        if (!lv.topUpsOpen) {
             AlertDialog.Builder(this).setTitle("Recharger")
                 .setMessage("Les recharges ne sont pas encore ouvertes. Le réseau Prok le dira ici quand elles le seront ; d'ici là, ne transférez d'argent à personne pour ProkNet.")
                 .setPositiveButton(R.string.close, null).show()

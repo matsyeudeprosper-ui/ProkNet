@@ -49,7 +49,11 @@ object LedgerView {
         val treasury: Boolean, val paymentsLive: Boolean, val fetchedAt: Long,
         /** v0.18.0 final: unspent credit that may go back to a number this customer paid from. */
         val refundableCentimes: Long = 0, val refundMinCentimes: Long = 0, val boundRails: List<String> = emptyList(),
+        /** v0.18.2: is this identity on the server's pilot allowlist for real money? */
+        val pilot: Boolean = false,
     ) {
+        /** Top-ups are open for THIS phone only when the server says both: live, and listed. */
+        val topUpsOpen: Boolean get() = paymentsLive && pilot
         /** A refund is offered only to somebody who topped up from a number, and only when nothing is open. */
         val canRefund: Boolean get() = !hasOpenWithdrawal && hold == null && boundRails.isNotEmpty() && refundableCentimes >= refundMinCentimes && refundMinCentimes > 0
         val hasOpenWithdrawal: Boolean get() = withdrawal?.open == true
@@ -81,6 +85,7 @@ object LedgerView {
             treasury = BrainPayload.field(text, "treasury") == "true",
             paymentsLive = BrainPayload.field(text, "payments_live") == "true",
             fetchedAt = now,
+            pilot = BrainPayload.field(text, "pilot") == "true",
             refundableCentimes = num(text, "refundable"), refundMinCentimes = num(text, "refund_min"),
             boundRails = Regex("\"bound_rails\"\\s*:\\s*\\[([^\\]]*)\\]").find(text)?.groupValues?.get(1)
                 ?.split(',')?.map { it.trim().trim('"') }?.filter { it.isNotEmpty() } ?: emptyList(),
@@ -189,13 +194,27 @@ object LedgerView {
         for (rail in listOf("MTN", "AIRTEL")) {
             val r = obj(text, rail) ?: continue
             val typed = BrainPayload.field(r, "typed")
+            val block = BrainPayload.field(r, "approval_block")
             val line = rail + " attendu " + Market.cfa(num(r, "expected")) +
                 (if (typed.isEmpty() || typed == "null") " · solde jamais saisi" else " · saisi " + Market.cfa(num(r, "typed")) + " (écart " + Market.cfa(num(r, "delta")) + ")") +
                 (if (BrainPayload.field(r, "doubt") == "true") " · DOUTE" else "") +
-                (if (BrainPayload.field(r, "check_stale") == "true") " · contrôle à refaire" else "")
+                (if (BrainPayload.field(r, "check_stale") == "true") " · contrôle à refaire" else "") +
+                (if (block.isNotEmpty()) " · approbations bloquées : " + blockWord(block) else "")
             parts.add(line)
         }
-        return (if (alert) "ALERTE RAPPROCHEMENT - aucune approbation tant que les soldes ne concordent pas\n" else "Rapprochement OK\n") + parts.joinToString("\n")
+        val blocked = BrainPayload.field(text, "approvals_blocked") == "true"
+        return (if (alert) "ALERTE RAPPROCHEMENT - aucune approbation tant que les soldes ne concordent pas\n"
+                else if (blocked) "Saisissez le solde du jour de chaque opérateur avant d'approuver\n"
+                else "Rapprochement OK\n") + parts.joinToString("\n")
+    }
+
+    /** v0.18.2: why a rail is closed to approvals, in the treasurer's words. */
+    fun blockWord(reason: String): String = when (reason) {
+        "no_balance_check" -> "solde du jour non saisi"
+        "balance_check_stale" -> "solde saisi il y a plus d'un jour"
+        "balance_below_ledger" -> "solde saisi inférieur au registre"
+        "shortfall" -> "les portefeuilles ne couvrent pas le registre"
+        else -> reason
     }
 
     /** The honest first line of the treasurer's screen, computed here so a test can hold it. */

@@ -174,7 +174,8 @@ counts processes afterwards for the same reason.
 | `PROK_TREASURY_IDS` | v0.18.0: comma-separated node ids allowed to act as the **treasury** (record top-ups, move withdrawals past REQUESTED, post test credit) | none - nobody is treasury |
 | `PROK_TEST_IDS` | v0.18.0: node ids that may receive audited **test credit** (pilot phones only) | none |
 | `PROK_PAYMENTS_LIVE` | v0.18.0: `1` lets an observed top-up credit a customer. Anything else records it as REJECTED (`payments_disabled`) and credits nobody | off |
-| `PROK_TREASURY_MSISDN_MTN` / `PROK_TREASURY_MSISDN_AIRTEL` | v0.18.1: the treasury wallet numbers a customer is told to send to. Shown by the app ONLY while `PROK_PAYMENTS_LIVE=1`; before that the app says top-ups are not open | none |
+| `PROK_TREASURY_MSISDN_MTN` / `PROK_TREASURY_MSISDN_AIRTEL` | v0.18.1: the treasury wallet numbers a customer is told to send to. Shown by the app ONLY while `PROK_PAYMENTS_LIVE=1` AND the identity is in the pilot allowlist; before that the app says top-ups are not open | none |
+| `PROK_PILOT_IDS` | v0.18.2: the **pilot allowlist** - node ids that may move real money. Even with `PROK_PAYMENTS_LIVE=1`, an identity not listed here is shown no treasury number, and a valid operator message for it is held for review, never credited automatically (and a treasurer cannot credit it until it is listed). Enforced on the server | none - nobody |
 
 No credential is ever a command-line argument, and none is in git.
 
@@ -244,13 +245,22 @@ an audit row and neither duplicates money:
   both full ids and how the person proved themselves. Refused while the old identity has
   an open hold or an open withdrawal/refund.
 
+### v0.18.2 what an approval needs
+
+A withdrawal or refund is approved only against a wallet balance the treasurer typed
+**for that rail, within the last 24 hours, not below what the ledger expects**. No
+balance today, a balance older than a day, or a balance below the ledger each refuse the
+approval with the reason; the treasury screen's reconciliation line says which. This is
+the daily "Solde du jour" made mandatory rather than advisory: a wallet nobody looked at
+today does not vouch for a send, and a parsed message is not proof.
+
 ### Access control, in one table
 
 | Who | May |
 |---|---|
 | Any signed identity | read its own wallet; request a hold on a BUYER's credit as the seller of that session; request its own withdrawal or refund; register a top-up intent; claim an unassigned payment (number + amount + reference, then a treasurer decides) |
 | A treasury identity (`PROK_TREASURY_IDS`) | everything above plus: the queue, approve / deny / mark sent / not sent / confirm paid, record an observed credit or debit, review a claim, post test credit to a TEST identity, type a balance, reverse a posting with a memo, move an identity, read the audit and the reconciliation |
-| Nobody | send money, change a posting, delete anything, credit a customer while `PROK_PAYMENTS_LIVE` is off, credit a customer from a number alone |
+| Nobody | send money, change a posting, delete anything, credit a customer while `PROK_PAYMENTS_LIVE` is off, credit an identity outside `PROK_PILOT_IDS`, credit a customer from a number alone, approve a send without today's typed balance on that rail |
 
 ### Backups
 

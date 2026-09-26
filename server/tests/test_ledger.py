@@ -32,9 +32,16 @@ STRANGER = "ee" * 16
 H = 3_600_000
 
 
-def fresh(payments_live=False, test_ids=(BUYER,)):
+def fresh(payments_live=False, test_ids=(BUYER,), balances=True, pilot_ids=(BUYER, STRANGER)):
     db = sqlite3.connect(":memory:", check_same_thread=False)
-    return Ledger(db, treasury_ids=(TREASURER,), test_ids=test_ids, payments_live=payments_live)
+    L = Ledger(db, treasury_ids=(TREASURER,), test_ids=test_ids, payments_live=payments_live, pilot_ids=pilot_ids)
+    if balances:
+        # v0.18.2: an approval needs a same-day typed balance per rail. Most tests are not
+        # about that rule, so the treasurer "typed" the (empty) wallets at T0; the tests of
+        # the rule itself pass balances=False.
+        for rail in ("MTN", "AIRTEL"):
+            L.balance_check(TREASURER, rail, 0, T0)
+    return L
 
 
 def derived(sid="s1", gross=1_000, fee_pct=5, session="0102030405060708", buyer=BUYER, seller=SELLER):
@@ -726,6 +733,12 @@ class LedgerApiTest(unittest.TestCase):
         self.assertEqual("Retrait demandé", out["withdrawal"]["text"])
         code, q = self.call("GET", "/v1/ledger/treasury/queue", self.treasurer)
         self.assertEqual(1, q["summary"]["manual_sends_pending"])
+        # v0.18.2: nothing is approved without today's typed balance on that rail
+        code, out = self.call("POST", "/v1/ledger/treasury/withdrawal", self.treasurer, {"withdrawal_id": wid, "action": "approve"})
+        self.assertEqual(409, code)
+        self.assertEqual(ledger.RECONCILIATION_ALERT, out["reason"])
+        code, out = self.call("POST", "/v1/ledger/treasury/balance", self.treasurer, {"rail": "AIRTEL", "typed": 0})
+        self.assertEqual(200, code, out)
         for action in ("approve", "sent"):
             code, out = self.call("POST", "/v1/ledger/treasury/withdrawal", self.treasurer, {"withdrawal_id": wid, "action": action})
             self.assertEqual(200, code, out)

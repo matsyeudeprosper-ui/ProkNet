@@ -8,15 +8,18 @@
 # passes PRAGMA integrity_check; copies it into place; prints its schema version.
 #
 # Rolling back CODE as well: `git -C C:\Projects\ProkNet checkout <tag>` BEFORE start.ps1.
-# A newer schema on an older code is refused by nothing automatic - the schema is
-# additive (5 = ledger tables, 6 = one column), so older code simply ignores the extra
-# tables, but restore the backup taken before the upgrade if you want the two to match.
+# The schema is additive (5 = ledger tables, 6 = one column), so older code simply ignores
+# the extra tables; restore the backup taken before the upgrade if you want the two to match.
+#
+# NOTE: the database parameter is -Database, not -Db. PowerShell reserves -Db as the alias
+# of its common -Debug switch, and a script declaring $Db cannot be invoked at all. Found
+# by the first rollback drill on 2026-09-26 - which is what drills are for.
 param(
     [Parameter(Mandatory = $true)][string]$From,
-    [string]$Db = $env:PROK_BRAIN_DB
+    [string]$Database = $env:PROK_BRAIN_DB
 )
 $ErrorActionPreference = "Stop"
-if (-not $Db) { $Db = "C:\ProkNetBrain\brain.db" }
+if (-not $Database) { $Database = "C:\ProkNetBrain\brain.db" }
 if (-not (Test-Path $From)) { throw "backup not found: $From" }
 
 $running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*brain.app*" }
@@ -38,13 +41,13 @@ Set-Content -Path $tmp -Value $check -Encoding ascii
 if ($LASTEXITCODE -ne 0) { Remove-Item $tmp -Force; throw "the backup did not pass its integrity check - nothing restored" }
 Remove-Item $tmp -Force
 
-$dir = Split-Path -Parent $Db
-if (Test-Path $Db) {
+$dir = Split-Path -Parent $Database
+if (Test-Path $Database) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $keep = Join-Path (Join-Path $dir "backups") "brain-replaced-$stamp.db"
-    Copy-Item $Db $keep -Force
+    Copy-Item $Database $keep -Force
     Write-Host "current database kept as $keep"
 }
-Copy-Item $From $Db -Force
-Write-Host "restored $From -> $Db"
+Copy-Item $From $Database -Force
+Write-Host "restored $From -> $Database"
 Write-Host "now: start.ps1, then status.ps1 must show the expected schema"

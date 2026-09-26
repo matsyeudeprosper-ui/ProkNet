@@ -1,3 +1,55 @@
+# CLAUDE_REPORT - ProkNet v0.18.2 "the two gaps, and what a phone must still prove"
+
+Date: 2026-09-26
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead), Mike (product owner)
+
+Version 0.18.2, build 82. Server **437** tests; Android totals in section 4. This closes
+the two gaps ChatGPT's review of v0.18.1 found. Real-device acceptance and real operator
+messages remain **not run** - I have no phone, SIM or ADB on this machine - and the
+handoff says so line by line.
+
+## 1. Gap 1: `PROK_PAYMENTS_LIVE=1` opened top-ups to every app user
+
+Fixed with a **server-enforced pilot allowlist**, `PROK_PILOT_IDS`. With payments live:
+
+- an identity NOT listed is never shown a treasury number (`pay_to` is empty, `pilot` is
+  false in the intent and the wallet; the app shows "Recharger (bientôt)");
+- a valid operator message for an unlisted identity - tagged amount or bound number -
+  is held for review with reason `not_in_pilot`, posts to the suspense account, and
+  credits nobody; a treasurer cannot confirm it until the identity is listed (403,
+  audited);
+- a listed identity is credited exactly as before.
+
+Tested over the real HTTP handler: unlisted intent shows no number; a valid SMS for an
+unlisted identity -> NEEDS_REVIEW / `not_in_pilot` / credit 0 / review refused; the same
+message for a listed identity -> MATCHED and credited; a number bound while listed stops
+crediting once the identity is unlisted.
+
+## 2. Gap 2: approvals without a typed balance
+
+`_approvals_blocked` now takes the rail and the time and returns a reason: **shortfall**,
+**no balance check** on that rail, **check older than 24 h**, or **typed below the
+ledger**. Only a same-day balance on that rail that is not below expectation lets an
+approval through. A balance on the other rail does not count. Tested: missing, stale,
+low, matching, above, the other rail, and the one-day boundary. The treasury screen's
+reconciliation line names the reason in the treasurer's words.
+
+## 3. What I could not do, and did not pretend to
+
+No line of TESTING 80 or 81 has been run; no real MTN Congo or Airtel Congo message has
+been parsed. Both need the phones and the SIMs, which are in Congo. The handoff lists
+them as **not run** with the exact procedure, and the release notes say the same.
+The rollback path WAS exercised on the pilot Brain: a fresh backup restored with
+`restore.ps1`, the Brain restarted, `/health` back on the same schema (section 4).
+
+## 4. Numbers
+
+Server 437 tests (was 428; 9 new in `test_pilot_gate.py`). Android **772** tests, all passing.
+Rollback drill: run on the pilot Brain 2026-09-26 09:46 UTC+2: fresh backup brain-20260926-094624.db (schema 6) -> stop.ps1 -> restore.ps1 -From that backup (integrity check ok; the current file kept as brain-replaced-20260926-094629.db) -> start.ps1 -> status.ps1 and public /health on 0.18.2 / schema 6. restore.ps1 also refuses a missing file and refuses to run while the Brain is up. The first attempt of the drill found that the script could not be invoked at all (its -Db parameter collided with PowerShell's -Debug alias); fixed to -Database. That is what a drill is for.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.18.1 "the v0.18 release"
 
 Date: 2026-09-26

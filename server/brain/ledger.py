@@ -184,6 +184,14 @@ CLAIM_INCOMPLETE = "claim_incomplete"
 NOT_ORIGIN_NUMBER = "not_origin_number"
 RECONCILIATION_ALERT = "reconciliation_alert"
 IDENTITY_BUSY = "identity_busy"
+NOT_IN_PILOT = "not_in_pilot"
+# why an approval is blocked (reconcile reports one of these per rail)
+BLOCK_SHORTFALL = "shortfall"
+BLOCK_NO_CHECK = "no_balance_check"
+BLOCK_STALE_CHECK = "balance_check_stale"
+BLOCK_BELOW = "balance_below_ledger"
+#: A wallet balance typed longer ago than this does not vouch for anything.
+BALANCE_CHECK_MAX_AGE_MS = 24 * 3_600_000
 # top-up review reasons
 ABOVE_AUTO_LIMIT = "above_auto_limit"
 REBIND_CANDIDATE = "rebind_candidate"
@@ -230,7 +238,7 @@ def _liability(account: str) -> bool:
 
 class Ledger:
     def __init__(self, db: sqlite3.Connection, treasury_ids=(), test_ids=(), payments_live: bool = False,
-                 clock: Callable[[], int] = None, treasury_msisdn: Optional[Dict[str, str]] = None):
+                 clock: Callable[[], int] = None, treasury_msisdn: Optional[Dict[str, str]] = None, pilot_ids=()):
         self.db = db
         self.db.row_factory = sqlite3.Row
         # a bare connection (tests) may not have run the numbered migrations
@@ -245,6 +253,11 @@ class Ledger:
         self.payments_live = bool(payments_live)
         #: where a customer sends a top-up, per rail; shown ONLY while payments are live
         self.treasury_msisdn = {k: msisdn_digits(v) for k, v in (treasury_msisdn or {}).items() if msisdn_digits(v)}
+        #: v0.18.2: the pilot allowlist. `PROK_PAYMENTS_LIVE=1` opens real money ONLY to these
+        #: identities: only they are shown the treasury number, only they are credited from an
+        #: observed message. Everybody else's money is held for a person, never spendable.
+        #: Enforced here, on the server; the app only mirrors the answer.
+        self.pilot_ids = set(x for x in pilot_ids if x)
         self.clock = clock or (lambda: int(time.time() * 1000))
 
     @staticmethod
@@ -253,7 +266,12 @@ class Ledger:
         return Ledger(db, treasury_ids=split("PROK_TREASURY_IDS"), test_ids=split("PROK_TEST_IDS"),
                       payments_live=os.environ.get("PROK_PAYMENTS_LIVE", "").strip() == "1",
                       treasury_msisdn={"MTN": os.environ.get("PROK_TREASURY_MSISDN_MTN", ""),
-                                       "AIRTEL": os.environ.get("PROK_TREASURY_MSISDN_AIRTEL", "")})
+                                       "AIRTEL": os.environ.get("PROK_TREASURY_MSISDN_AIRTEL", "")},
+                      pilot_ids=split("PROK_PILOT_IDS"))
+
+    def in_pilot(self, node: str) -> bool:
+        """May this identity move REAL money (see a treasury number, be credited from a message)?"""
+        return node in self.pilot_ids
 
     # ---- roles -----------------------------------------------------------------------------
 
@@ -347,26 +365,43 @@ class Ledger:
             unmatched = self.db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS s FROM ledger_postings WHERE kind='FEE' AND memo='unmatched debit' AND credit_account=?", (acct,)).fetchone()
             committed = int(self.db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM ledger_withdrawals WHERE rail=? AND state IN (?,?)", (rail, APPROVED, SENT)).fetchone()["s"])
             doubt = typed is not None and typed < expected
-            stale = typed is None or now - typed_at > 2 * 24 * 3_600_000
+            stale = typed is None or now - typed_at > BALANCE_CHECK_MAX_AGE_MS
+            block = self._approvals_blocked(rail, now)
             alert = alert or doubt
             rails[rail] = {"expected": expected, "typed": typed, "typed_at": typed_at, "delta": delta, "doubt": doubt,
                            "check_stale": stale, "committed": committed, "unmatched_debits": int(unmatched["n"]),
-                           "unmatched_debits_centimes": int(unmatched["s"])}
+                           "unmatched_debits_centimes": int(unmatched["s"]), "approval_block": block}
         inv = self.invariant()
         alert = alert or inv["shortfall"] > 0
         return {"rails": rails, "liabilities": inv["liabilities"], "float": inv["float"], "shortfall": inv["shortfall"],
-                "test_credit_issued": inv["test_credit_issued"], "alert": alert, "approvals_blocked": alert,
+                "test_credit_issued": inv["test_credit_issued"], "alert": alert,
+                "approvals_blocked": any(r["approval_block"] for r in rails.values()),
                 "payments_live": self.payments_live}
 
-    def _approvals_blocked(self) -> bool:
-        """The reconcile verdict without the role check, for approve()."""
+    def _approvals_blocked(self, rail: str, now: int) -> str:
+        """Why nothing may be approved on [rail] right now, or "" when it may.
+
+        v0.18.2: a balance the treasurer typed for THAT rail, within the last day, that
+        is not below what the ledger expects. No check, an old check, or a low check each
+        block - a parsed message is not proof, and a wallet nobody looked at today does
+        not vouch for a send."""
         if self.invariant()["shortfall"] > 0:
-            return True
-        for rail in RAILS:
-            last = self.db.execute("SELECT typed FROM ledger_balance_checks WHERE rail=? ORDER BY ts DESC LIMIT 1", (rail,)).fetchone()
-            if last is not None and int(last["typed"]) < self.balance("float:" + rail.lower()):
-                return True
-        return False
+            return BLOCK_SHORTFALL
+        last = self.db.execute("SELECT typed, ts FROM ledger_balance_checks WHERE rail=? ORDER BY ts DESC LIMIT 1", (rail,)).fetchone()
+        if last is None:
+            return BLOCK_NO_CHECK
+        if now - int(last["ts"]) > BALANCE_CHECK_MAX_AGE_MS:
+            return BLOCK_STALE_CHECK
+        if int(last["typed"]) < self.balance("float:" + rail.lower()):
+            return BLOCK_BELOW
+        return ""
+
+    BLOCK_SENTENCES = {
+        BLOCK_SHORTFALL: "the wallets do not cover the ledger - nothing new is approved",
+        BLOCK_NO_CHECK: "type today's wallet balance for this rail before approving",
+        BLOCK_STALE_CHECK: "the last balance for this rail is older than a day - type today's before approving",
+        BLOCK_BELOW: "the typed balance is below what the ledger expects on this rail - resolve that first",
+    }
 
     # ---- sessions ----------------------------------------------------------------------------
 
@@ -570,6 +605,7 @@ class Ledger:
             "withdrawal": self._withdrawal_view(w or last, now) if (w or last) else None,
             "hold": self._hold_view(self.open_hold(node)),
             "treasury": node in self.treasury_ids,
+            "pilot": self.in_pilot(node),
             "payments_live": self.payments_live,
         }
 
@@ -705,8 +741,9 @@ class Ledger:
             if action == "approve":
                 if state != REQUESTED:
                     raise LedgerError("only a requested withdrawal can be approved", WRONG_STATE, 409)
-                if self._approvals_blocked():
-                    raise LedgerError("reconciliation alert: the wallets do not cover the ledger - nothing new is approved", RECONCILIATION_ALERT, 409)
+                block = self._approvals_blocked(row["rail"], now)
+                if block:
+                    raise LedgerError("reconciliation: " + self.BLOCK_SENTENCES[block], RECONCILIATION_ALERT, 409)
                 if self.payments_live and self.balance("float:" + row["rail"].lower()) < self._committed_on(row["rail"]) + int(row["amount"]):
                     raise LedgerError("that rail's float does not cover this", INSUFFICIENT_CREDIT, 409)
                 self.db.execute("UPDATE ledger_withdrawals SET state=?, approved_at=?, approved_by=?, updated_at=? WHERE id=?", (APPROVED, now, who, now, wid))
@@ -791,12 +828,13 @@ class Ledger:
             iid = _id("intent", customer, rail, now)
             self.db.execute("INSERT INTO ledger_intents(id, customer_id, rail, amount, amount_tag, created_at, expires_at, state)"
                             " VALUES(?,?,?,?,?,?,?,'OPEN')", (iid, customer, rail, amount, tag, now, now + INTENT_TTL_MS))
-        # the treasury number is shown ONLY while payments are live: before that there is
-        # nowhere a customer should be sending money
-        pay_to = self.treasury_msisdn.get(rail, "") if self.payments_live else ""
+        # the treasury number is shown ONLY while payments are live AND to a pilot identity:
+        # before that there is nowhere a customer should be sending money
+        allowed = self.payments_live and self.in_pilot(customer)
+        pay_to = self.treasury_msisdn.get(rail, "") if allowed else ""
         return {"ok": True, "intent_id": iid, "rail": rail, "amount": amount, "send_exactly": tag, "bound": bound,
-                "expires_at": now + INTENT_TTL_MS, "payments_live": self.payments_live, "pay_to": pay_to,
-                "auto_limit": TOPUP_MAX_AUTO_CENTIMES}
+                "expires_at": now + INTENT_TTL_MS, "payments_live": self.payments_live, "pilot": self.in_pilot(customer),
+                "pay_to": pay_to, "auto_limit": TOPUP_MAX_AUTO_CENTIMES}
 
     def observe_credit(self, who: str, rail: str, sender_hash: str, amount: int, sms_hash: str, now: int, source: str = "sms") -> dict:
         """The treasury phone saw "vous avez reçu N F de 06…". Credit is posted only from this."""
@@ -838,6 +876,10 @@ class Ledger:
                 self.db.execute("UPDATE ledger_intents SET state='USED', topup_id=? WHERE id=?", (tid, intent["id"]))
                 self.db.execute("INSERT OR REPLACE INTO ledger_bindings(customer_id, rail, sender_hash, bound_at, bound_by) VALUES(?,?,?,?,?)",
                                 (customer, rail, sender_hash, now, tid))
+            if customer and not reason and not self.in_pilot(customer):
+                # v0.18.2: real money only for the pilot allowlist. A valid message from an
+                # identity outside it is held for a person and credits nobody automatically.
+                reason = NOT_IN_PILOT
             if customer and not reason and amount > TOPUP_MAX_AUTO_CENTIMES:
                 # a large amount on a parsed message alone is never spendable credit
                 reason = ABOVE_AUTO_LIMIT
@@ -880,6 +922,9 @@ class Ledger:
                     raise LedgerError("no customer on this claim")
                 if not self.payments_live:
                     raise LedgerError("payments are disabled", PAYMENTS_DISABLED, 409)
+                if not self.in_pilot(row["customer_id"]):
+                    self._refuse(now, who, "treasury.review", topup_id, "customer not in the pilot allowlist",
+                                 LedgerError("this identity is not in the pilot allowlist - add it to PROK_PILOT_IDS first", NOT_IN_PILOT, 403))
                 if row["reason"] == REBIND_CANDIDATE and row["claim_ref"].startswith("rebind:"):
                     # a reinstalled phone proved its number: the OLD identity's balances move
                     # to the new one (never duplicated), then the number follows

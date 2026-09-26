@@ -50,6 +50,7 @@ class RefundTest(unittest.TestCase):
         q = L.queue(TREASURER, T0 + 3)
         self.assertEqual(1, q["summary"]["manual_sends_pending"])
         self.assertEqual(NUM, q["rows"][0]["msisdn"])
+        L.balance_check(TREASURER, "MTN", L.balance("float:mtn"), T0 + 3)     # today's wallet, as the ledger expects it
         L.treasury_withdrawal(TREASURER, w["id"], "approve", T0 + 4)
         L.treasury_withdrawal(TREASURER, w["id"], "sent", T0 + 5)
         self.assertEqual("one", L.observe_debit(TREASURER, "MTN", NUM_H, 50_000, "debit-1", T0 + 6)["matched"])
@@ -167,8 +168,10 @@ class TopupGuardsTest(unittest.TestCase):
         db = sqlite3.connect(":memory:", check_same_thread=False)
         off = Ledger(db, treasury_ids=(TREASURER,), test_ids=(BUYER,), payments_live=False, treasury_msisdn={"MTN": "+242 06 000 00 00"})
         self.assertEqual("", off.create_intent(BUYER, "MTN", 1_000, T0)["pay_to"])
-        on = Ledger(sqlite3.connect(":memory:", check_same_thread=False), treasury_ids=(TREASURER,), payments_live=True, treasury_msisdn={"MTN": "+242 06 000 00 00"})
+        on = Ledger(sqlite3.connect(":memory:", check_same_thread=False), treasury_ids=(TREASURER,), payments_live=True,
+                    treasury_msisdn={"MTN": "+242 06 000 00 00"}, pilot_ids=(BUYER,))
         self.assertEqual("060000000", on.create_intent(BUYER, "MTN", 1_000, T0)["pay_to"])
+        self.assertEqual("", on.create_intent(STRANGER, "MTN", 1_000, T0 + 2)["pay_to"], "live, but not in the pilot")
         self.assertEqual("", on.create_intent(BUYER, "AIRTEL", 1_000, T0 + 1)["pay_to"], "no Airtel number configured")
 
 
@@ -180,9 +183,10 @@ class ReconcileTest(unittest.TestCase):
         expected = L.balance("float:mtn")
         L.post_settlement(derived(gross=60_000), T0 + 2)
         w = L.request_withdrawal(SELLER, "MTN", "055987654", 50_000, T0 + 3)["withdrawal"]
+        L.balance_check(TREASURER, "MTN", expected, T0 + 3)      # today's wallet, matching
         r = L.reconcile(TREASURER, T0 + 3)
         self.assertFalse(r["alert"])
-        self.assertTrue(r["rails"]["MTN"]["check_stale"], "nobody typed a balance yet")
+        self.assertFalse(r["rails"]["MTN"]["check_stale"])
         # the treasurer types LESS than the ledger expects: the parsed message is now in doubt
         L.balance_check(TREASURER, "MTN", expected - 5_000, T0 + 4)
         r = L.reconcile(TREASURER, T0 + 4)

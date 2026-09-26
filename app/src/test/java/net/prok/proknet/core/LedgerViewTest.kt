@@ -120,6 +120,26 @@ class LedgerViewTest {
         assertTrue(l2.contains("DOUTE"))
     }
 
+    @Test fun top_ups_are_open_only_when_the_server_says_live_and_listed() {
+        val base = """{"credit": 0, "held": 0, "earned": 0, "earned_lifetime": 0, "withdrawable": 0, "withdraw_min": 50000,
+            "withdrawal": null, "hold": null, "treasury": false, "payments_live": true, "pilot": false}"""
+        assertFalse("live but not listed: closed for this phone", LedgerView.parse(base, 1L)!!.topUpsOpen)
+        assertTrue(LedgerView.parse(base.replace("\"pilot\": false", "\"pilot\": true"), 1L)!!.topUpsOpen)
+        assertFalse(LedgerView.parse(base.replace("\"payments_live\": true", "\"payments_live\": false").replace("\"pilot\": false", "\"pilot\": true"), 1L)!!.topUpsOpen)
+        // an answer from an older Brain that has no "pilot" field reads as closed
+        assertFalse(LedgerView.parse(base.replace(", \"pilot\": false", ""), 1L)!!.topUpsOpen)
+    }
+
+    @Test fun the_reconciliation_line_names_why_approvals_are_blocked() {
+        val t = """{"rails": {"MTN": {"expected": 0, "typed": null, "typed_at": 0, "delta": null, "doubt": false, "check_stale": true, "committed": 0, "unmatched_debits": 0, "unmatched_debits_centimes": 0, "approval_block": "no_balance_check"},
+            "AIRTEL": {"expected": 0, "typed": 0, "typed_at": 5, "delta": 0, "doubt": false, "check_stale": false, "committed": 0, "unmatched_debits": 0, "unmatched_debits_centimes": 0, "approval_block": ""}},
+            "liabilities": 0, "float": 0, "shortfall": 0, "test_credit_issued": 0, "alert": false, "approvals_blocked": true, "payments_live": false}"""
+        val lines = LedgerView.reconcileLines(t)
+        assertTrue(lines, lines.startsWith("Saisissez le solde du jour"))
+        assertTrue(lines.contains("MTN") && lines.contains("solde du jour non saisi"))
+        assertFalse(lines.substringAfter("AIRTEL").contains("bloquées"))
+    }
+
     @Test fun rubbish_is_not_a_view() {
         assertNull(LedgerView.parse("", 1L))
         assertNull(LedgerView.parse("{\"error\": \"nope\"}", 1L))
