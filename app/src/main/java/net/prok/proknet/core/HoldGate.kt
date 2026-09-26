@@ -12,9 +12,10 @@ package net.prok.proknet.core
  *  - the Brain GRANTED one: admit, and remember the hold so the session keeps it alive;
  *  - the Brain REFUSED (no credit, a hold already open, too many sessions): reject, and tell
  *    the buyer why in one sentence - the Brain answered, so its answer stands;
- *  - the Brain was UNREACHABLE or is not configured: admit on the pre-v0.18 rule (the local
- *    Trust cap the buyer already passed). A network hiccup must not turn every paid
- *    session into a refusal; the exceptional-path gate that closes this is a later step.
+ *  - the Brain was UNREACHABLE or is not configured: REFUSE, with a sentence that says so.
+ *    Product rule (Mike, 2026-09-26): a paid session requires a CONFIRMED hold. There is
+ *    no "admit on the old trust rule" any more - that was a way to spend credit nobody
+ *    had reserved. Free sessions never come here and keep working without any Brain.
  */
 object HoldGate {
 
@@ -39,10 +40,14 @@ object HoldGate {
         return when (a.kind) {
             Kind.GRANTED -> Decision(true, a.holdId, "", "hold " + a.holdId.take(8))
             Kind.REFUSED -> Decision(false, "", refusalSentence(a.reason, a.message), "hold refused: " + a.reason)
-            Kind.UNREACHABLE -> Decision(true, "", "", "Brain unreachable: admitted on the local trust rule")
-            Kind.NOT_CONFIGURED -> Decision(true, "", "", "no Brain configured: admitted on the local trust rule")
+            Kind.UNREACHABLE -> Decision(false, "", UNREACHABLE_SENTENCE, "hold refused: Brain unreachable")
+            Kind.NOT_CONFIGURED -> Decision(false, "", NOT_CONFIGURED_SENTENCE, "hold refused: no Brain configured")
         }
     }
+
+    /** What the buyer reads when the credit could not be checked. Names the consequence and the way out. */
+    const val UNREACHABLE_SENTENCE = "Le réseau Prok est injoignable : votre crédit ne peut pas être vérifié. Réessayez plus tard, ou utilisez une connexion gratuite."
+    const val NOT_CONFIGURED_SENTENCE = "Ce fournisseur n'est pas relié au réseau Prok : seule une connexion gratuite est possible ici."
 
     /** What the buyer's screen says. Never a server code, always a sentence. */
     fun refusalSentence(reason: String, message: String): String = when (reason) {

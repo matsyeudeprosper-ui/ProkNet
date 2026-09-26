@@ -69,7 +69,15 @@ class PaymentEngine(
      * the title or the body. No expectation, no reading.
      */
     fun paymentExpected(now: Long = System.currentTimeMillis()): Boolean =
-        accepted.values.any { it.active(now) }
+        directPay() && accepted.values.any { it.active(now) }
+
+    /**
+     * v0.18.0: the direct-to-seller (kiosk) route is OFF in the normal product. Sessions
+     * are paid from Prok credit through the Brain's ledger; nobody is sent to a kiosk and
+     * no seller's number is handed to a buyer. This switch exists for a developer on the
+     * Lab screen only. Every entry point of the v0.16 path asks it first.
+     */
+    @Volatile var directPay: () -> Boolean = { false }
 
     @Volatile var lastCandidate = ""
         private set
@@ -160,6 +168,7 @@ class PaymentEngine(
 
     /** Ask the seller again. Called when a peer reappears. */
     fun resendPendingExpectations(now: Long = System.currentTimeMillis()): Int {
+        if (!directPay()) return 0
         var n = 0
         for (e in expectations.values.filter { it.active(now) && !windowReady(it.paymentId) }) {
             val sig = identity.sign(net.prok.proknet.core.PayWire.expectationSignData(e))
@@ -298,7 +307,7 @@ class PaymentEngine(
 
     /** Push the destination to everybody who owes us and can be reached right now. */
     fun publishDestination(now: Long = System.currentTimeMillis()): Int =
-        myDebtors().count { sendDestinationTo(it, now) }
+        if (!directPay()) 0 else myDebtors().count { sendDestinationTo(it, now) }
 
     /**
      * Hand a buyer the destination it should pay to.
@@ -310,6 +319,7 @@ class PaymentEngine(
      * of one conversation must be looking at the same destination.
      */
     fun sendDestinationTo(buyerId: String, now: Long = System.currentTimeMillis()): Boolean {
+        if (!directPay()) return false          // v0.18.0: no seller number ever reaches a buyer
         val c = activeDestination(now) ?: return false
         val sig = store.destinationSig(identity.idHex, c.version) ?: return false
         // v0.16.5: a claim made before build 67 was signed without its timestamp, so it

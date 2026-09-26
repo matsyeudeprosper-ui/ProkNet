@@ -1,3 +1,97 @@
+# CLAUDE_REPORT - ProkNet v0.18.1 "the v0.18 release"
+
+Date: 2026-09-26
+From: Claude (implementation engineer)
+To: ChatGPT (architect / product lead), Mike (product owner)
+
+Version 0.18.1, build 81. Server **428** tests, Android **770** tests, all passing. One release,
+one APK, one server version, as asked. **No phone test has been run by me**; TESTING 80
+and 81 are the acceptance and they are Mike's. `docs/HANDOFF_V018.md` is the handoff.
+
+## 1. The bug the fixture caught (read this first)
+
+`server/brain/evidence.py` defined an MB as **1024 × 1024** bytes. Both phones bill per
+**1,000,000** bytes (`Market.MB`; every advertised price is "per MB" in that sense). The
+Brain therefore re-derived every settlement's cost 4.9 % higher than the cost both
+phones had signed and would have refused **every real settlement** as "signed cost does
+not match the agreed terms". It was there since v0.15.1. Nothing showed it because no
+hardware settlement ever reached the Brain (v0.16 and v0.17 were never hardware-proven on
+that path) and every Python test built its contracts with the Python MB. The new
+`charging_v3.json` fixture - written by the Python rule, read by a Kotlin test - failed on
+its first run with `expected 900 but was 944`, which is exactly 1,048,576 / 1,000,000.
+Fixed on the server; the three server test files that had their own 1024 × 1024 now use
+the phones' number. This is the third cross-language mismatch this project has found by
+fixture (v0.16.3 rule canonical form, v0.16.4 cooling timestamp); it would have been the
+first one to reach Congo.
+
+## 2. What is in this release, against the fixed rules
+
+- **Contract version 3.** `costFor(bytesUp, bytesDown)` is THE charging rule on the
+  buyer, the seller and the Brain: nothing down, nothing owed; from the first byte down,
+  up + down at the signed rate, clamped as before. Short and seller-stopped sessions keep
+  the v0.15.0 teardown and settle on the last checkpoint both signed; a session that
+  delivered nothing settles at zero and the seller releases the hold at once
+  (`hold_settled_zero`). Version 2 keeps its arithmetic so builds can overlap.
+- **The relay in the signature.** The buyer names the relay; the seller admits only the
+  relay that really carried the proposal (`relayedVia`) and none on a direct link; the
+  Brain pays the relay 10 % (example) of the gross when the session settles. Relayed
+  purchases used to propose v1 contracts and **never settled at all**; they are v3 now.
+  A relay's Gagner rises only when a settlement posts.
+- **A paid session needs a confirmed hold.** Brain unreachable or not configured is a
+  refusal with a sentence naming the way out. The "admit on the local trust rule" bypass
+  is removed; a test asserts it. Free sessions need no Brain.
+- **The kiosk / direct-to-seller route is off** (`directPayEnabled`, developer long-press
+  only, never persisted). No seller number reaches a buyer, no pay objects travel, the
+  wallet shows no "à payer" and no "Payer", the buyer's local trust cap and settlement
+  policy no longer gate a purchase; a buyer the Brain says has no credit is told before
+  any Bluetooth.
+- **Ledger completed.** Refunds to the origin number through the same queue; reversals by
+  mirror posting with a memo, once; identity recovery after a reinstall (tagged top-up
+  from the old number confirmed by a treasurer, or by hand) with balances moved never
+  duplicated and debts following; observed top-ups above 10 000 CFA held for a person;
+  per-rail reconciliation where a typed balance below the ledger's expectation is doubt
+  and blocks approvals; test credit counted as declared cover; migration 6; `restore.ps1`
+  and a documented rollback; an access-control table in OPERATIONS.
+
+## 3. The bypass audit (item 7)
+
+Searched for every way money could move outside the rules. Closed: seller → buyer
+destination push (`onDebtorLearned`, `publishDestination`, `sendDestinationTo`),
+expectations and receipts (`resendPendingExpectations`, `paymentExpected`,
+`PaymentSync.run`), the wallet's PAY action and the detail "Payer" button, the buyer's
+local trust gate and settlement policy, the hold gate's unreachable path. Left in place
+and why: the Brain's `/v1/pay/*` and `/v1/payments/initiate` routes still exist - they
+carry signed objects and cannot move money; no phone calls them with direct pay off;
+removing them would break the v0.16 test suite for no safety gain. `/v1/payments/webhook`
+confirms nothing without a verified secret, unchanged. `mockPaymentsEnabled` is reachable
+only through the (gated) pay dialog.
+
+## 4. Protections, stated as tests
+
+Double credit: `sms_hash` unique, `(kind, ref)` unique on postings, settlement posts once.
+Double withdrawal: one open row per payee (partial unique index), reserve at request.
+Wrong recipient: the treasurer copies the number from the row; a debit to any other
+number matches nothing and is listed as unmatched; "Non envoyé" returns the row.
+Repeated SMS: one topup per hash. Ambiguous SMS: parser AMBIGUOUS → held on the phone for
+the treasurer; two SENT candidates → none auto-paid. Missing SMS: amber at 24 h,
+NEEDS_ATTENTION at 7 d, confirm by reference. Reinstall: section 2. Parsed message vs
+reality: reconciliation doubt blocks approvals; large amounts wait; unmatched money sits
+in `unassigned:topups` and never becomes spendable by itself.
+
+## 5. What this release does not claim
+
+No phone test was run. The parser has read only synthetic messages. Legal and operator
+wallet terms are open. Not ready for public real-money use; `PROK_PAYMENTS_LIVE` stays
+off. Fifty withdrawals are fifty manual sends.
+
+## 6. Numbers
+
+Server 428 tests. **Android 770 tests**, all passing (floor 760 + 405, nothing removed). New this release: `test_charging_v3.py`, `test_ledger_final.py`,
+`MarketV3Test`, `WalletDirectPayTest`, `LedgerViewTest` additions; fixture
+`charging_v3.json` with its writer `tests/write_charging_fixture.py`.
+
+---
+
 # CLAUDE_REPORT - ProkNet v0.18.0 "a ledger cannot send money"
 
 Date: 2026-09-25

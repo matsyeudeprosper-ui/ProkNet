@@ -55,6 +55,7 @@ class PaymentSync(
      */
     fun run(now: Long = System.currentTimeMillis()) {
         if (!configured) return
+        if (!payments.directPay()) return       // v0.18.0: the kiosk route is off; no pay objects travel
         if (!running.compareAndSet(false, true)) return
         try {
             pushDestination()

@@ -138,7 +138,7 @@ object Settlement {
         now: Long,
         ttlMs: Long = DEFAULT_TTL_MS,
     ): Obligation? {
-        if (contract.version != Market.PRICING_VERSION_BUDGET) return null
+        // v0.18.0: version 2 and version 3 both settle; v1 never did
         if (!contract.budgetSession) return null
         if (contract.rateCentimesPerMb <= 0) return null          // free: nothing is owed
         val cp = finalSigned ?: return null                        // nothing mutually signed

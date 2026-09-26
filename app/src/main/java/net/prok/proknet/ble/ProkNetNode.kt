@@ -130,18 +130,22 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun terms(): IntArray = intArrayOf(sellPrice, sellMinPrice, sellMaxMb, feePct)
         override fun onSettled(o: net.prok.proknet.core.Settlement.Obligation) = this@ProkNetNode.onSettled(o)
-        override fun onDebtorLearned(buyerId: String) { payments.sendDestinationTo(buyerId) }
+        override fun onDebtorLearned(buyerId: String) { if (directPayEnabled) payments.sendDestinationTo(buyerId) }
         // v0.18.0: the buyer's Prok credit, reserved at the Brain for the length of the session
         override fun holdCredit(buyerId: String, amountCentimes: Long) = ledgerSync.hold(buyerId, amountCentimes)
         override fun holdStarted(holdId: String, sessionHex: String) = ledgerSync.holdStarted(holdId, sessionHex)
         override fun holdKeepalive(holdId: String) = ledgerSync.holdKeepalive(holdId)
         override fun holdRelease(holdId: String) = ledgerSync.holdRelease(holdId)
+        override fun holdSettledZero(holdId: String) = ledgerSync.holdSettledZero(holdId)
+        override fun relayFullIdFor(peerShort: String): String? = relayedVia[peerShort]?.let { store.peerKey(it)?.fullId }
         override fun onChanged() { main.post { refreshAdvert(); pushStatus(); recheckSharingIfNetworkChanged() } }
     })
     val tunnel: TunnelClient = TunnelClient(identity, object : TunnelClient.Hooks {
         override fun send(type: Int, streamId: Int, data: ByteArray): Boolean = sendFromTunnel(type, streamId, data)
         override fun linkPeer(): String? = buyerFarEnd()
         override fun linkPeerFullId(): String? = buyerFarEnd()?.let { store.peerKey(it)?.fullId }
+        // v0.18.0: when the far end is the relay's seller, the relay is the phone on my own link
+        override fun relayFullId(): String? = if (relay.providerShort != null) wifi.linkedPeer?.let { store.peerKey(it)?.fullId } else null
         override fun peerPub(peerShort: String): ByteArray? = store.peerKey(peerShort)?.pub
         override fun store(): MessageStore = this@ProkNetNode.store
         override fun feePct(): Int = this@ProkNetNode.feePct
@@ -1060,7 +1064,12 @@ class ProkNetNode(private val context: Context) : TransportListener {
         override fun myRecord(): ByteArray = identityRecord()
         override fun saveIdentity(rec: Wire.IdentityRecord) = onIdentity("relay-intro", rec.idHex, rec.pub, rec.name)
         override fun upstreamOffer(): Market.Offer? = wifiUp.linkedPeer?.let { up -> ble.visiblePeers().firstOrNull { it.shortId == up }?.offer() }
-        override fun onTunnelFromRelay(originShort: String, frame: Tunnel.Frame) = routeTunnelFrame(originShort, frame, "sealed via relay")
+        override fun onTunnelFromRelay(relayShort: String, originShort: String, frame: Tunnel.Frame) {
+            // v0.18.0: remember WHO carried this origin's frames, so the seller can check that
+            // the relay named in the signed contract is the relay that really relayed it
+            relayedVia[originShort] = relayShort
+            routeTunnelFrame(originShort, frame, "sealed via relay")
+        }
         override fun onRelayPeerGone(farShort: String, reason: String) { gateway.onLinkClosed(farShort, reason); tunnel.onLinkClosed(farShort, reason) }
         override fun onProviderIntroduced(sellerShort: String, pricePerMb: Int, flags: Int) {
             main.post {
@@ -1068,7 +1077,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
                 if (want != null && want == wifi.linkedPeer && tunnel.session == null && tunnel.contract == null) {
                     if (pricePerMb != buyPrice) DiagLog.w(tag, "relay's seller price " + pricePerMb + " differs from the advertised " + buyPrice + " CFA/MB: proposing the advertised price")
                     DiagLog.i(tag, "relay prok-" + want + " introduced seller prok-" + sellerShort + ": proposing the contract end to end")
-                    tunnel.start(buyPrice)
+                    // v0.18.0: a relayed purchase is a budget (v3) contract like any other, so it
+                    // settles, is paid from the buyer's credit and pays the relay. v1 never settled.
+                    startBudgetTunnel()
                 }
             }
         }
@@ -1128,6 +1139,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
 
     /** Where an incoming tunnel frame goes (plain from the link, or opened from a relay envelope). */
     private fun routeTunnelFrame(peerShort: String, frame: Tunnel.Frame, how: String) {
+        if (how == "plain on link") relayedVia.remove(peerShort)     // v0.18.0: a direct frame means no relay now
         when (Tunnel.route(frame.type, gateway.providing)) {
             Tunnel.Side.GATEWAY -> gateway.onFrame(peerShort, frame)
             Tunnel.Side.CLIENT -> tunnel.onFrame(peerShort, frame)
@@ -1246,10 +1258,20 @@ class ProkNetNode(private val context: Context) : TransportListener {
             lastBuyError = quote.reason
             return false
         }
-        // v0.16.0: one unpaid session is all a stranger gets. Checked BEFORE any Bluetooth
-        // channel, handshake or probe is paid for, so a blocked buyer is told on the home
-        // screen rather than after a connection has been built.
-        if (!quote.free) {
+        // v0.18.0: a paid session is paid from Prok credit, reserved by the seller at the Brain.
+        // The local "one unpaid session for a stranger" rule and the local settlement policy
+        // below belong to the direct-pay (kiosk) route and run only when a developer turned
+        // that route on. What CAN be said early, before any Bluetooth is paid for: a buyer the
+        // Brain has told has no credit will be refused by every seller, so say it here.
+        if (!quote.free && !directPayEnabled) {
+            val lv = ledgerSync.view
+            if (lv != null && lv.creditCentimes - lv.heldCentimes <= 0L) {
+                DiagLog.w(tag, "BUY refused before any setup: no Prok credit (" + lv.creditCentimes + "c, held " + lv.heldCentimes + "c)")
+                lastBuyError = net.prok.proknet.core.HoldGate.refusalSentence("insufficient_credit", "")
+                return false
+            }
+        }
+        if (!quote.free && directPayEnabled) {
             val owed = net.prok.proknet.core.Wallet.totalOwed(obligations(), identity.idHex)
             // v0.16.2: the debt that follows the PHONE comes from the server, not from a
             // local flag a reinstall would have cleared
@@ -1266,8 +1288,9 @@ class ProkNetNode(private val context: Context) : TransportListener {
             }
         }
         // v0.15.0: and what this phone already owes, asked BEFORE any Bluetooth channel,
-        // handshake or probe is paid for
-        val admission = settlementAdmission(quote.free)
+        // handshake or probe is paid for (direct-pay route only: with Prok credit, local
+        // obligations are evidence the Brain settles, not debts this phone must clear)
+        val admission = settlementAdmission(quote.free || !directPayEnabled)
         if (!admission.mayStart) {
             DiagLog.w(tag, "BUY refused before any setup: " + admission.decision + " - " + admission.reason)
             lastBuyError = if (admission.decision == net.prok.proknet.core.SettlementPolicy.Decision.REQUIRE_SETTLEMENT)
@@ -1320,6 +1343,8 @@ class ProkNetNode(private val context: Context) : TransportListener {
     @Volatile var buyerWanted: String? = null
         private set
     @Volatile private var buyViaRelay = false
+    /** v0.18.0: origin short id -> the relay short id that delivered its sealed frames. Cleared when a plain frame arrives from that origin. */
+    private val relayedVia = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     @Volatile private var introAttempts = 0
     @Volatile private var introRefused = false
@@ -1339,7 +1364,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
     private fun introStep(relayShort: String) {
         if (buyerWanted != relayShort || tunnel.contract != null || tunnel.session != null) return
         when (Relay.buyerStep(relay.providerShort != null, introRefused, introAttempts)) {
-            Relay.BuyerStep.START_CONTRACT -> { DiagLog.i(tag, "relay prok-" + relayShort + " introduced its seller prok-" + relay.providerShort + ": proposing the contract"); tunnel.start(buyPrice) }
+            Relay.BuyerStep.START_CONTRACT -> { DiagLog.i(tag, "relay prok-" + relayShort + " introduced its seller prok-" + relay.providerShort + ": proposing the contract"); startBudgetTunnel() }
             Relay.BuyerStep.NO_SELLER -> { DiagLog.w(tag, "relay prok-" + relayShort + " has no seller available right now"); failBuy("relay has no seller", "the relay has no Internet seller right now") }
             Relay.BuyerStep.GIVE_UP -> { DiagLog.w(tag, "relay prok-" + relayShort + " did not answer " + introAttempts + " introduction requests"); failBuy("relay silent", "the relay did not answer the introduction request") }
             Relay.BuyerStep.ASK -> {
@@ -1494,6 +1519,15 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * shown to a real user as a real one.
      */
     @Volatile var mockPaymentsEnabled = false
+
+    /**
+     * v0.18.0: the direct-to-seller / kiosk route (v0.16) is OFF in the product. Sessions
+     * are paid from Prok credit through the Brain; nothing falls back to a kiosk silently.
+     * A developer can switch it on from the Lab screen (long press on LEDGER) to exercise
+     * the old path on a test phone; it is never persisted and dies with the process.
+     */
+    @Volatile var directPayEnabled = false
+        set(v) { field = v; DiagLog.w(tag, "DIRECT PAY (kiosk route) " + (if (v) "ENABLED - developer only" else "disabled")) }
 
     /** Business policy, not protocol. Adjustable for the pilot. */
     @Volatile var settlementPolicy = net.prok.proknet.core.SettlementPolicy.DEFAULT
@@ -1793,6 +1827,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
      * earlier gets another chance, in both directions.
      */
     fun onPaymentPeerAvailable() {
+        if (!directPayEnabled) return           // v0.18.0: the kiosk route is off; nothing to push
         settlementIo.execute {
             try {
                 payments.publishDestination()
@@ -1816,6 +1851,7 @@ class ProkNetNode(private val context: Context) : TransportListener {
         payments.restoreUndelivered()
         net.prok.proknet.core.ReceiptRules.restore(store)
         payments.send = { peerId, line -> sendPayment(peerId, line) }
+        payments.directPay = { directPayEnabled }
         // v0.16.1: the listener asks this BEFORE it reads any notification content
         net.prok.proknet.service.ReceiptCapture.paymentExpected = { payments.paymentExpected() }
         payments.detectionAvailable =

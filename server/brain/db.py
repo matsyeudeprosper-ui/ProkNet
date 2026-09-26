@@ -59,6 +59,9 @@ MIGRATIONS = [
     # New tables only, so every existing row is untouched. A ledger cannot send money;
     # these tables record what was proved and what a person still has to do by hand.
     ledger.SCHEMA,
+    # 6: v0.18.0 final. A queue row is a WITHDRAWAL or a REFUND: one added column with a
+    # default, so every row the pilot Brain already holds is untouched.
+    ledger.MIGRATION_6,
 ]
 
 TOMBSTONE_KEEP_MS = 2 * 3_600_000

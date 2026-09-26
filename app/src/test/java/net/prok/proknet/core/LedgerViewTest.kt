@@ -95,6 +95,31 @@ class LedgerViewTest {
         assertEquals("Payé", paid.withdrawal!!.text)
     }
 
+    @Test fun a_refund_is_offered_only_to_a_bound_number_with_nothing_open() {
+        val base = """{"credit": 70000, "held": 0, "earned": 0, "earned_lifetime": 0, "withdrawable": 0, "withdraw_min": 50000,
+            "refund_min": 50000, "refundable": 70000, "bound_rails": ["MTN"], "withdrawal": null, "hold": null, "treasury": false, "payments_live": true}"""
+        val v = LedgerView.parse(base, 1L)!!
+        assertEquals(listOf("MTN"), v.boundRails)
+        assertTrue(v.canRefund)
+        val nobody = LedgerView.parse(base.replace("[\"MTN\"]", "[]").replace("\"refundable\": 70000", "\"refundable\": 0"), 1L)!!
+        assertFalse("no top-up from a number, no refund", nobody.canRefund)
+        val holding = LedgerView.parse(base.replace("\"hold\": null", "\"hold\": {\"hold_id\": \"h\", \"amount\": 100, \"state\": \"IN_SESSION\", \"seller_id\": \"s\"}"), 1L)!!
+        assertFalse("not while a session holds the credit", holding.canRefund)
+    }
+
+    @Test fun the_reconciliation_lines_say_doubt_and_block_in_plain_words() {
+        val ok = """{"rails": {"MTN": {"expected": 50000, "typed": 50000, "typed_at": 1, "delta": 0, "doubt": false, "check_stale": false, "committed": 0, "unmatched_debits": 0, "unmatched_debits_centimes": 0},
+            "AIRTEL": {"expected": 0, "typed": null, "typed_at": 0, "delta": null, "doubt": false, "check_stale": true, "committed": 0, "unmatched_debits": 0, "unmatched_debits_centimes": 0}},
+            "liabilities": 50000, "float": 50000, "shortfall": 0, "test_credit_issued": 0, "alert": false, "approvals_blocked": false, "payments_live": true}"""
+        val lines = LedgerView.reconcileLines(ok)
+        assertTrue(lines.startsWith("Rapprochement OK"))
+        assertTrue(lines.contains("AIRTEL") && lines.contains("jamais saisi"))
+        val bad = ok.replace("\"typed\": 50000", "\"typed\": 45000").replace("\"delta\": 0", "\"delta\": -5000").replace("\"doubt\": false, \"check_stale\": false", "\"doubt\": true, \"check_stale\": false").replace("\"alert\": false", "\"alert\": true")
+        val l2 = LedgerView.reconcileLines(bad)
+        assertTrue(l2.startsWith("ALERTE"))
+        assertTrue(l2.contains("DOUTE"))
+    }
+
     @Test fun rubbish_is_not_a_view() {
         assertNull(LedgerView.parse("", 1L))
         assertNull(LedgerView.parse("{\"error\": \"nope\"}", 1L))

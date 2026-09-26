@@ -23,7 +23,7 @@ from brain import app, evidence, paybox, settlement, signed_request
 from tests.test_evidence import checkpoint_bytes, contract_bytes, keypair, node_id, pub_hex, sign
 from tests.test_paybox import dest_line, exp_line
 
-MB = 1024 * 1024
+MB = 1_000_000   # v0.18.1: the phones' MB; evidence.MB is the same number now
 
 
 class ApiTest(unittest.TestCase):

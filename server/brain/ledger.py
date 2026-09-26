@@ -88,6 +88,14 @@ CREATE TABLE IF NOT EXISTS ledger_audit (
     action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', allowed INTEGER NOT NULL);
 """
 
+#: Migration 6 (v0.18.0 final): a queue row is either a provider's WITHDRAWAL of earnings
+#: or a customer's REFUND of unspent credit. Same treasurer, same manual send, same states;
+#: only the account the money is reserved from differs. ALTER, not a new CREATE: the pilot
+#: Brain already ran migration 5, and CREATE TABLE IF NOT EXISTS does nothing to a table
+#: that exists (the v0.16.4 lesson).
+ADDED_V6 = (("ledger_withdrawals", "kind", "TEXT NOT NULL DEFAULT 'WITHDRAWAL'"),)
+MIGRATION_6 = "\n".join("ALTER TABLE %s ADD COLUMN %s %s;" % c for c in ADDED_V6)
+
 # ---- constants (all configurable; these are the pilot's examples) --------------------------
 
 RAILS = ("MTN", "AIRTEL")
@@ -116,6 +124,16 @@ SENT_ATTENTION_MS = 7 * 24 * 3_600_000
 INTENT_TTL_MS = 24 * 3_600_000
 TAG_RANGE = 99          # 1..99 CFA added on top of the amount
 UNCLAIMED_REVIEW_MS = 7 * 24 * 3_600_000
+#: An observed top-up above this is never credited on the message alone; a person looks.
+TOPUP_MAX_AUTO_CENTIMES = 10_000 * 100
+#: A refund of unspent credit goes only to a number already bound to that customer.
+REFUND_MIN_CENTIMES = 500 * 100
+#: The relay's share of a relayed session's gross, taken from the seller's side (ex.).
+RELAY_SHARE_PCT = 10
+
+# queue row kinds
+WITHDRAWAL = "WITHDRAWAL"
+REFUND = "REFUND"
 
 # hold states
 PRE_SESSION = "PRE_SESSION"
@@ -163,6 +181,12 @@ BELOW_MINIMUM = "below_minimum"
 WITHDRAWAL_OPEN_REASON = "withdrawal_open"
 WRONG_STATE = "wrong_state"
 CLAIM_INCOMPLETE = "claim_incomplete"
+NOT_ORIGIN_NUMBER = "not_origin_number"
+RECONCILIATION_ALERT = "reconciliation_alert"
+IDENTITY_BUSY = "identity_busy"
+# top-up review reasons
+ABOVE_AUTO_LIMIT = "above_auto_limit"
+REBIND_CANDIDATE = "rebind_candidate"
 
 
 class LedgerError(Exception):
@@ -206,22 +230,30 @@ def _liability(account: str) -> bool:
 
 class Ledger:
     def __init__(self, db: sqlite3.Connection, treasury_ids=(), test_ids=(), payments_live: bool = False,
-                 clock: Callable[[], int] = None):
+                 clock: Callable[[], int] = None, treasury_msisdn: Optional[Dict[str, str]] = None):
         self.db = db
         self.db.row_factory = sqlite3.Row
-        # a bare connection (tests) may not have run the numbered migration
+        # a bare connection (tests) may not have run the numbered migrations
         self.db.executescript(SCHEMA)
+        have = set(r["name"] for r in self.db.execute("PRAGMA table_info(ledger_withdrawals)").fetchall())
+        for table, col, decl in ADDED_V6:
+            if col not in have:
+                self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, decl))
         self.db.commit()
         self.treasury_ids = set(x for x in treasury_ids if x)
         self.test_ids = set(x for x in test_ids if x)
         self.payments_live = bool(payments_live)
+        #: where a customer sends a top-up, per rail; shown ONLY while payments are live
+        self.treasury_msisdn = {k: msisdn_digits(v) for k, v in (treasury_msisdn or {}).items() if msisdn_digits(v)}
         self.clock = clock or (lambda: int(time.time() * 1000))
 
     @staticmethod
     def from_env(db: sqlite3.Connection) -> "Ledger":
         split = lambda k: [x.strip() for x in os.environ.get(k, "").split(",") if x.strip()]
         return Ledger(db, treasury_ids=split("PROK_TREASURY_IDS"), test_ids=split("PROK_TEST_IDS"),
-                      payments_live=os.environ.get("PROK_PAYMENTS_LIVE", "").strip() == "1")
+                      payments_live=os.environ.get("PROK_PAYMENTS_LIVE", "").strip() == "1",
+                      treasury_msisdn={"MTN": os.environ.get("PROK_TREASURY_MSISDN_MTN", ""),
+                                       "AIRTEL": os.environ.get("PROK_TREASURY_MSISDN_AIRTEL", "")})
 
     # ---- roles -----------------------------------------------------------------------------
 
@@ -285,12 +317,56 @@ class Ledger:
         return total
 
     def invariant(self) -> dict:
-        """float >= credit + held + earned + inflight. Shortfall > 0 blocks approvals."""
+        """float + declared test credit >= credit + held + earned + inflight + unassigned.
+
+        Test credit is Prok's declared pilot subsidy: it creates liabilities with no float
+        behind them on purpose, so it is counted as cover rather than as a hole. Anything
+        else uncovered is a shortfall, and a shortfall blocks approvals (see reconcile)."""
         float_total = self.balance("float:mtn") + self.balance("float:airtel")
+        test_credit = self.balance("prok:testcredit")
         liabilities = (self._sum_prefix("credit:") + self._sum_prefix("held:") + self._sum_prefix("earned:")
                        + self.balance("inflight:withdrawals") + self.balance(UNASSIGNED_ACCOUNT))
-        return {"float": float_total, "liabilities": liabilities, "shortfall": max(0, liabilities - float_total),
-                "test_credit_issued": self.balance("prok:testcredit")}
+        return {"float": float_total, "liabilities": liabilities, "test_credit_issued": test_credit,
+                "shortfall": max(0, liabilities - float_total - test_credit)}
+
+    def reconcile(self, who: str, now: int) -> dict:
+        """Per rail: what the ledger expects the wallet to hold, what the treasurer last typed,
+        the difference, and what is committed to sends. `alert` is true when the money does
+        not add up; while it is, nothing new is approved. A parsed message is evidence, not
+        proof: when the typed balance contradicts it, this is where that shows."""
+        self._require_treasury(who, "treasury.reconcile", "-", now)
+        rails = {}
+        alert = False
+        for rail in RAILS:
+            acct = "float:" + rail.lower()
+            expected = self.balance(acct)
+            last = self.db.execute("SELECT * FROM ledger_balance_checks WHERE rail=? ORDER BY ts DESC LIMIT 1", (rail,)).fetchone()
+            typed = int(last["typed"]) if last else None
+            typed_at = int(last["ts"]) if last else 0
+            delta = (typed - expected) if typed is not None else None
+            unmatched = self.db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS s FROM ledger_postings WHERE kind='FEE' AND memo='unmatched debit' AND credit_account=?", (acct,)).fetchone()
+            committed = int(self.db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM ledger_withdrawals WHERE rail=? AND state IN (?,?)", (rail, APPROVED, SENT)).fetchone()["s"])
+            doubt = typed is not None and typed < expected
+            stale = typed is None or now - typed_at > 2 * 24 * 3_600_000
+            alert = alert or doubt
+            rails[rail] = {"expected": expected, "typed": typed, "typed_at": typed_at, "delta": delta, "doubt": doubt,
+                           "check_stale": stale, "committed": committed, "unmatched_debits": int(unmatched["n"]),
+                           "unmatched_debits_centimes": int(unmatched["s"])}
+        inv = self.invariant()
+        alert = alert or inv["shortfall"] > 0
+        return {"rails": rails, "liabilities": inv["liabilities"], "float": inv["float"], "shortfall": inv["shortfall"],
+                "test_credit_issued": inv["test_credit_issued"], "alert": alert, "approvals_blocked": alert,
+                "payments_live": self.payments_live}
+
+    def _approvals_blocked(self) -> bool:
+        """The reconcile verdict without the role check, for approve()."""
+        if self.invariant()["shortfall"] > 0:
+            return True
+        for rail in RAILS:
+            last = self.db.execute("SELECT typed FROM ledger_balance_checks WHERE rail=? ORDER BY ts DESC LIMIT 1", (rail,)).fetchone()
+            if last is not None and int(last["typed"]) < self.balance("float:" + rail.lower()):
+                return True
+        return False
 
     # ---- sessions ----------------------------------------------------------------------------
 
@@ -311,6 +387,12 @@ class Ledger:
         fee = int(derived["prok_fee"])
         if gross <= 0:
             return {"posted": False, "reason": "zero"}
+        # the relay is named by the SIGNED contract (v3), never by a phone's claim afterwards
+        if not relay_id and derived.get("relay_id"):
+            relay_id = derived["relay_id"]
+            relay_centimes = min(seller_net, gross * RELAY_SHARE_PCT // 100)
+        if relay_id and relay_id in (buyer, seller):
+            raise LedgerError("a relay cannot be a party to the session")
         if relay_centimes < 0 or relay_centimes > seller_net:
             raise LedgerError("relay share out of range")
         if self.db.execute("SELECT 1 FROM ledger_postings WHERE kind='SESSION' AND ref=?", (sid,)).fetchone():
@@ -430,6 +512,19 @@ class Ledger:
             self.db.execute("UPDATE ledger_holds SET state=?, updated_at=? WHERE id=?", (RELEASED, now, hold_id))
         return {"ok": True, "hold_id": hold_id, "state": RELEASED}
 
+    def hold_settled_zero(self, hold_id: str, seller: str, now: int) -> dict:
+        """The seller says the session settled at ZERO - nothing usable was delivered, so
+        there is no evidence to send. Only the seller can say this, and saying it can only
+        cost the seller money, so it is believed: the buyer's credit goes back now."""
+        row = self._hold_row(hold_id, seller)
+        if row["state"] not in (IN_SESSION, STALE, PRE_SESSION):
+            raise LedgerError("hold is " + row["state"], WRONG_STATE, 409)
+        with self.db:
+            self._post(now, "HOLD_RELEASE", "held:" + row["customer_id"], "credit:" + row["customer_id"], int(row["amount"]), ref=hold_id, memo="settled zero by seller")
+            self.db.execute("UPDATE ledger_holds SET state=?, settled_ref='zero', updated_at=? WHERE id=?", (RELEASED, now, hold_id))
+            self._audit(now, seller, "hold.zero", hold_id)
+        return {"ok": True, "hold_id": hold_id, "state": RELEASED}
+
     def sweep(self, now: int) -> Dict[str, int]:
         n = {"holds_expired_unstarted": 0, "holds_stale": 0, "holds_expired_stale": 0,
              "withdrawals_attention": 0, "intents_expired": 0}
@@ -460,13 +555,18 @@ class Ledger:
         last = self.db.execute("SELECT * FROM ledger_withdrawals WHERE payee_id=? ORDER BY updated_at DESC LIMIT 1", (node,)).fetchone()
         earned = self.balance("earned:" + node)
         paid_total = self.db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM ledger_withdrawals WHERE payee_id=? AND state=?", (node, PAID)).fetchone()["s"]
+        credit = self.balance("credit:" + node)
+        bound = [r["rail"] for r in self.db.execute("SELECT rail FROM ledger_bindings WHERE customer_id=?", (node,)).fetchall()]
         return {
-            "credit": self.balance("credit:" + node),
+            "credit": credit,
             "held": self.balance("held:" + node),
             "earned": earned,                          # withdrawable now (reserved amounts already left this account)
             "earned_lifetime": earned + int(paid_total) + self._reserved_for(node),
             "withdrawable": earned,
             "withdraw_min": WITHDRAW_MIN_CENTIMES,
+            "refund_min": REFUND_MIN_CENTIMES,
+            "refundable": max(0, credit) if bound else 0,   # only to a number this customer topped up from
+            "bound_rails": bound,
             "withdrawal": self._withdrawal_view(w or last, now) if (w or last) else None,
             "hold": self._hold_view(self.open_hold(node)),
             "treasury": node in self.treasury_ids,
@@ -485,7 +585,7 @@ class Ledger:
 
     def _withdrawal_view(self, row, now: int, for_treasury: bool = False) -> dict:
         amber = row["state"] == SENT and now - int(row["sent_at"]) >= SENT_AMBER_MS
-        out = {"id": row["id"], "amount": int(row["amount"]), "rail": row["rail"], "state": row["state"],
+        out = {"id": row["id"], "kind": row["kind"], "amount": int(row["amount"]), "rail": row["rail"], "state": row["state"],
                "text": WITHDRAWAL_TEXT[row["state"]], "requested_at": int(row["requested_at"]),
                "sent_at": int(row["sent_at"]), "paid_at": int(row["paid_at"]), "paid_evidence": row["paid_evidence"],
                "memo": row["memo"], "amber": bool(amber), "payee_id": row["payee_id"], "msisdn_hash": row["msisdn_hash"],
@@ -500,25 +600,46 @@ class Ledger:
         """The payee names the rail, the number and the amount. The number is kept on this
         row only, returned only to treasury identities (the treasurer has to type it into
         the operator's app), and never logged; the hash is what SMS matching uses."""
+        return self._request(payee, rail, msisdn, amount, now, WITHDRAWAL)
+
+    def request_refund(self, customer: str, rail: str, msisdn: str, amount: int, now: int) -> dict:
+        """Unspent credit back to the customer - ONLY to a number this customer has topped up
+        from on that rail (the binding the operator's own message created). Never to another
+        number, never to cash, never to another customer. Same queue, same treasurer."""
+        return self._request(customer, rail, msisdn, amount, now, REFUND)
+
+    @staticmethod
+    def _reserve_account(kind: str, node: str) -> str:
+        return ("credit:" if kind == REFUND else "earned:") + node
+
+    def _request(self, node: str, rail: str, msisdn: str, amount: int, now: int, kind: str) -> dict:
         if rail not in RAILS:
             raise LedgerError("unknown rail")
         digits = msisdn_digits(msisdn)
         if not digits:
             raise LedgerError("a valid nine-digit payout number is required")
         h = msisdn_hash(digits)
-        if amount < WITHDRAW_MIN_CENTIMES:
-            raise LedgerError("below the minimum withdrawal", BELOW_MINIMUM)
+        minimum = REFUND_MIN_CENTIMES if kind == REFUND else WITHDRAW_MIN_CENTIMES
+        if amount < minimum:
+            raise LedgerError("below the minimum", BELOW_MINIMUM)
+        if kind == REFUND:
+            bound = self.db.execute("SELECT 1 FROM ledger_bindings WHERE customer_id=? AND rail=? AND sender_hash=?", (node, rail, h)).fetchone()
+            if bound is None:
+                raise LedgerError("a refund goes only to a number you have paid from", NOT_ORIGIN_NUMBER, 403)
+            if self.open_hold(node) is not None:
+                raise LedgerError("a session is holding your credit - try after it ends", HOLD_EXISTS, 409)
         with self.db:
-            if self.db.execute("SELECT 1 FROM ledger_withdrawals WHERE payee_id=? AND state IN (?,?,?,?)", (payee,) + WITHDRAWAL_OPEN).fetchone():
-                raise LedgerError("a withdrawal is already open", WITHDRAWAL_OPEN_REASON, 409)
-            if self.balance("earned:" + payee) < amount:
-                raise LedgerError("not that much to withdraw", INSUFFICIENT_CREDIT)
-            wid = _id("withdrawal", payee, now, amount)
-            self.db.execute("INSERT INTO ledger_withdrawals(id, payee_id, rail, msisdn_hash, msisdn, amount, state, requested_at, updated_at)"
-                            " VALUES(?,?,?,?,?,?,?,?,?)", (wid, payee, rail, h, digits, amount, REQUESTED, now, now))
-            # reserve now, so the same earnings cannot be requested twice
-            self._post(now, "WITHDRAW_RESERVE", "earned:" + payee, "inflight:withdrawals", amount, ref=wid, actor=payee)
-            self._audit(now, payee, "withdraw.request", wid, "%d" % amount)
+            if self.db.execute("SELECT 1 FROM ledger_withdrawals WHERE payee_id=? AND state IN (?,?,?,?)", (node,) + WITHDRAWAL_OPEN).fetchone():
+                raise LedgerError("a withdrawal or refund is already open", WITHDRAWAL_OPEN_REASON, 409)
+            source = self._reserve_account(kind, node)
+            if self.balance(source) < amount:
+                raise LedgerError("not that much available", INSUFFICIENT_CREDIT)
+            wid = _id(kind.lower(), node, now, amount)
+            self.db.execute("INSERT INTO ledger_withdrawals(id, payee_id, rail, msisdn_hash, msisdn, amount, state, requested_at, updated_at, kind)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?)", (wid, node, rail, h, digits, amount, REQUESTED, now, now, kind))
+            # reserve now, so the same money cannot be requested twice
+            self._post(now, "WITHDRAW_RESERVE", source, "inflight:withdrawals", amount, ref=wid, actor=node, memo=kind.lower())
+            self._audit(now, node, kind.lower() + ".request", wid, "%d" % amount)
         return {"ok": True, "withdrawal": self._withdrawal_view(self._w(wid), now)}
 
     def cancel_withdrawal(self, payee: str, wid: str, now: int) -> dict:
@@ -528,7 +649,7 @@ class Ledger:
         if row["state"] != REQUESTED:
             raise LedgerError("only a requested withdrawal can be cancelled", WRONG_STATE, 409)
         with self.db:
-            self._post(now, "WITHDRAW_CANCEL", "inflight:withdrawals", "earned:" + payee, int(row["amount"]), ref=wid, actor=payee)
+            self._post(now, "WITHDRAW_CANCEL", "inflight:withdrawals", self._reserve_account(row["kind"], payee), int(row["amount"]), ref=wid, actor=payee)
             self.db.execute("UPDATE ledger_withdrawals SET state=?, updated_at=? WHERE id=?", (CANCELLED, now, wid))
             self._audit(now, payee, "withdraw.cancel", wid)
         return {"ok": True, "withdrawal": self._withdrawal_view(self._w(wid), now)}
@@ -584,13 +705,15 @@ class Ledger:
             if action == "approve":
                 if state != REQUESTED:
                     raise LedgerError("only a requested withdrawal can be approved", WRONG_STATE, 409)
+                if self._approvals_blocked():
+                    raise LedgerError("reconciliation alert: the wallets do not cover the ledger - nothing new is approved", RECONCILIATION_ALERT, 409)
                 if self.payments_live and self.balance("float:" + row["rail"].lower()) < self._committed_on(row["rail"]) + int(row["amount"]):
                     raise LedgerError("that rail's float does not cover this", INSUFFICIENT_CREDIT, 409)
                 self.db.execute("UPDATE ledger_withdrawals SET state=?, approved_at=?, approved_by=?, updated_at=? WHERE id=?", (APPROVED, now, who, now, wid))
             elif action == "deny":
                 if state not in (REQUESTED, APPROVED, NEEDS_ATTENTION):
                     raise LedgerError("cannot deny from " + state, WRONG_STATE, 409)
-                self._post(now, "WITHDRAW_CANCEL", "inflight:withdrawals", "earned:" + row["payee_id"], int(row["amount"]), ref=wid, memo=memo, actor=who)
+                self._post(now, "WITHDRAW_CANCEL", "inflight:withdrawals", self._reserve_account(row["kind"], row["payee_id"]), int(row["amount"]), ref=wid, memo=memo, actor=who)
                 self.db.execute("UPDATE ledger_withdrawals SET state=?, memo=?, updated_at=? WHERE id=?", (DENIED, memo, now, wid))
             elif action == "sent":
                 # only an APPROVED row can be marked sent, exactly once (checked above)
@@ -668,8 +791,12 @@ class Ledger:
             iid = _id("intent", customer, rail, now)
             self.db.execute("INSERT INTO ledger_intents(id, customer_id, rail, amount, amount_tag, created_at, expires_at, state)"
                             " VALUES(?,?,?,?,?,?,?,'OPEN')", (iid, customer, rail, amount, tag, now, now + INTENT_TTL_MS))
+        # the treasury number is shown ONLY while payments are live: before that there is
+        # nowhere a customer should be sending money
+        pay_to = self.treasury_msisdn.get(rail, "") if self.payments_live else ""
         return {"ok": True, "intent_id": iid, "rail": rail, "amount": amount, "send_exactly": tag, "bound": bound,
-                "expires_at": now + INTENT_TTL_MS, "payments_live": self.payments_live}
+                "expires_at": now + INTENT_TTL_MS, "payments_live": self.payments_live, "pay_to": pay_to,
+                "auto_limit": TOPUP_MAX_AUTO_CENTIMES}
 
     def observe_credit(self, who: str, rail: str, sender_hash: str, amount: int, sms_hash: str, now: int, source: str = "sms") -> dict:
         """The treasury phone saw "vous avez reçu N F de 06…". Credit is posted only from this."""
@@ -687,30 +814,42 @@ class Ledger:
                 self._audit(now, who, "treasury.topup", tid, "rejected: " + PAYMENTS_DISABLED, allowed=False)
                 return {"ok": True, "state": REJECTED, "reason": PAYMENTS_DISABLED, "topup_id": tid}
             binding = self.db.execute("SELECT * FROM ledger_bindings WHERE rail=? AND sender_hash=?", (rail, sender_hash)).fetchone()
+            intent = self.db.execute("SELECT * FROM ledger_intents WHERE rail=? AND amount_tag=? AND state='OPEN' AND expires_at>?",
+                                     (rail, amount, now)).fetchone()
             customer = ""
             matched_by = ""
-            if binding is not None:
+            reason = ""
+            claim_ref = ""
+            if binding is not None and intent is not None and intent["customer_id"] != binding["customer_id"]:
+                # the number belongs to one identity and the tag to another: most likely a
+                # phone that was reinstalled and is proving its number. A person decides,
+                # and confirming MOVES the old identity's balances rather than duplicating them.
+                customer = intent["customer_id"]
+                reason = REBIND_CANDIDATE
+                claim_ref = "rebind:" + binding["customer_id"]
+                self.db.execute("UPDATE ledger_intents SET state='USED', topup_id=? WHERE id=?", (tid, intent["id"]))
+            elif binding is not None:
                 customer = binding["customer_id"]
                 matched_by = "binding"
                 self.db.execute("UPDATE ledger_intents SET state='USED', topup_id=? WHERE customer_id=? AND state='OPEN'", (tid, customer))
-            else:
-                intent = self.db.execute("SELECT * FROM ledger_intents WHERE rail=? AND amount_tag=? AND state='OPEN' AND expires_at>?",
-                                         (rail, amount, now)).fetchone()
-                if intent is not None:
-                    customer = intent["customer_id"]
-                    matched_by = "tag"
-                    self.db.execute("UPDATE ledger_intents SET state='USED', topup_id=? WHERE id=?", (tid, intent["id"]))
-                    self.db.execute("INSERT OR REPLACE INTO ledger_bindings(customer_id, rail, sender_hash, bound_at, bound_by) VALUES(?,?,?,?,?)",
-                                    (customer, rail, sender_hash, now, tid))
-            state = MATCHED if customer else UNASSIGNED
-            self.db.execute("INSERT INTO ledger_topups(id, rail, sender_hash, amount, sms_hash, observed_at, observed_by, state, customer_id, matched_by, updated_at)"
-                            " VALUES(?,?,?,?,?,?,?,?,?,?,?)", (tid, rail, sender_hash, amount, sms_hash, now, who, state, customer, matched_by, now))
-            # the money arrived either way. Unmatched, it sits in a suspense account that
-            # counts as a liability until a person assigns it - never in anybody's credit.
-            self._post(now, "TOPUP", "float:" + rail.lower(), ("credit:" + customer) if customer else UNASSIGNED_ACCOUNT,
-                       amount, ref=tid, memo=matched_by or "unassigned", actor=who)
-            self._audit(now, who, "treasury.topup", tid, state + " " + matched_by)
-        return {"ok": True, "state": state, "topup_id": tid, "customer_id": customer, "matched_by": matched_by}
+            elif intent is not None:
+                customer = intent["customer_id"]
+                matched_by = "tag"
+                self.db.execute("UPDATE ledger_intents SET state='USED', topup_id=? WHERE id=?", (tid, intent["id"]))
+                self.db.execute("INSERT OR REPLACE INTO ledger_bindings(customer_id, rail, sender_hash, bound_at, bound_by) VALUES(?,?,?,?,?)",
+                                (customer, rail, sender_hash, now, tid))
+            if customer and not reason and amount > TOPUP_MAX_AUTO_CENTIMES:
+                # a large amount on a parsed message alone is never spendable credit
+                reason = ABOVE_AUTO_LIMIT
+            state = MATCHED if (customer and not reason) else (NEEDS_REVIEW if customer else UNASSIGNED)
+            self.db.execute("INSERT INTO ledger_topups(id, rail, sender_hash, amount, sms_hash, observed_at, observed_by, state, customer_id, matched_by, claim_ref, reason, updated_at)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (tid, rail, sender_hash, amount, sms_hash, now, who, state, customer, matched_by if state == MATCHED else "", claim_ref, reason, now))
+            # the money arrived either way. Unless it is MATCHED it sits in a suspense account
+            # that counts as a liability until a person assigns it - never in anybody's credit.
+            self._post(now, "TOPUP", "float:" + rail.lower(), ("credit:" + customer) if state == MATCHED else UNASSIGNED_ACCOUNT,
+                       amount, ref=tid, memo=(matched_by if state == MATCHED else (reason or "unassigned")), actor=who)
+            self._audit(now, who, "treasury.topup", tid, state + " " + (matched_by or reason))
+        return {"ok": True, "state": state, "topup_id": tid, "customer_id": customer, "matched_by": matched_by, "reason": reason}
 
     def claim(self, customer: str, rail: str, sender_hash: str, amount: int, reference: str, now: int) -> dict:
         """A customer says an unassigned top-up is theirs. A number alone proves nothing: the
@@ -741,6 +880,10 @@ class Ledger:
                     raise LedgerError("no customer on this claim")
                 if not self.payments_live:
                     raise LedgerError("payments are disabled", PAYMENTS_DISABLED, 409)
+                if row["reason"] == REBIND_CANDIDATE and row["claim_ref"].startswith("rebind:"):
+                    # a reinstalled phone proved its number: the OLD identity's balances move
+                    # to the new one (never duplicated), then the number follows
+                    self._move_identity(row["claim_ref"][len("rebind:"):], row["customer_id"], now, who, "rebind via top-up " + topup_id)
                 self.db.execute("UPDATE ledger_topups SET state=?, matched_by='treasurer', updated_at=? WHERE id=?", (MATCHED, now, topup_id))
                 self.db.execute("INSERT OR REPLACE INTO ledger_bindings(customer_id, rail, sender_hash, bound_at, bound_by) VALUES(?,?,?,?,?)",
                                 (row["customer_id"], row["rail"], row["sender_hash"], now, topup_id))
@@ -757,7 +900,60 @@ class Ledger:
         rows = self.db.execute("SELECT * FROM ledger_topups WHERE state IN (?,?) ORDER BY observed_at", (NEEDS_REVIEW, UNASSIGNED)).fetchall()
         return [{"topup_id": r["id"], "rail": r["rail"], "amount": int(r["amount"]), "state": r["state"],
                  "observed_at": int(r["observed_at"]), "customer_id": r["customer_id"], "claim_ref": r["claim_ref"],
-                 "stale": now - int(r["observed_at"]) >= UNCLAIMED_REVIEW_MS} for r in rows]
+                 "reason": r["reason"], "stale": now - int(r["observed_at"]) >= UNCLAIMED_REVIEW_MS} for r in rows]
+
+    # ---- treasury: corrections that leave a trail -------------------------------------------------
+
+    def reverse_posting(self, who: str, posting_id: str, memo: str, now: int) -> dict:
+        """Undo one posting by posting its mirror. Nothing is edited or deleted; the original,
+        the reversal, the memo and the actor all stay. A posting is reversed at most once."""
+        self._require_treasury(who, "treasury.reverse", posting_id, now)
+        if not memo.strip():
+            raise LedgerError("a reversal needs a memo saying why")
+        row = self.db.execute("SELECT * FROM ledger_postings WHERE id=?", (posting_id,)).fetchone()
+        if row is None:
+            raise LedgerError("unknown posting", code=404)
+        if row["kind"] == "REVERSAL":
+            raise LedgerError("a reversal is not reversed; post a new correction", WRONG_STATE, 409)
+        with self.db:
+            rid = self._post(now, "REVERSAL", row["credit_account"], row["debit_account"], int(row["amount"]),
+                             ref="rev:" + posting_id, memo=memo.strip()[:200], actor=who)
+            if rid is None:
+                raise LedgerError("already reversed", WRONG_STATE, 409)
+            self._audit(now, who, "treasury.reverse", posting_id, memo.strip()[:200])
+        return {"ok": True, "reversal_id": rid, "kind": row["kind"], "amount": int(row["amount"])}
+
+    def move_identity(self, who: str, from_id: str, to_id: str, memo: str, now: int) -> dict:
+        """Device or key recovery: a person who proved they are the same customer or provider
+        gets the old identity's credit and earnings on the new one. Refused while the old
+        identity has an open hold or an open queue row - those must settle first."""
+        self._require_treasury(who, "treasury.move_identity", from_id, now)
+        if not memo.strip():
+            raise LedgerError("a memo is required: how was the identity proved")
+        with self.db:
+            moved = self._move_identity(from_id, to_id, now, who, memo.strip()[:200])
+        return {"ok": True, "moved": moved}
+
+    def _move_identity(self, from_id: str, to_id: str, now: int, actor: str, memo: str) -> dict:
+        if not from_id or not to_id or from_id == to_id:
+            raise LedgerError("two different identities are required")
+        if self.open_hold(from_id) is not None:
+            raise LedgerError("the old identity has an open hold", IDENTITY_BUSY, 409)
+        if self.db.execute("SELECT 1 FROM ledger_withdrawals WHERE payee_id=? AND state IN (?,?,?,?)", (from_id,) + WITHDRAWAL_OPEN).fetchone():
+            raise LedgerError("the old identity has an open withdrawal or refund", IDENTITY_BUSY, 409)
+        moved = {}
+        for prefix in ("credit:", "earned:"):
+            bal = self.balance(prefix + from_id)
+            if bal > 0:
+                self._post(now, "IDENTITY_MOVE", prefix + from_id, prefix + to_id, bal, ref="move:%s:%s:%s" % (prefix[:-1], from_id, now), memo=memo, actor=actor)
+                moved[prefix[:-1]] = bal
+            elif bal < 0:
+                # a debt follows the person too
+                self._post(now, "IDENTITY_MOVE", prefix + to_id, prefix + from_id, -bal, ref="move:%s:%s:%s" % (prefix[:-1], from_id, now), memo=memo + " (debt)", actor=actor)
+                moved[prefix[:-1]] = bal
+        self.db.execute("UPDATE ledger_bindings SET customer_id=?, bound_at=?, bound_by=? WHERE customer_id=?", (to_id, now, "move", from_id))
+        self._audit(now, actor, "treasury.move_identity", from_id + ">" + to_id, memo)
+        return moved
 
     # ---- treasury: test credit and the typed balance -------------------------------------------
 

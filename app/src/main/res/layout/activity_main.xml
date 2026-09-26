@@ -33,6 +33,9 @@
                     <TextView android:id="@+id/homeSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="" android:textSize="15sp" android:textColor="@color/text_muted" android:lineSpacingExtra="3dp" />
                     <ProgressBar android:id="@+id/homeProgress" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" style="?android:attr/progressBarStyleHorizontal" android:indeterminate="true" />
                     <TextView android:id="@+id/homeMoney" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" android:visibility="gone" android:textSize="17sp" android:textColor="@color/text" android:lineSpacingExtra="8dp" />
+                    <!-- v0.18.0: Prok credit, as the Brain last said it; long press = "J'ai déjà payé" -->
+                    <TextView android:id="@+id/homeCredit" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="" android:visibility="gone" android:textSize="17sp" android:textColor="@color/text" android:lineSpacingExtra="8dp" />
+                    <Button android:id="@+id/btnRecharge" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Recharger" style="@style/PrimaryButton" android:visibility="gone" />
                     <Button android:id="@+id/btnHomeStop" android:text="@string/stop_big" style="@style/DangerButton" android:layout_marginTop="20dp" />
                 </LinearLayout>
 

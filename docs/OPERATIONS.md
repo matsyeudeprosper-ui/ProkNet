@@ -174,6 +174,7 @@ counts processes afterwards for the same reason.
 | `PROK_TREASURY_IDS` | v0.18.0: comma-separated node ids allowed to act as the **treasury** (record top-ups, move withdrawals past REQUESTED, post test credit) | none - nobody is treasury |
 | `PROK_TEST_IDS` | v0.18.0: node ids that may receive audited **test credit** (pilot phones only) | none |
 | `PROK_PAYMENTS_LIVE` | v0.18.0: `1` lets an observed top-up credit a customer. Anything else records it as REJECTED (`payments_disabled`) and credits nobody | off |
+| `PROK_TREASURY_MSISDN_MTN` / `PROK_TREASURY_MSISDN_AIRTEL` | v0.18.1: the treasury wallet numbers a customer is told to send to. Shown by the app ONLY while `PROK_PAYMENTS_LIVE=1`; before that the app says top-ups are not open | none |
 
 No credential is ever a command-line argument, and none is in git.
 
@@ -205,6 +206,51 @@ What is logged from the ledger: ids cut short, amounts, states, the actor. Never
 number, never a message body. The withdrawal row holds the payee's number because the
 treasurer has to type it; it is returned only to treasury identities and never written
 to the audit table (a test walks the audit rows for it).
+
+### v0.18.1 upgrading the pilot Brain (schema 5 → 6), and rolling back
+
+Migration 6 adds one column (`ledger_withdrawals.kind`, default `WITHDRAWAL`). It is
+applied by the Brain on start, like every migration. The order that keeps a way back:
+
+```powershell
+$env:PROK_BRAIN_PORT = '8081'
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\backup.ps1   # note the file name it prints
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\stop.ps1
+git -C C:\Projects\ProkNet checkout v0.18.1
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\start.ps1
+powershell -ExecutionPolicy Bypass -File C:\Projects\ProkNet\deploy\brain\status.ps1   # must print schema=6, version=0.18.1
+```
+
+**Rollback**, if anything is wrong after the upgrade: `stop.ps1`, then
+`restore.ps1 -From <the backup printed above>` (it refuses while the Brain runs, keeps the
+current file as `brain-replaced-<stamp>.db`, and checks the backup's integrity before
+copying), then `git checkout v0.18.0` if the code must go back too, then `start.ps1`.
+Schema 6 on v0.18.0 code is harmless (the column is ignored); schema 5 on v0.18.1 code
+is repaired by the migration on start. Either direction is reversible from the backup.
+
+**Daily** (treasurer, from the app): the typed balance per rail. **Weekly** (Mike):
+`backup.ps1` and a glance at `status.ps1`. Backups rotate at 30.
+
+### Recovering a person's balances after a reinstall or a lost phone
+
+A reinstalled phone has a new identity and starts at zero. Two ways back, both leave
+an audit row and neither duplicates money:
+
+- **by number:** the person tops up from the number they used before; the treasury
+  phone sees a tag for the new identity from a number bound to the old one and holds it
+  for review (`rebind_candidate`); the treasurer confirms in "Messages à vérifier"; the
+  old identity's credit and earnings MOVE to the new one, and the number follows;
+- **by hand:** TRÉSORERIE → long press *Crédit test* → "Transférer une identité" with
+  both full ids and how the person proved themselves. Refused while the old identity has
+  an open hold or an open withdrawal/refund.
+
+### Access control, in one table
+
+| Who | May |
+|---|---|
+| Any signed identity | read its own wallet; request a hold on a BUYER's credit as the seller of that session; request its own withdrawal or refund; register a top-up intent; claim an unassigned payment (number + amount + reference, then a treasurer decides) |
+| A treasury identity (`PROK_TREASURY_IDS`) | everything above plus: the queue, approve / deny / mark sent / not sent / confirm paid, record an observed credit or debit, review a claim, post test credit to a TEST identity, type a balance, reverse a posting with a memo, move an identity, read the audit and the reconciliation |
+| Nobody | send money, change a posting, delete anything, credit a customer while `PROK_PAYMENTS_LIVE` is off, credit a customer from a number alone |
 
 ### Backups
 

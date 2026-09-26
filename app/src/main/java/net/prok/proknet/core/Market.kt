@@ -14,6 +14,15 @@ object Market {
     const val PRICING_VERSION = 1
     /** v0.14: a contract whose ceiling is the buyer's CFA budget, not a megabyte count. */
     const val PRICING_VERSION_BUDGET = 2
+    /**
+     * v0.18.0: the "usable Internet" rule and the relay in the signature. A version 3
+     * contract is a budget contract that (a) settles ZERO when nothing came back from the
+     * Internet (`bytesDown == 0`), whatever was sent up, and (b) names the relay that
+     * carried it, so the relay can be paid from the same signed evidence. The Brain
+     * (server/brain/evidence.py) applies the identical rule; the fixture
+     * server/tests/fixtures/charging_v3.json holds both sides to it.
+     */
+    const val PRICING_VERSION_USABLE = 3
     const val MB = 1_000_000L
     const val MAX_PRICE_PER_MB = 100_000      // CFA; anything above is malformed
     const val MAX_MIN_PRICE = 1_000_000       // CFA
@@ -145,11 +154,18 @@ object Market {
         val sellerPolicy: Int = 0,
         /** 0 = legacy CFA/MB, 1 = budget session. */
         val pricingMode: Int = 0,
+        // ---- v0.18.0 (version 3 only) ----
+        /** The relay that carries this session, 16 bytes, all zero when the link is direct. */
+        val relayId: ByteArray = ByteArray(16),
     ) {
         val sessionHex get() = sessionId.toHex()
         val buyerShort get() = buyerId.toHex().substring(0, 8)
         val sellerShort get() = sellerId.toHex().substring(0, 8)
-        val budgetSession: Boolean get() = version == PRICING_VERSION_BUDGET && pricingMode == 1
+        val budgetSession: Boolean get() = (version == PRICING_VERSION_BUDGET || version == PRICING_VERSION_USABLE) && pricingMode == 1
+        /** v3: nothing delivered from the Internet means nothing owed. */
+        val usableRule: Boolean get() = version >= PRICING_VERSION_USABLE
+        val viaRelay: Boolean get() = relayId.any { it != 0.toByte() }
+        val relayHex: String get() = if (viaRelay) relayId.toHex() else ""
         val maxBytes: Long get() = when {
             budgetSession -> if (maxBillableBytes <= 0) Long.MAX_VALUE else maxBillableBytes
             maxMb == 0 -> Long.MAX_VALUE
@@ -173,6 +189,20 @@ object Market {
         }
 
         /**
+         * v0.18.0: THE charging rule, from the seller's counters. Every side that prices a
+         * checkpoint - the seller issuing it, the buyer checking it, the Brain deriving the
+         * settlement - calls this and nothing else. Under version 3, a session that sent
+         * bytes up but received NOTHING back from the Internet is not Internet anybody used
+         * and costs zero, from the first byte up to the last; the moment one byte comes
+         * down, everything counts at the signed rate. Older versions charge up + down as
+         * they always did, so a phone on this build still agrees with a phone on the last.
+         */
+        fun costFor(bytesUp: Long, bytesDown: Long): Long {
+            if (usableRule && bytesDown <= 0) return 0
+            return costFor(bytesUp + bytesDown)
+        }
+
+        /**
          * v0.14.1: what [bytes] cost at the signed rate WITHOUT the budget clamp.
          *
          * [costFor] deliberately clamps to the budget, which makes it useless for
@@ -187,28 +217,37 @@ object Market {
             return (capped * rateCentimesPerMb + MB / 2) / MB
         }
 
-        fun encode(): ByteArray =
-            if (version == PRICING_VERSION_BUDGET) ByteBuffer.allocate(LEN_V2)
+        fun encode(): ByteArray = when (version) {
+            PRICING_VERSION_USABLE -> ByteBuffer.allocate(LEN_V3)
+                .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs)
+                .putInt(rateCentimesPerMb).putLong(buyerBudgetCentimes).putLong(maxBillableBytes).putInt(sourceCostBasisCentimesPerMb)
+                .put(sellerPolicy.toByte()).put(pricingMode.toByte()).put(relayId).array()
+            PRICING_VERSION_BUDGET -> ByteBuffer.allocate(LEN_V2)
                 .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs)
                 .putInt(rateCentimesPerMb).putLong(buyerBudgetCentimes).putLong(maxBillableBytes).putInt(sourceCostBasisCentimesPerMb)
                 .put(sellerPolicy.toByte()).put(pricingMode.toByte()).array()
-            else ByteBuffer.allocate(LEN)
+            else -> ByteBuffer.allocate(LEN)
                 .put(version.toByte()).put(sessionId).put(buyerId).put(sellerId).putInt(pricePerMb).putInt(minPriceCfa).putInt(maxMb).put(feePct.toByte()).putLong(startTs).array()
+        }
 
         fun hash(): ByteArray = Crypto.sha256(encode())
         fun valid(): Boolean {
             val base = sessionId.size == 8 && buyerId.size == 16 && sellerId.size == 16 && validPrice(pricePerMb) && validMinPrice(minPriceCfa) &&
                 validMaxMb(maxMb) && validFee(feePct) && startTs > 0 && !buyerId.contentEquals(sellerId)
             if (!base) return false
+            val economics = rateCentimesPerMb in 0..MAX_PRICE_PER_MB &&
+                buyerBudgetCentimes in 0..MAX_BUDGET_CENTIMES &&
+                maxBillableBytes in 0..MAX_BILLABLE_BYTES && sourceCostBasisCentimesPerMb in 0..MAX_PRICE_PER_MB &&
+                sellerPolicy in 0..7 && pricingMode in 0..1 &&
+                (rateCentimesPerMb == 0 || (maxBillableBytes > 0 && buyerBudgetCentimes > 0))
             return when (version) {
                 PRICING_VERSION -> true
                 // v0.14.1: a paid budget session must carry a real ceiling; a free one (rate 0) is
                 // explicitly allowed to have no budget at all, and costs nothing by construction.
-                PRICING_VERSION_BUDGET -> rateCentimesPerMb in 0..MAX_PRICE_PER_MB &&
-                    buyerBudgetCentimes in 0..MAX_BUDGET_CENTIMES &&
-                    maxBillableBytes in 0..MAX_BILLABLE_BYTES && sourceCostBasisCentimesPerMb in 0..MAX_PRICE_PER_MB &&
-                    sellerPolicy in 0..7 && pricingMode in 0..1 &&
-                    (rateCentimesPerMb == 0 || (maxBillableBytes > 0 && buyerBudgetCentimes > 0))
+                PRICING_VERSION_BUDGET -> economics
+                // v0.18.0: the relay, if named, is a third party - never the buyer or the seller
+                PRICING_VERSION_USABLE -> economics && relayId.size == 16 &&
+                    !relayId.contentEquals(buyerId) && !relayId.contentEquals(sellerId)
                 else -> false
             }
         }
@@ -219,6 +258,8 @@ object Market {
             const val LEN = 62
             /** v1 plus rate, budget, byte ceiling, source-cost basis, seller policy, pricing mode. */
             const val LEN_V2 = LEN + 4 + 8 + 8 + 4 + 1 + 1
+            /** v2 plus the relay id. */
+            const val LEN_V3 = LEN_V2 + 16
 
             /**
              * v0.14.1: the body length a declared version MUST have, or -1 for a
@@ -230,6 +271,7 @@ object Market {
             fun bodyLenFor(version: Int): Int = when (version) {
                 PRICING_VERSION -> LEN
                 PRICING_VERSION_BUDGET -> LEN_V2
+                PRICING_VERSION_USABLE -> LEN_V3
                 else -> -1
             }
 
@@ -243,16 +285,24 @@ object Market {
                     val ver = bb.get().toInt() and 0xFF
                     val sid = ByteArray(8).also { bb.get(it) }; val buyer = ByteArray(16).also { bb.get(it) }; val seller = ByteArray(16).also { bb.get(it) }
                     val price = bb.int; val min = bb.int; val maxMb = bb.int; val fee = bb.get().toInt() and 0xFF; val ts = bb.long
-                    val c = if (b.size == LEN_V2)
-                        Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver, bb.int, bb.long, bb.long, bb.int, bb.get().toInt() and 0xFF, bb.get().toInt() and 0xFF)
-                    else Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver)
+                    val c = when (ver) {
+                        PRICING_VERSION_USABLE -> {
+                            val rate = bb.int; val budget = bb.long; val ceiling = bb.long; val basis = bb.int
+                            val policy = bb.get().toInt() and 0xFF; val mode = bb.get().toInt() and 0xFF
+                            val relay = ByteArray(16).also { bb.get(it) }
+                            Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver, rate, budget, ceiling, basis, policy, mode, relay)
+                        }
+                        PRICING_VERSION_BUDGET ->
+                            Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver, bb.int, bb.long, bb.long, bb.int, bb.get().toInt() and 0xFF, bb.get().toInt() and 0xFF)
+                        else -> Contract(sid, buyer, seller, price, min, maxMb, fee, ts, ver)
+                    }
                     if (c.valid()) c else null
                 } catch (e: Exception) { null }
             }
         }
     }
 
-    /** What a signature over a contract commits to (domain-separated). Covers every economic field, v1 or v2. */
+    /** What a signature over a contract commits to (domain-separated). Covers every economic field, v1, v2 or v3 (incl. the relay). */
     fun contractSignData(c: Contract): ByteArray = "ProkNet-contract-1".toByteArray(Charsets.UTF_8) + c.encode()
 
     /** A contract and the signature over exactly its bytes. */
@@ -320,6 +370,8 @@ object Market {
         data: ByteArray?, myId: ByteArray, linkPeerId: ByteArray?, buyerPub: ByteArray?,
         myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int,
         nowMs: Long, usedSessionIds: Set<String>, myFloorCentimesPerMb: Int = 0,
+        /** v0.18.0: the relay that carried this proposal (16 bytes), or null on a direct link. */
+        relayPeerId: ByteArray? = null,
     ): Admission {
         val len = data?.size ?: 0
         val ver = if (data != null && data.isNotEmpty()) data[0].toInt() and 0xFF else -1
@@ -332,16 +384,25 @@ object Market {
             return Admission("no authenticated link", sb.contract, sb.sig, framing, ver, len, true, false)
         if (!Crypto.verify(buyerPub, contractSignData(sb.contract), sb.sig))
             return Admission("bad buyer signature", sb.contract, sb.sig, framing, ver, len, true, false)
-        val why = acceptableProposal(sb.contract, myId, linkPeerId, myPrice, myMin, myMaxMb, myFee, nowMs, usedSessionIds, myFloorCentimesPerMb)
+        val why = acceptableProposal(sb.contract, myId, linkPeerId, myPrice, myMin, myMaxMb, myFee, nowMs, usedSessionIds, myFloorCentimesPerMb, relayPeerId)
         return Admission(why, sb.contract, sb.sig, framing, ver, len, true, true)
     }
 
     /** Seller-side check of a proposal: the terms must be exactly what the seller currently offers, and the parties must be the link parties. */
     fun acceptableProposal(c: Contract, myId: ByteArray, linkPeerId: ByteArray, myPrice: Int, myMin: Int, myMaxMb: Int, myFee: Int, nowMs: Long, usedSessionIds: Set<String>,
-                           myFloorCentimesPerMb: Int = 0): String? {
+                           myFloorCentimesPerMb: Int = 0, relayPeerId: ByteArray? = null): String? {
         if (!c.valid()) return "malformed contract"
         if (!c.sellerId.contentEquals(myId)) return "seller id is not me"
         if (!c.buyerId.contentEquals(linkPeerId)) return "buyer id is not the authenticated link peer"
+        if (c.usableRule) {
+            // v0.18.0: the relay in the signature must be the relay that really carried the
+            // proposal - the one the seller's own link authenticated - and a direct link names none.
+            // A buyer cannot pay a friend for relaying nothing, and cannot leave a real relay unpaid.
+            if (relayPeerId != null && !c.relayId.contentEquals(relayPeerId)) return "relay id is not the relay that carried this"
+            if (relayPeerId == null && c.viaRelay) return "a relay is named on a direct link"
+        } else if (relayPeerId != null && c.budgetSession) {
+            return "a relayed paid session needs a version 3 contract"
+        }
         if (c.budgetSession) {
             // v0.14: the seller checks that the rate really covers its floor, not that a price list matches
             if (c.feePct != myFee) return "fee differs from my offer"
@@ -388,7 +449,7 @@ object Market {
 
     /** Seller builds the next checkpoint from its own counters under the contract terms. */
     fun nextCheckpoint(contract: Contract, prevSeq: Int, bytesUp: Long, bytesDown: Long, ts: Long, final: Boolean): Checkpoint =
-        Checkpoint(contract.sessionId, prevSeq + 1, bytesUp, bytesDown, contract.costFor(bytesUp + bytesDown), ts, final)
+        Checkpoint(contract.sessionId, prevSeq + 1, bytesUp, bytesDown, contract.costFor(bytesUp, bytesDown), ts, final)
 
     /**
      * Buyer-side validation of a seller checkpoint against the contract, the last
@@ -403,7 +464,7 @@ object Market {
         if (last != null && c.seq <= last.seq) return if (c.seq == last.seq) "duplicate seq " + c.seq else "out-of-order seq " + c.seq + " <= " + last.seq
         if (last != null && (c.bytesUp < last.bytesUp || c.bytesDown < last.bytesDown)) return "usage decreased"
         if (last != null && last.final) return "session already finalised"
-        if (c.costCentimes != contract.costFor(c.billable)) return "cost does not match the agreed terms"
+        if (c.costCentimes != contract.costFor(c.bytesUp, c.bytesDown)) return "cost does not match the agreed terms"
         val claimed = c.billable; val mine = myUp + myDown
         val allowance = TOLERANCE_BYTES + mine * TOLERANCE_PERMILLE / 1000
         if (claimed > mine + allowance) return "seller claims " + claimed + " bytes, I counted " + mine + " (+" + allowance + " allowed)"
@@ -413,7 +474,7 @@ object Market {
 
     /** Final settlement from the last mutually signed checkpoint under the agreed terms. */
     fun finalCost(contract: Contract, lastSigned: Checkpoint?): Long =
-        if (lastSigned == null) contract.costFor(0) else contract.costFor(lastSigned.billable)
+        if (lastSigned == null) contract.costFor(0, 0) else contract.costFor(lastSigned.bytesUp, lastSigned.bytesDown)
 
     // ---- ledger ----------------------------------------------------------------------------------------
 

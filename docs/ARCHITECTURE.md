@@ -4994,3 +4994,52 @@ Charging rule changes (a per-session minimum, zero at `bytesDown == 0`) are a pr
 version bump verified on both phones and the server, and are not in this build. The
 signed contract does not carry a relay id yet, so the server's relay-share posting is
 unused. The offline authorisation and the kiosk gate are not built.
+
+## v0.18.1 the release: one charging rule, the relay in the signature, no kiosk route
+
+**Contract version 3** (`Market.PRICING_VERSION_USABLE`, 104 bytes = v2 + a 16-byte
+relay id). Two things it changes, both signed by both phones and re-derived by the Brain:
+
+- **The usable-Internet rule.** `Contract.costFor(bytesUp, bytesDown)` is THE charging
+  function on all three sides: a session that received nothing from the Internet
+  (`bytesDown == 0`) costs zero whatever went up; from the first byte down, up + down at
+  the signed rate, clamped to the ceiling and the budget as before. The seller issues
+  checkpoints with it, the buyer refuses a checkpoint that disagrees with it, the Brain
+  refuses evidence whose signed cost disagrees with it. `server/tests/fixtures/
+  charging_v3.json` is written by the Python rule and read by a Kotlin test, so the
+  phones cannot drift from the Brain unnoticed. Version 2 keeps its old arithmetic, so a
+  phone on this build still agrees with a phone on the last one.
+- **The relay in the signature.** The buyer names the relay it is buying through (the
+  peer on its own link when the far end is the relay's seller). The seller admits a
+  proposal only if the relay named is the relay that really carried it (`relayedVia`,
+  recorded when a sealed frame arrives) and none is named on a direct link; a relay that
+  is the buyer or the seller is not a contract. The Brain pays the relay 10 % (example)
+  of the gross out of the seller's side, from the evidence, never from a phone's claim
+  afterwards - so a relay's Gagner rises only when a settlement posts. Relayed purchases
+  were v1 contracts before this and never settled at all; they are v3 now.
+
+**A paid session needs a confirmed hold.** `HoldGate` refuses when the Brain is
+unreachable or not configured, with a sentence naming the way out (a free connection).
+The pre-v0.18 "admit on the local trust rule" is gone. The buyer's local trust cap and
+settlement policy run only on the direct-pay route.
+
+**The direct-to-seller (kiosk) route is off.** `ProkNetNode.directPayEnabled` is false,
+not persisted, and only a long press on the Lab screen's LEDGER turns it on for a
+developer. With it off: no seller number is ever sent to a buyer, no expectation or
+receipt is created or carried by the Brain, the wallet shows no "à payer" / "à
+recevoir" and no "Payer", and the treasury phone's parser is the only one that reads
+messages. Obligations still exist as the evidence the Brain settles.
+
+**Ledger, completed.** Refunds of unspent credit to a number the customer topped up from
+(the binding the operator's message created), through the same queue and the same
+manual send. A posting is reversed by its mirror with a memo, once. An identity's
+balances move to a new identity after a reinstall - by a tagged top-up from the old
+number that a treasurer confirms, or by hand - never duplicated, and a debt follows.
+An observed top-up above 10 000 CFA (example) waits for a person. Per-rail
+reconciliation compares what the ledger expects each wallet to hold with what the
+treasurer typed; a typed balance BELOW the expected one is doubt about a parsed
+message, and while it stands nothing new is approved. Test credit counts as declared
+cover, so a pilot with no float is not an alert. Schema 6 adds the queue row's kind.
+
+**What stays unproven until hardware says otherwise:** every line of TESTING 81, and the
+parser on real operator messages (T85).

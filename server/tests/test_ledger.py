@@ -70,12 +70,20 @@ class DoubleEntryTest(unittest.TestCase):
         L = fresh()
         L.test_credit(TREASURER, BUYER, 5_000, T0)
         inv = L.invariant()
-        # test credit is a liability with no float behind it - that is exactly what the
-        # invariant must show, not hide
+        # test credit is a liability with no float behind it. It is DECLARED as such (Prok's
+        # pilot subsidy) and shown as its own figure, so it covers the liability it created
+        # instead of reading as a hole; anything else uncovered is a shortfall.
         self.assertEqual(5_000, inv["liabilities"])
         self.assertEqual(0, inv["float"])
-        self.assertEqual(5_000, inv["shortfall"])
+        self.assertEqual(0, inv["shortfall"])
         self.assertEqual(5_000, inv["test_credit_issued"])
+        # money the ledger owes with nothing behind it IS a shortfall: reverse the float leg of a
+        # top-up (as if the wallet never received it) and the suspense liability stays uncovered
+        L.payments_live = True
+        L.observe_credit(TREASURER, "MTN", "s2", 700, "sms-y", T0)   # unassigned: float +700, liability +700
+        self.assertEqual(0, L.invariant()["shortfall"])
+        L._post(T0 + 1, "ADJUSTMENT", "fees", "float:mtn", 700, memo="wallet shows less")
+        self.assertEqual(700, L.invariant()["shortfall"])
 
 
 class SessionPostingTest(unittest.TestCase):
@@ -581,7 +589,7 @@ class LedgerUpgradeTest(unittest.TestCase):
                   "gross": 7_300, "fee_pct": 5, "expires_at": 9_999_999_999_999}, "buyer", T0)
         before = [tuple(r) for r in sqlite3.connect(path).execute("SELECT * FROM settlements")]
         b = braindb.Brain(path)
-        self.assertEqual(5, b.schema_version())
+        self.assertEqual(6, b.schema_version())
         names = set(r[0] for r in b.db.execute("SELECT name FROM sqlite_master WHERE type='table'"))
         for t in ("ledger_postings", "ledger_holds", "ledger_withdrawals", "ledger_topups", "ledger_intents",
                   "ledger_bindings", "ledger_audit", "ledger_balance_checks"):

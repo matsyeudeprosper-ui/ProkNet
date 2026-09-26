@@ -31,12 +31,25 @@ SETTLEMENT_DOMAIN = "ProkNet-settlement-1"
 CONTRACT_LEN_V1 = 62
 # v1 body plus rate(4) budget(8) ceiling(8) sourceCost(4) policy(1) mode(1)
 CONTRACT_LEN_V2 = CONTRACT_LEN_V1 + 4 + 8 + 8 + 4 + 1 + 1
+# v0.18.0: v2 plus the relay id (16), all zero on a direct link
+CONTRACT_LEN_V3 = CONTRACT_LEN_V2 + 16
 CHECKPOINT_LEN = 45
 
 PRICING_VERSION = 1
 PRICING_VERSION_BUDGET = 2
+#: v0.18.0: the "usable Internet" rule - zero when nothing came down - and the relay in the
+#: signature. Identical to Market.PRICING_VERSION_USABLE; charging_v3.json holds both to it.
+PRICING_VERSION_USABLE = 3
+ZERO_RELAY = bytes(16)
 
-MB = 1024 * 1024
+#: v0.18.1: ONE MILLION, not 1024*1024. `Market.MB` on the phones is 1_000_000 - a price
+#: "per MB" is per million bytes - and every checkpoint is priced with it. This constant
+#: was 1024*1024 from v0.15.1 to v0.18.0, so the Brain re-derived a cost 4.9 % higher
+#: than the one both phones signed and would have refused EVERY real settlement as
+#: "signed cost does not match the agreed terms". No hardware settlement ever reached
+#: the Brain, so nothing showed it; the charging_v3.json fixture, written here and read
+#: by the phone's own test, is what caught it.
+MB = 1_000_000
 MAX_BILLABLE_BYTES = 1 << 40
 MAX_BUDGET_CENTIMES = 100_000_000
 
@@ -50,6 +63,8 @@ def body_len_for(version: int) -> int:
         return CONTRACT_LEN_V1
     if version == PRICING_VERSION_BUDGET:
         return CONTRACT_LEN_V2
+    if version == PRICING_VERSION_USABLE:
+        return CONTRACT_LEN_V3
     return -1
 
 
@@ -65,9 +80,12 @@ class Contract:
         self.raw = raw
         (self.session_id, self.buyer_id, self.seller_id, self.price_per_mb, self.min_price,
          self.max_mb, self.fee_pct, self.start_ts) = struct.unpack(">8s16s16sIIIBq", raw[1:CONTRACT_LEN_V1])
-        if self.version == PRICING_VERSION_BUDGET:
+        self.relay_id = ZERO_RELAY
+        if self.version in (PRICING_VERSION_BUDGET, PRICING_VERSION_USABLE):
             (self.rate_centimes_per_mb, self.buyer_budget_centimes, self.max_billable_bytes,
              self.source_cost_basis, self.seller_policy, self.pricing_mode) = struct.unpack(">IqqIBB", raw[CONTRACT_LEN_V1:CONTRACT_LEN_V2])
+            if self.version == PRICING_VERSION_USABLE:
+                self.relay_id = raw[CONTRACT_LEN_V2:CONTRACT_LEN_V3]
         else:
             self.rate_centimes_per_mb = 0
             self.buyer_budget_centimes = 0
@@ -90,13 +108,25 @@ class Contract:
 
     @property
     def budget_session(self) -> bool:
-        return self.version == PRICING_VERSION_BUDGET and self.pricing_mode == 1
+        return self.version in (PRICING_VERSION_BUDGET, PRICING_VERSION_USABLE) and self.pricing_mode == 1
+
+    @property
+    def usable_rule(self) -> bool:
+        return self.version >= PRICING_VERSION_USABLE
+
+    @property
+    def via_relay(self) -> bool:
+        return self.relay_id != ZERO_RELAY
+
+    @property
+    def relay_hex(self) -> str:
+        return self.relay_id.hex() if self.via_relay else ""
 
     def hash_hex(self) -> str:
         return hashlib.sha256(self.raw).hexdigest()
 
     def cost_for(self, byte_count: int) -> int:
-        """`Contract.costFor`, to the centime, including both clamps."""
+        """`Contract.costFor(bytes)`, to the centime, including both clamps."""
         if self.rate_centimes_per_mb <= 0 or byte_count <= 0:
             return 0
         ceiling = min(self.max_billable_bytes, MAX_BILLABLE_BYTES) if self.max_billable_bytes > 0 else MAX_BILLABLE_BYTES
@@ -106,17 +136,27 @@ class Contract:
             return min(raw, self.buyer_budget_centimes)
         return raw
 
+    def cost_for_usage(self, bytes_up: int, bytes_down: int) -> int:
+        """`Contract.costFor(up, down)` - THE charging rule. Under version 3 nothing owed
+        when nothing came down from the Internet; otherwise up + down at the signed rate."""
+        if self.usable_rule and bytes_down <= 0:
+            return 0
+        return self.cost_for(bytes_up + bytes_down)
+
     def valid(self) -> bool:
         if self.buyer_id == self.seller_id or self.start_ts <= 0:
             return False
         if not (0 <= self.fee_pct <= 50):
             return False
-        if self.version == PRICING_VERSION_BUDGET:
-            return (0 <= self.rate_centimes_per_mb <= 100_000
-                    and 0 <= self.buyer_budget_centimes <= MAX_BUDGET_CENTIMES
-                    and 0 <= self.max_billable_bytes <= MAX_BILLABLE_BYTES
-                    and (self.rate_centimes_per_mb == 0
-                         or (self.max_billable_bytes > 0 and self.buyer_budget_centimes > 0)))
+        if self.version in (PRICING_VERSION_BUDGET, PRICING_VERSION_USABLE):
+            economics = (0 <= self.rate_centimes_per_mb <= 100_000
+                         and 0 <= self.buyer_budget_centimes <= MAX_BUDGET_CENTIMES
+                         and 0 <= self.max_billable_bytes <= MAX_BILLABLE_BYTES
+                         and (self.rate_centimes_per_mb == 0
+                              or (self.max_billable_bytes > 0 and self.buyer_budget_centimes > 0)))
+            if self.version == PRICING_VERSION_USABLE:
+                return economics and self.relay_id != self.buyer_id and self.relay_id != self.seller_id
+            return economics
         return True
 
 
@@ -216,7 +256,7 @@ def verify(ev: dict, now: int, ttl_ms: int) -> dict:
         raise EvidenceError("buyer countersignature is invalid")
 
     # 6. the cost the phones signed must be the cost the terms give, and fit the budget
-    derived_cost = contract.cost_for(checkpoint.billable)
+    derived_cost = contract.cost_for_usage(checkpoint.bytes_up, checkpoint.bytes_down)
     if checkpoint.cost_centimes != derived_cost:
         raise EvidenceError("signed cost does not match the agreed terms")
     if derived_cost <= 0:
@@ -257,4 +297,7 @@ def verify(ev: dict, now: int, ttl_ms: int) -> dict:
         "fee_pct": contract.fee_pct,
         "actor": actor,
         "expires_at": now + ttl_ms,
+        # v0.18.0: the relay named in the SIGNED contract, or "" - the ledger pays from this
+        "relay_id": contract.relay_hex,
+        "contract_version": contract.version,
     }

@@ -41,6 +41,8 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         fun send(type: Int, streamId: Int, data: ByteArray = ByteArray(0)): Boolean
         fun linkPeer(): String?
         fun linkPeerFullId(): String?
+        /** v0.18.0: the full id of the relay this purchase goes through, or null on a direct link. */
+        fun relayFullId(): String? = null
         fun peerPub(peerShort: String): ByteArray?
         fun store(): MessageStore
         fun feePct(): Int
@@ -135,9 +137,11 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
         reproposed = false
         budgetQuote = q
         val maxMb = minOf(Market.MAX_MB_PER_SESSION.toLong(), (q.maxBillableBytes + Market.MB - 1) / Market.MB).toInt()
+        // v0.18.0: version 3 - the usable-Internet rule, and the relay (if any) in the signature
+        val relay = hooks.relayFullId()?.let { try { it.hexToBytes() } catch (e: Exception) { null } }?.takeIf { it.size == 16 } ?: ByteArray(16)
         return propose(Market.Contract(Crypto.randomBytes(8), identity.idBytes, peerFull.hexToBytes(), advertisedPrice, 0, maxMb,
-            hooks.feePct(), System.currentTimeMillis(), Market.PRICING_VERSION_BUDGET,
-            q.rateCentimesPerMb, q.budgetCentimes, q.maxBillableBytes, q.sourceCostPerMb, sellerPolicy, 1))
+            hooks.feePct(), System.currentTimeMillis(), Market.PRICING_VERSION_USABLE,
+            q.rateCentimesPerMb, q.budgetCentimes, q.maxBillableBytes, q.sourceCostPerMb, sellerPolicy, 1, relay))
     }
 
     /** The quote this session was agreed on, for the budget wording. */
@@ -440,7 +444,7 @@ class TunnelClient(private val identity: Identity, private val hooks: Hooks) {
     internal fun markRunning() { teardown = Teardown.running(teardown) }
 
     /** Live figures for the UI. */
-    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp + s.bytesDown) }
+    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp, s.bytesDown) }
     fun agreedCost(): Long { val c = contract ?: return 0; return Market.finalCost(c, lastAccepted) }
 
     // ---- packets from the VPN TUN (unchanged from v0.6) ------------------------------------------

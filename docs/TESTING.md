@@ -3911,3 +3911,35 @@ tagged amount; Mike transfers exactly that amount to the treasury number from hi
 number; the treasury phone's message must credit the buyer's identity within a minute; a
 second identical message must credit nothing; a claim with a number alone must be
 refused.
+
+## 81. v0.18.1 the release acceptance (two phones, a third for the relay, the Brain)
+
+Section 80 still applies (T80–T85). This section is the complete list Mike asked for.
+Every line is a real run on real phones; **nothing here has been run by Claude** and
+nothing is "passed" until it is written down as PASS with the date. Words to use: PASS,
+FAIL (with what was seen), or could not be tested (with why).
+
+Before starting: Brain on v0.18.1, `status.ps1` shows `schema=6`; `PROK_TEST_IDS` holds
+the test phones; `PROK_TREASURY_IDS` holds the treasury phone; `PROK_PAYMENTS_LIVE`
+unset; both phones on build 81; test credit posted to the buyer from TRÉSORERIE.
+
+| # | Test | What must be seen |
+|---|---|---|
+| 81a | **Direct paid session** | Seller PARTAGER, buyer GET INTERNET, browse 2 min, stop. Both settle; the seller's Gagné rises by the seller-net shown in Détails techniques; the buyer's Crédit Internet on Home falls by the gross; the Brain's hold row is CONSUMED. |
+| 81b | **Relayed paid session** (3 phones) | Relay in RELAY mode between them (section 24). Same as 81a through the relay. In addition the RELAY phone's Gagné rises by exactly 10 % of the gross (the example relay share) and the seller by seller-net minus that. A relay earning appears ONLY after the session settled, never during. |
+| 81c | **Long session** (40+ min, idle for stretches) | Session stays up; the hold stays IN_SESSION (Lab → COPY NETWORK, `ledger:` line; or ask Claude to read the Brain). Settles normally at the end. |
+| 81d | **Seller crash mid-session** | Force-stop the seller app during 81a. The buyer sees the link drop. After 16 min the hold is STALE, credit still reserved. Reopen the seller, let both sync: the session settles from the last checkpoint both signed and the hold is CONSUMED. If NO checkpoint was ever countersigned, nothing is owed and the hold is released within a day - report which. |
+| 81e | **Brain outage** | Turn the Brain off (`stop.ps1`). The buyer asks for PAID Internet: the seller REFUSES with "Le réseau Prok est injoignable : votre crédit ne peut pas être vérifié…". A FREE session (seller policy free) still works. Turn the Brain on: the same paid request succeeds. |
+| 81f | **Short session** | Connect, load one small page, stop within 20 s. Both settle at the signed final checkpoint for the bytes really delivered (a few CFA, not zero, not the whole budget). |
+| 81g | **Nothing delivered** | Seller with Internet OFF at the source (its upstream in airplane mode) but PARTAGER on. The buyer connects; nothing loads; stop. The final checkpoint has 0 bytes down: the session settles at **0**, the buyer's credit is untouched, the hold is released (`settled zero by seller`). |
+| 81h | **Duplicate and late evidence** | After 81a, force-stop the buyer BEFORE it synced; wait; reopen and sync: the Brain answers `agreed` and the seller's Gagné does NOT rise a second time. Ask Claude to POST the same evidence again: `posted: false, reason: already`. |
+| 81i | **Withdrawal** | T82 in section 80, from Retirer to Payé, with the honest queue line at each step. |
+| 81j | **Refund** (only with `PROK_PAYMENTS_LIVE=1`, own numbers) | A buyer who topped up from number N: Home → long press Crédit → Me rembourser → to N: appears in the queue as REMBOURSEMENT, same states as a withdrawal. To a different number: refused before it reaches the queue. |
+| 81k | **Top-up** (only with `PROK_PAYMENTS_LIVE=1`, own numbers; T85 first) | Recharger → tagged amount → transfer → credit within a minute; a second identical message credits nothing (Brain: `duplicate`); an amount above 10 000 CFA waits in "Messages à vérifier"; a claim with a number alone is refused by the app. |
+| 81l | **Missing SMS** | Mark a withdrawal sent, then block the operator's SMS (notification access off + no RECEIVE_SMS). After 24 h the row is amber; "Confirmer payé" with the reference turns it Payé; the audit row says `treasurer:<ref>`. |
+| 81m | **Reinstall** | Uninstall the buyer app, reinstall, note the new id. Its credit is 0. Either (a) top up from the same number → "Messages à vérifier" shows a rebind → confirm → the old balance appears on the new identity, or (b) TRÉSORERIE → Transférer une identité. The old identity reads 0 afterwards; the sum did not change. |
+| 81n | **Duplicate send guard** | T83 in section 80. |
+| 81o | **Direct pay is off** | On a normal phone there is NO "Payer" button anywhere in Activité/Wallet after a paid session, no seller number is ever shown to a buyer, and the buyer's Home never says "à payer". Lab → long press LEDGER turns the old route on for a developer; turning it off again hides everything. |
+| 81p | **The v0.17 acceptance still open** | Sections 75, 76, 77, 78, 79 as written. They are unchanged by v0.18 except: a PAID session now needs credit (post test credit first), and a FREE session needs nothing. |
+
+Report all of 81a–81p in one message, in order, PASS / FAIL / could not be tested.

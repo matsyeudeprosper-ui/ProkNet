@@ -46,12 +46,16 @@ class HoldGateTest {
         assertTrue(silent.rejectMessage.length > 10)
     }
 
-    @Test fun no_answer_is_not_a_no() {
+    @Test fun no_answer_is_a_refusal_with_a_sentence_and_never_a_silent_bypass() {
+        // Mike's rule: a paid session needs a CONFIRMED hold. No Brain, no paid session.
         for (a in listOf(HoldGate.Answer.unreachable, HoldGate.Answer.notConfigured)) {
             val d = HoldGate.decide(true, a)
-            assertTrue(a.kind.name, d.admit)
+            assertFalse(a.kind.name, d.admit)
             assertEquals("", d.holdId)
-            assertTrue(d.note.contains("local trust rule"))
+            assertTrue(a.kind.name, d.rejectMessage.contains("gratuite"))
+            assertFalse("never the old bypass", d.note.contains("trust rule"))
         }
+        // and a FREE session is untouched by any of it
+        assertTrue(HoldGate.decide(false, HoldGate.Answer.unreachable).admit)
     }
 }

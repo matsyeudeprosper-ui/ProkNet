@@ -13,7 +13,7 @@ import unittest
 from brain import paybox, ruleconfig, settlement, signed_request
 from tests.test_evidence import keypair, node_id, pub_hex, sign
 
-MB = 1024 * 1024
+MB = 1_000_000   # v0.18.1: the phones' MB; evidence.MB is the same number now
 COOLING = 10 * 60 * 1000
 
 

@@ -44,7 +44,7 @@ from . import signed_request
 from .db import Brain
 
 #: Reported by /health, so an operator can see which build is actually running.
-VERSION = "0.18.0"
+VERSION = "0.18.1"
 
 
 def _network_error(e) -> dict:
@@ -431,6 +431,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, L.summary(now))
             elif p == "/v1/ledger/treasury/review":
                 self._json(200, {"items": L.review_list(who, now)})
+            elif p == "/v1/ledger/treasury/reconcile":
+                self._json(200, L.reconcile(who, now))
             elif p == "/v1/ledger/treasury/audit":
                 self._json(200, {"rows": L.audit_rows(who, now)})
             else:
@@ -456,8 +458,16 @@ class Handler(BaseHTTPRequestHandler):
                 out = L.keepalive(s("hold_id"), who, now)
             elif p == "/v1/ledger/hold/release":
                 out = L.release_unused(s("hold_id"), who, now)
+            elif p == "/v1/ledger/hold/zero":
+                out = L.hold_settled_zero(s("hold_id"), who, now)
             elif p == "/v1/ledger/withdraw":
                 out = L.request_withdrawal(who, s("rail"), s("msisdn"), n("amount"), now)
+            elif p == "/v1/ledger/refund":
+                out = L.request_refund(who, s("rail"), s("msisdn"), n("amount"), now)
+            elif p == "/v1/ledger/treasury/reverse":
+                out = L.reverse_posting(who, s("posting_id"), s("memo"), now)
+            elif p == "/v1/ledger/treasury/move_identity":
+                out = L.move_identity(who, s("from_id"), s("to_id"), s("memo"), now)
             elif p == "/v1/ledger/withdraw/cancel":
                 out = L.cancel_withdrawal(who, s("withdrawal_id"), now)
             elif p == "/v1/ledger/intent":

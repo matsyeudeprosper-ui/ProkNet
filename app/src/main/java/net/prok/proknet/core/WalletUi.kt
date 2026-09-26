@@ -137,8 +137,10 @@ object WalletUi {
         w: Wallet.View,
         hasReceivingMethod: Boolean,
         isSeller: Boolean,
+        /** v0.18.0: false in the product - nobody is ever asked to pay a person. */
+        directPay: Boolean = false,
     ): Action {
-        val creditors = obligations
+        val creditors = if (!directPay) emptyList() else obligations
             .filter { it.buyerId == myId && Settlement.isOutstanding(it.status) }
             .groupBy { it.sellerId }
             .map { (seller, list) -> Triple(seller, list.sumOf { it.buyerOwes }, list.size) }

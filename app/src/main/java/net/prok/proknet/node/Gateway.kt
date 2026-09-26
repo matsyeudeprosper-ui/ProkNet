@@ -59,6 +59,10 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         fun holdStarted(holdId: String, sessionHex: String) {}
         fun holdKeepalive(holdId: String) {}
         fun holdRelease(holdId: String) {}
+        /** v0.18.0: the session settled at zero (nothing usable delivered); the buyer's credit goes back. */
+        fun holdSettledZero(holdId: String) {}
+        /** v0.18.0: the full id of the relay that carried [peerShort]'s frames, or null on a direct link. */
+        fun relayFullIdFor(peerShort: String): String? = null
         fun onChanged()
     }
 
@@ -287,10 +291,13 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         if (c != null) finalizeContract(c, reason)
         if (s != null) DiagLog.i(tag, "SESSION END: " + s.summary())
         // v0.18.0: a hold whose session never started goes straight back to the buyer. One
-        // that backed a real session stays reserved at the Brain until the evidence settles it.
+        // that backed a real session stays reserved at the Brain until the evidence settles it -
+        // except when the signed figure is ZERO (nothing usable delivered): there is no evidence
+        // to send, so the seller says so and the credit goes back now instead of in a day.
         val hid = holdId
         holdId = ""; holdStartedSent = false
         if (hid.isNotEmpty() && s == null) pool.execute { hooks.holdRelease(hid) }
+        else if (hid.isNotEmpty() && c != null && Market.finalCost(c, lastSigned) <= 0L) pool.execute { hooks.holdSettledZero(hid) }
         session = null; buyerShort = null; contract = null; lastIssued = null; lastSigned = null
         updateState()
     }
@@ -356,8 +363,10 @@ class Gateway(private val context: Context, private val identity: Identity, priv
         // from the contract's own version byte, never from a constant: v0.14.0 parsed
         // every proposal at the v1 length and threw away valid budget contracts.
         val t = hooks.terms()
+        // v0.18.0: the relay that carried this proposal, if any, must be the one the contract names
+        val relayPeer = hooks.relayFullIdFor(peerShort)?.let { try { it.hexToBytes() } catch (e: Exception) { null } }?.takeIf { it.size == 16 }
         val a = Market.admitProposal(f.data, identity.idBytes, hooks.peerFullId(peerShort)?.hexToBytes(), hooks.peerPub(peerShort),
-            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds(), currentFloorCentimesPerMb())
+            t[0], t[1], t[2], t[3], System.currentTimeMillis(), hooks.store().sessionIds(), currentFloorCentimesPerMb(), relayPeer)
         lastContractLen = a.envelopeLen; lastContractVersion = a.declaredVersion
         lastContractDecoded = a.decoded; lastContractSigOk = a.signatureOk
         val why = a.reason
@@ -499,7 +508,7 @@ class Gateway(private val context: Context, private val identity: Identity, priv
     }
 
     /** Live figures for the UI. */
-    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp + s.bytesDown) }
+    fun runningCost(): Long { val c = contract ?: return 0; val s = session ?: return 0; return c.costFor(s.bytesUp, s.bytesDown) }
 
     /** v0.14: what this phone must keep per MB. The node sets it from the source and the seller's policy. */
     @Volatile var sellerFloorCentimesPerMb: Int = 0

@@ -43,6 +43,7 @@ import net.prok.proknet.core.Evidence
 import net.prok.proknet.core.GetInternet
 import net.prok.proknet.core.Identity
 import net.prok.proknet.core.InternetRequest
+import net.prok.proknet.core.BrainPayload
 import net.prok.proknet.core.LedgerView
 import net.prok.proknet.core.Market
 import net.prok.proknet.core.Msisdn
@@ -1114,17 +1115,143 @@ class MainActivity : Activity(), ProkNetNode.Listener {
      * something to act on, and only when nothing more urgent is already using the space.
      */
     private fun renderHomeMoney() {
-        val w = Wallet.view(node.obligations(), node.identity.idHex, System.currentTimeMillis())
+        val w = Wallet.view(node.obligations(), node.identity.idHex, System.currentTimeMillis(), node.directPayEnabled)
         val line = when {
             w.toPayCentimes > 0 -> Market.cfa(w.toPayCentimes) + " à payer"
             w.toReceiveCentimes > 0 -> Market.cfa(w.toReceiveCentimes) + " à recevoir"
             else -> ""
         }
         val slot = v<TextView>(R.id.homeMoney)
+        renderHomeCredit()
         if (line.isEmpty() || slot.visibility == android.view.View.VISIBLE) return
         slot.text = line
         slot.visibility = android.view.View.VISIBLE
         slot.setOnClickListener { walletTab = true; select(Tab.ACTIVITY) }
+    }
+
+    // ---- v0.18.0: Prok credit on Home, and the Recharger flow ----------------------------------
+
+    /** The customer's credit as the Brain last said it; nothing is shown that the Brain did not say. */
+    private fun renderHomeCredit() {
+        val lv = node.ledgerSync.view
+        val slot = v<TextView>(R.id.homeCredit)
+        val btn = v<Button>(R.id.btnRecharge)
+        if (lv == null) { slot.visibility = android.view.View.GONE; btn.visibility = android.view.View.GONE; return }
+        slot.text = "Crédit Internet : " + Market.cfa(lv.creditCentimes) +
+            (if (lv.heldCentimes > 0) " (dont " + Market.cfa(lv.heldCentimes) + " réservé pour la session en cours)" else "")
+        slot.visibility = android.view.View.VISIBLE
+        btn.visibility = android.view.View.VISIBLE
+        btn.text = if (lv.paymentsLive) "Recharger" else "Recharger (bientôt)"
+        btn.setOnClickListener { rechargeDialog(lv) }
+        slot.setOnLongClickListener { creditMenu(lv); true }
+    }
+
+    private fun creditMenu(lv: LedgerView.View) {
+        val items = arrayOf("J'ai déjà payé (paiement non reconnu)", "Me rembourser le crédit non utilisé")
+        AlertDialog.Builder(this).setTitle("Crédit Internet").setItems(items) { _, which ->
+            if (which == 0) claimDialog() else refundDialog(lv)
+        }.setNegativeButton(R.string.close, null).show()
+    }
+
+    /** Unspent credit back - only to a number this customer topped up from, only when nothing is open. */
+    private fun refundDialog(lv: LedgerView.View) {
+        if (!lv.canRefund) {
+            toast(when {
+                lv.boundRails.isEmpty() -> "Aucune recharge reconnue : rien à rembourser vers un numéro connu"
+                lv.hasOpenWithdrawal -> "Une demande est déjà en cours"
+                lv.hold != null -> "Une session utilise votre crédit : réessayez après"
+                else -> "Remboursement possible à partir de " + Market.cfa(lv.refundMinCentimes)
+            })
+            return
+        }
+        val amount = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText((lv.refundableCentimes / 100).toString()) }
+        val number = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_PHONE; hint = "Le numéro depuis lequel vous avez rechargé" }
+        val col = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; addView(amount); addView(number) }
+        val b = AlertDialog.Builder(this).setTitle("Me rembourser")
+            .setMessage("Le trésorier Prok renvoie le montant, à la main, uniquement vers un numéro avec lequel vous avez déjà rechargé. Vous verrez « Retrait demandé », puis « Envoi en cours », puis « Payé ».")
+            .setView(col).setNegativeButton(R.string.close, null)
+        if ("MTN" in lv.boundRails) b.setPositiveButton("MTN MoMo") { _, _ -> requestRefund("MTN", number.text.toString(), amount.text.toString(), lv) }
+        if ("AIRTEL" in lv.boundRails) b.setNeutralButton("Airtel Money") { _, _ -> requestRefund("AIRTEL", number.text.toString(), amount.text.toString(), lv) }
+        b.show()
+    }
+
+    private fun requestRefund(rail: String, number: String, amountText: String, lv: LedgerView.View) {
+        val cfa = amountText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        val centimes = cfa * 100
+        if (centimes < lv.refundMinCentimes || centimes > lv.refundableCentimes) { toast("Montant entre " + Market.cfa(lv.refundMinCentimes) + " et " + Market.cfa(lv.refundableCentimes)); return }
+        if (Msisdn.digits(number).isEmpty()) { toast("Numéro invalide : 9 chiffres attendus"); return }
+        ledgerIo.execute {
+            val out = node.ledgerSync.requestRefund(rail, number, centimes)
+            runOnUiThread { toast(out.message); refresh() }
+        }
+    }
+
+    private fun rechargeDialog(lv: LedgerView.View) {
+        if (!lv.paymentsLive) {
+            AlertDialog.Builder(this).setTitle("Recharger")
+                .setMessage("Les recharges ne sont pas encore ouvertes. Le réseau Prok le dira ici quand elles le seront ; d'ici là, ne transférez d'argent à personne pour ProkNet.")
+                .setPositiveButton(R.string.close, null).show()
+            return
+        }
+        val amount = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER; hint = "Montant en CFA (ex. 500)" }
+        AlertDialog.Builder(this).setTitle("Recharger mon crédit Internet")
+            .setMessage("Choisissez l'opérateur avec lequel vous allez envoyer. Le réseau Prok vous donnera un numéro et un montant exact.")
+            .setView(amount)
+            .setPositiveButton("MTN MoMo") { _, _ -> startIntent("MTN", amount.text.toString()) }
+            .setNeutralButton("Airtel Money") { _, _ -> startIntent("AIRTEL", amount.text.toString()) }
+            .setNegativeButton(R.string.close, null).show()
+    }
+
+    private fun startIntent(rail: String, amountText: String) {
+        val cfa = amountText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        if (cfa <= 0) { toast("Montant requis"); return }
+        ledgerIo.execute {
+            val (out, text) = node.ledgerSync.intent(rail, cfa * 100)
+            runOnUiThread {
+                if (!out.ok) { toast(out.message); return@runOnUiThread }
+                val exactly = BrainPayload.field(text, "send_exactly").toLongOrNull() ?: cfa * 100
+                val payTo = BrainPayload.field(text, "pay_to")
+                val live = BrainPayload.field(text, "payments_live") == "true"
+                if (!live || payTo.isEmpty()) {
+                    AlertDialog.Builder(this).setTitle("Recharger").setMessage("Les recharges ne sont pas encore ouvertes. Aucun transfert à faire.")
+                        .setPositiveButton(R.string.close, null).show()
+                    return@runOnUiThread
+                }
+                val msg = "Envoyez EXACTEMENT " + Market.cfa(exactly) + " par " + (if (rail == "MTN") "MTN MoMo" else "Airtel Money") + " au numéro\n\n" +
+                    Msisdn.pretty(payTo) + "\n\n" +
+                    (if (exactly != cfa * 100) "Le montant exact identifie votre paiement ; tout est crédité, rien n'est retenu.\n\n" else "") +
+                    "Le crédit apparaît ici quand le message de l'opérateur arrive sur le téléphone Prok - en général en moins d'une minute."
+                AlertDialog.Builder(this).setTitle("Votre recharge").setMessage(msg)
+                    .setPositiveButton("Copier le numéro") { _, _ ->
+                        (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("numéro Prok", payTo)); toast("Numéro copié")
+                    }.setNegativeButton(R.string.close, null).show()
+            }
+        }
+    }
+
+    /** "J'ai déjà payé" - a claim needs the number, the exact amount and the operator's reference, and a person confirms it. */
+    private fun claimDialog() {
+        val number = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_PHONE; hint = "Numéro depuis lequel vous avez envoyé" }
+        val amount = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER; hint = "Montant exact envoyé (CFA)" }
+        val ref = EditText(this).apply { hint = "Référence de l'opérateur (dans votre SMS)" }
+        val col = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; addView(number); addView(amount); addView(ref) }
+        AlertDialog.Builder(this).setTitle("J'ai déjà payé")
+            .setMessage("Un paiement non reconnu est vérifié par le trésorier Prok. Il faut les trois informations ; le numéro seul ne suffit pas.")
+            .setView(col)
+            .setPositiveButton("MTN MoMo") { _, _ -> sendClaim("MTN", number.text.toString(), amount.text.toString(), ref.text.toString()) }
+            .setNeutralButton("Airtel Money") { _, _ -> sendClaim("AIRTEL", number.text.toString(), amount.text.toString(), ref.text.toString()) }
+            .setNegativeButton(R.string.close, null).show()
+    }
+
+    private fun sendClaim(rail: String, number: String, amountText: String, reference: String) {
+        val cfa = amountText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        val h = Msisdn.hash(number)
+        if (cfa <= 0 || h.isEmpty() || reference.isBlank()) { toast("Numéro, montant exact et référence requis"); return }
+        ledgerIo.execute {
+            val out = node.ledgerSync.claim(rail, h, cfa * 100, reference.trim())
+            runOnUiThread { toast(if (out.ok) "Réclamation envoyée : un trésorier vérifie" else out.message) }
+        }
     }
 
     private fun renderWallet(obligations: List<Settlement.Obligation>) {
@@ -1137,7 +1264,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
 
         val me = node.identity.idHex
         val now = System.currentTimeMillis()
-        val w = Wallet.view(obligations, me, now)
+        val w = Wallet.view(obligations, me, now, node.directPayEnabled)
         val o = WalletUi.overview(w)
         text(R.id.wvPay, o.toPay); text(R.id.wvReceive, o.toReceive); text(R.id.wvEarned, o.earnedToday)
         // one figure leads; the others stay quiet
@@ -1146,7 +1273,7 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         v<TextView>(R.id.wvEarned).setTextColor(if (o.lead == WalletUi.Lead.EARNED) getColor(R.color.text) else getColor(R.color.text_muted))
 
         val dest = node.store.paymentDestination(me)
-        val action = WalletUi.primaryAction(obligations, me, w, dest != null && dest.valid, node.sellOn)
+        val action = WalletUi.primaryAction(obligations, me, w, dest != null && dest.valid, node.sellOn, node.directPayEnabled)
         text(R.id.wvActionTitle, action.title)
         text(R.id.wvActionDetail, action.detail)
         show(R.id.wvActionDetail, action.detail.isNotEmpty())
@@ -1223,7 +1350,9 @@ class MainActivity : Activity(), ProkNetNode.Listener {
         body.append(whenText).append("\n")
         for ((k, v) in d.lines) body.append("\n").append(k).append("\n").append(v).append("\n")
         val b = AlertDialog.Builder(this).setTitle(d.title).setMessage(body.toString())
-        if (d.action.startsWith("Payer")) b.setPositiveButton(d.action) { _, _ -> payDialog(o.sellerId, Wallet.netOwedTo(node.obligations(), me, o.sellerId)) }
+        // v0.18.0: "Payer" exists only on the developer-enabled direct-pay route; in the product
+        // a session is settled from Prok credit and there is nobody to pay in person
+        if (d.action.startsWith("Payer") && node.directPayEnabled) b.setPositiveButton(d.action) { _, _ -> payDialog(o.sellerId, Wallet.netOwedTo(node.obligations(), me, o.sellerId)) }
         b.setNeutralButton(R.string.wallet_advanced) { _, _ ->
             AlertDialog.Builder(this).setTitle(R.string.wallet_advanced)
                 .setMessage(d.advanced.joinToString("\n\n") { it.first + "\n" + it.second })

@@ -43,8 +43,8 @@ class RelayNode(private val identity: Identity, private val hooks: Hooks) {
         fun saveIdentity(rec: Wire.IdentityRecord)
         /** The seller's BLE advert as the relay last saw it (price, flags). */
         fun upstreamOffer(): Market.Offer?
-        /** A or C: a tunnel frame that came sealed from [originShort] through the relay. */
-        fun onTunnelFromRelay(originShort: String, frame: Tunnel.Frame)
+        /** A or C: a tunnel frame that came sealed from [originShort] through the relay [relayShort]. */
+        fun onTunnelFromRelay(relayShort: String, originShort: String, frame: Tunnel.Frame)
         /** A or C: the far end behind the relay is gone. */
         fun onRelayPeerGone(farShort: String, reason: String)
         /** A: the relay introduced its seller; the buyer may start the contract now. */
@@ -261,7 +261,7 @@ class RelayNode(private val identity: Identity, private val hooks: Hooks) {
         val key = keyFor(origin) ?: run { DiagLog.w(tag, "no key for prok-" + origin); return }
         val bytes = Relay.open(key, payload) ?: run { DiagLog.w(tag, "sealed frame from prok-" + origin + " does NOT open (wrong key or tampered) - dropped"); return }
         val f = Tunnel.decode(bytes) ?: run { DiagLog.w(tag, "sealed frame from prok-" + origin + " carries a malformed tunnel frame"); return }
-        hooks.onTunnelFromRelay(origin, f)
+        hooks.onTunnelFromRelay(peerShort, origin, f)
     }
 
     /** A or C: seal one tunnel frame for the far end. Null if the far end is unknown. */

@@ -47,7 +47,11 @@ object LedgerView {
         val withdrawableCentimes: Long, val withdrawMinCentimes: Long,
         val withdrawal: Withdrawal?, val hold: Hold?,
         val treasury: Boolean, val paymentsLive: Boolean, val fetchedAt: Long,
+        /** v0.18.0 final: unspent credit that may go back to a number this customer paid from. */
+        val refundableCentimes: Long = 0, val refundMinCentimes: Long = 0, val boundRails: List<String> = emptyList(),
     ) {
+        /** A refund is offered only to somebody who topped up from a number, and only when nothing is open. */
+        val canRefund: Boolean get() = !hasOpenWithdrawal && hold == null && boundRails.isNotEmpty() && refundableCentimes >= refundMinCentimes && refundMinCentimes > 0
         val hasOpenWithdrawal: Boolean get() = withdrawal?.open == true
         /** Retirer is offered only when it can succeed. */
         val canWithdraw: Boolean get() = !hasOpenWithdrawal && withdrawableCentimes >= withdrawMinCentimes && withdrawMinCentimes > 0
@@ -77,6 +81,9 @@ object LedgerView {
             treasury = BrainPayload.field(text, "treasury") == "true",
             paymentsLive = BrainPayload.field(text, "payments_live") == "true",
             fetchedAt = now,
+            refundableCentimes = num(text, "refundable"), refundMinCentimes = num(text, "refund_min"),
+            boundRails = Regex("\"bound_rails\"\\s*:\\s*\\[([^\\]]*)\\]").find(text)?.groupValues?.get(1)
+                ?.split(',')?.map { it.trim().trim('"') }?.filter { it.isNotEmpty() } ?: emptyList(),
         )
     }
 
@@ -127,6 +134,7 @@ object LedgerView {
     class QueueRow(
         val id: String, val payeeId: String, val rail: String, val msisdn: String, val amountCentimes: Long,
         val state: String, val requestedAt: Long, val sentAt: Long, val amber: Boolean, val memo: String,
+        val kind: String = "WITHDRAWAL",
     ) {
         /** Which buttons this row may show. A SENT row is never offered "Marquer envoyé". */
         val actions: List<String> get() = when (state) {
@@ -164,10 +172,30 @@ object LedgerView {
                 id = id, payeeId = BrainPayload.field(r, "payee_id"), rail = BrainPayload.field(r, "rail"),
                 msisdn = BrainPayload.field(r, "msisdn"), amountCentimes = num(r, "amount"), state = BrainPayload.field(r, "state"),
                 requestedAt = num(r, "requested_at"), sentAt = num(r, "sent_at"), amber = BrainPayload.field(r, "amber") == "true",
-                memo = BrainPayload.field(r, "memo"),
+                memo = BrainPayload.field(r, "memo"), kind = BrainPayload.field(r, "kind").ifEmpty { "WITHDRAWAL" },
             )
         }
         return Queue(rows, summary)
+    }
+
+    /**
+     * The per-rail reconciliation, as the treasurer reads it. "Doute" means the balance
+     * the treasurer typed is BELOW what the ledger expects: a parsed message is then in
+     * question, and the Brain approves nothing new until a check matches.
+     */
+    fun reconcileLines(text: String): String {
+        val alert = BrainPayload.field(text, "alert") == "true"
+        val parts = ArrayList<String>()
+        for (rail in listOf("MTN", "AIRTEL")) {
+            val r = obj(text, rail) ?: continue
+            val typed = BrainPayload.field(r, "typed")
+            val line = rail + " attendu " + Market.cfa(num(r, "expected")) +
+                (if (typed.isEmpty() || typed == "null") " · solde jamais saisi" else " · saisi " + Market.cfa(num(r, "typed")) + " (écart " + Market.cfa(num(r, "delta")) + ")") +
+                (if (BrainPayload.field(r, "doubt") == "true") " · DOUTE" else "") +
+                (if (BrainPayload.field(r, "check_stale") == "true") " · contrôle à refaire" else "")
+            parts.add(line)
+        }
+        return (if (alert) "ALERTE RAPPROCHEMENT - aucune approbation tant que les soldes ne concordent pas\n" else "Rapprochement OK\n") + parts.joinToString("\n")
     }
 
     /** The honest first line of the treasurer's screen, computed here so a test can hold it. */

@@ -105,6 +105,7 @@ class LedgerSync(
     fun holdStarted(holdId: String, sessionHex: String) = fire("/v1/ledger/hold/started", json("hold_id" to holdId, "session_hex" to sessionHex))
     fun holdKeepalive(holdId: String) = fire("/v1/ledger/hold/keepalive", json("hold_id" to holdId))
     fun holdRelease(holdId: String) = fire("/v1/ledger/hold/release", json("hold_id" to holdId))
+    fun holdSettledZero(holdId: String) = fire("/v1/ledger/hold/zero", json("hold_id" to holdId))
 
     private fun fire(path: String, body: ByteArray) {
         if (!configured) return
@@ -122,6 +123,22 @@ class LedgerSync(
     }
 
     fun cancelWithdrawal(id: String): Outcome = call("/v1/ledger/withdraw/cancel", json("withdrawal_id" to id), "Retrait annulé")
+
+    fun requestRefund(rail: String, msisdn: String, amountCentimes: Long): Outcome {
+        if (Msisdn.digits(msisdn).isEmpty()) return Outcome(false, "Numéro invalide : 9 chiffres attendus")
+        return call("/v1/ledger/refund", json("rail" to rail, "msisdn" to Msisdn.digits(msisdn), "amount" to amountCentimes), "Remboursement demandé")
+    }
+
+    fun claim(rail: String, senderHash: String, amountCentimes: Long, reference: String): Outcome =
+        call("/v1/ledger/claim", json("rail" to rail, "sender_hash" to senderHash, "amount" to amountCentimes, "reference" to reference), "Réclamation enregistrée")
+
+    fun reconcile(): String? {
+        if (!configured) return null
+        return try { val (code, text) = get("/v1/ledger/treasury/reconcile"); if (code == 200) text else null } catch (e: Exception) { null }
+    }
+
+    fun moveIdentity(fromId: String, toId: String, memo: String): Outcome =
+        call("/v1/ledger/treasury/move_identity", json("from_id" to fromId, "to_id" to toId, "memo" to memo), "Identité transférée")
 
     // ---- the treasurer ------------------------------------------------------------------------------
 

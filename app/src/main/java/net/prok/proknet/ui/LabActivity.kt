@@ -106,6 +106,12 @@ class LabActivity : Activity(), ProkNetNode.Listener {
         findViewById<Button>(R.id.btnSell).setOnClickListener { sell() }
         findViewById<Button>(R.id.btnRelay).setOnClickListener { node.setRelay(!node.relayOn); toast("RELAY " + (if (node.relayOn) "on" else "off")); refreshInternetLine() }
         findViewById<Button>(R.id.btnLedger).setOnClickListener { ledgerDialog() }
+        // v0.18.0: the old direct-to-seller (kiosk) route, developer only, long press, never persisted
+        findViewById<Button>(R.id.btnLedger).setOnLongClickListener {
+            node.directPayEnabled = !node.directPayEnabled
+            toast(if (node.directPayEnabled) "Direct pay (kiosk route) ON - developer only" else "Direct pay OFF")
+            true
+        }
         findViewById<Button>(R.id.btnHistory).setOnClickListener { historyDialog() }
         findViewById<Button>(R.id.btnRelayLab).setOnClickListener { startActivity(Intent(this, RelayLabActivity::class.java)) }
         findViewById<Button>(R.id.btnBulkLab).setOnClickListener { startActivity(Intent(this, BulkLabActivity::class.java)) }

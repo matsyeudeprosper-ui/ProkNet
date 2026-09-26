@@ -39,7 +39,13 @@ object Wallet {
         val isOwedSomething: Boolean get() = toReceiveCentimes > 0
     }
 
-    fun view(obligations: List<Settlement.Obligation>, myId: String, now: Long): View {
+    /**
+     * @param directPay v0.18.0: false in the product. An obligation is then evidence the
+     *        Brain settles from the buyer's Prok credit, never a sum this phone must pay
+     *        somebody in person, so "à payer" and "à recevoir" stay at zero and the
+     *        obligations count as pending settlement instead.
+     */
+    fun view(obligations: List<Settlement.Obligation>, myId: String, now: Long, directPay: Boolean = false): View {
         val dayStart = startOfDay(now)
         var toPay = 0L; var toReceive = 0L; var paid = 0L; var received = 0L; var earned = 0L
         var pending = 0; var disputed = 0
@@ -48,8 +54,8 @@ object Wallet {
             val iAmSeller = o.sellerId == myId
             if (!iAmBuyer && !iAmSeller) continue
             if (o.status == Settlement.Status.DISPUTED) { disputed++; continue }
-            val outstanding = Settlement.isOutstanding(o.status)
-            if (outstanding) pending++
+            val outstanding = Settlement.isOutstanding(o.status) && directPay
+            if (Settlement.isOutstanding(o.status)) pending++
             if (iAmBuyer) {
                 if (outstanding) toPay += o.buyerOwes
                 if (Settlement.isPaid(o.status) && o.createdAt >= dayStart) paid += o.buyerOwes

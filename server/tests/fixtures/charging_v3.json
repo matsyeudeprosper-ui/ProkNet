@@ -1,0 +1,126 @@
+{
+ "cases": [
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 900,
+   "down": 2000000,
+   "label": "v2 plain 3 MB",
+   "rate": 300,
+   "up": 1000000,
+   "version": 2
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 600,
+   "down": 0,
+   "label": "v2 up only still charged",
+   "rate": 300,
+   "up": 2000000,
+   "version": 2
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 0,
+   "down": 0,
+   "label": "v3 up only is zero",
+   "rate": 300,
+   "up": 2000000,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 600,
+   "down": 1,
+   "label": "v3 one byte down charges everything",
+   "rate": 300,
+   "up": 2000000,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 900,
+   "down": 2000000,
+   "label": "v3 plain 3 MB",
+   "rate": 300,
+   "up": 1000000,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 150,
+   "down": 500000,
+   "label": "v3 rounds half up",
+   "rate": 300,
+   "up": 0,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 150,
+   "down": 499999,
+   "label": "v3 below half rounds down",
+   "rate": 300,
+   "up": 0,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 5000,
+   "down": 10000000,
+   "label": "v3 clamps to budget",
+   "rate": 300,
+   "up": 10000000,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 4000000,
+   "cost": 1200,
+   "down": 3000000,
+   "label": "v3 clamps to ceiling then budget",
+   "rate": 300,
+   "up": 3000000,
+   "version": 3
+  },
+  {
+   "budget": 0,
+   "ceiling": 0,
+   "cost": 0,
+   "down": 5000000,
+   "label": "v3 free session",
+   "rate": 0,
+   "up": 5000000,
+   "version": 3
+  },
+  {
+   "budget": 5000,
+   "ceiling": 0,
+   "cost": 0,
+   "down": 0,
+   "label": "v3 nothing at all",
+   "rate": 300,
+   "up": 0,
+   "version": 3
+  },
+  {
+   "budget": 100000000,
+   "ceiling": 0,
+   "cost": 1371111,
+   "down": 987654321,
+   "label": "v3 large exact",
+   "rate": 1234,
+   "up": 123456789,
+   "version": 3
+  }
+ ],
+ "mb": 1000000,
+ "note": "written by server/tests/write_charging_fixture.py; read by test_evidence.py and ChargingFixtureTest.kt"
+}

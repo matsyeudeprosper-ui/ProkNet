@@ -32,7 +32,7 @@ def node_id(priv) -> str:
     return hashlib.sha256(bytes.fromhex(pub_hex(priv))).hexdigest()[:32]
 
 
-MB = 1024 * 1024
+MB = 1_000_000   # v0.18.1: the phones' MB; evidence.MB is the same number now
 
 
 def contract_bytes(session: bytes, buyer: bytes, seller: bytes, rate=300, budget=5_000, fee=5, ts=1_700_000_000_000):

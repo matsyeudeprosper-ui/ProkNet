@@ -297,7 +297,7 @@ class SchemaThreeTest(unittest.TestCase):
         con.close()
 
         b = braindb.Brain(path)
-        self.assertEqual(5, b.schema_version())
+        self.assertEqual(6, b.schema_version())
         cols = {r[1] for r in b.db.execute("PRAGMA table_info(network_activation)")}
         self.assertIn("accepted_at", cols)
         self.assertIn("link_deadline", cols)

@@ -36,7 +36,7 @@ class WalletTest {
             ob(them, me, 3_700),                                        // owed to me
             ob(other, me, 800, Settlement.Status.CONFIRMED),            // received today
         )
-        val v = Wallet.view(list, me, now)
+        val v = Wallet.view(list, me, now, directPay = true)
         assertEquals(1_200, v.toPayCentimes)
         assertEquals(300, v.paidTodayCentimes)
         assertEquals(Market.split(3_700, 5).sellerNet, v.toReceiveCentimes)
@@ -50,7 +50,7 @@ class WalletTest {
 
     @Test
     fun somebody_elses_obligations_are_not_mine() {
-        val v = Wallet.view(listOf(ob(them, other, 5_000), ob(other, them, 900)), me, now)
+        val v = Wallet.view(listOf(ob(them, other, 5_000), ob(other, them, 900)), me, now, directPay = true)
         assertEquals(0, v.toPayCentimes)
         assertEquals(0, v.toReceiveCentimes)
         assertEquals(0, v.pendingCount)
@@ -58,7 +58,7 @@ class WalletTest {
 
     @Test
     fun a_disputed_obligation_is_counted_apart_and_never_billed() {
-        val v = Wallet.view(listOf(ob(me, them, 4_000, Settlement.Status.DISPUTED), ob(me, them, 500)), me, now)
+        val v = Wallet.view(listOf(ob(me, them, 4_000, Settlement.Status.DISPUTED), ob(me, them, 500)), me, now, directPay = true)
         assertEquals("a disputed figure must not be added to what I owe", 500, v.toPayCentimes)
         assertEquals(1, v.disputedCount)
     }
@@ -68,7 +68,7 @@ class WalletTest {
         val v = Wallet.view(listOf(
             ob(me, them, 900, Settlement.Status.FAILED),
             ob(me, them, 700, Settlement.Status.EXPIRED),
-            ob(me, them, 400)), me, now)
+            ob(me, them, 400)), me, now, directPay = true)
         assertEquals(400, v.toPayCentimes)
     }
 
@@ -187,9 +187,9 @@ class WalletTest {
         assertTrue(start <= now)
         assertTrue(now - start < 24L * 3600 * 1000)
         // something confirmed yesterday is not in today's figures
-        val v = Wallet.view(listOf(ob(me, them, 900, Settlement.Status.CONFIRMED, at = start - 1)), me, now)
+        val v = Wallet.view(listOf(ob(me, them, 900, Settlement.Status.CONFIRMED, at = start - 1)), me, now, directPay = true)
         assertEquals(0, v.paidTodayCentimes)
-        val today = Wallet.view(listOf(ob(me, them, 900, Settlement.Status.CONFIRMED, at = start + 1)), me, now)
+        val today = Wallet.view(listOf(ob(me, them, 900, Settlement.Status.CONFIRMED, at = start + 1)), me, now, directPay = true)
         assertEquals(900, today.paidTodayCentimes)
     }
 }

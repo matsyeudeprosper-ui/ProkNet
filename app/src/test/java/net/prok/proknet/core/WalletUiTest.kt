@@ -24,7 +24,7 @@ class WalletUiTest {
             s.gross, s.sellerNet, s.fee, at, at + Settlement.DEFAULT_TTL_MS, status)
     }
 
-    private fun view(list: List<Settlement.Obligation>) = Wallet.view(list, me, now)
+    private fun view(list: List<Settlement.Obligation>) = Wallet.view(list, me, now, directPay = true)   // these test the direct-pay accounting itself
 
     /** The French megabyte as a standalone unit, or the English one. */
     private val megabyteUnit = Regex("(^|[^A-Za-z])(Mo|MB)([^A-Za-z]|$)")
@@ -43,7 +43,7 @@ class WalletUiTest {
     @Test
     fun a_buyer_owing_one_seller_gets_one_pay_button() {
         val list = listOf(ob(me, seller, 3_700))
-        val a = WalletUi.primaryAction(list, me, view(list), false, false)
+        val a = WalletUi.primaryAction(list, me, view(list), false, false, directPay = true)
         assertEquals(WalletUi.ActionKind.PAY, a.kind)
         assertEquals("Paiement à effectuer", a.title)
         assertTrue(a.detail.contains("Prok BB17"))
@@ -57,7 +57,7 @@ class WalletUiTest {
     @Test
     fun a_buyer_owing_several_sellers_is_shown_the_largest_first() {
         val list = listOf(ob(me, seller, 1_000), ob(me, seller2, 4_000), ob(me, seller, 500))
-        val a = WalletUi.primaryAction(list, me, view(list), false, false)
+        val a = WalletUi.primaryAction(list, me, view(list), false, false, directPay = true)
         assertEquals(seller2, a.counterpartyId)
         assertEquals(4_000, a.amountCentimes)
         assertEquals("Voir les autres paiements", a.secondary)
@@ -66,7 +66,7 @@ class WalletUiTest {
     @Test
     fun three_small_sessions_are_presented_as_one_grouped_payment() {
         val list = listOf(ob(me, seller, 300), ob(me, seller, 700), ob(me, seller, 500))
-        val a = WalletUi.primaryAction(list, me, view(list), false, false)
+        val a = WalletUi.primaryAction(list, me, view(list), false, false, directPay = true)
         assertEquals(1_500, a.amountCentimes)
         assertTrue("the grouping must be explained", a.detail.contains("3 sessions"))
 
@@ -81,7 +81,7 @@ class WalletUiTest {
     @Test
     fun a_seller_waiting_for_money_is_not_shown_a_pay_button() {
         val list = listOf(ob(seller, me, 5_200))
-        val a = WalletUi.primaryAction(list, me, view(list), hasReceivingMethod = true, isSeller = true)
+        val a = WalletUi.primaryAction(list, me, view(list), hasReceivingMethod = true, isSeller = true, directPay = true)
         assertEquals(WalletUi.ActionKind.AWAITING_PAYMENT, a.kind)
         assertEquals("", a.button)
         assertEquals("Voir les paiements", a.secondary)
@@ -96,14 +96,14 @@ class WalletUiTest {
         // but a debt still outranks it: money I owe is more urgent than money I might earn
         val owing = listOf(ob(me, seller, 900))
         assertEquals(WalletUi.ActionKind.PAY,
-            WalletUi.primaryAction(owing, me, view(owing), false, true).kind)
+            WalletUi.primaryAction(owing, me, view(owing), false, true, directPay = true).kind)
     }
 
     @Test
     fun once_everything_is_settled_the_screen_says_so_and_offers_nothing() {
         val list = listOf(ob(me, seller, 1_200, Settlement.Status.CONFIRMED),
             ob(seller, me, 800, Settlement.Status.CONFIRMED))
-        val a = WalletUi.primaryAction(list, me, view(list), true, true)
+        val a = WalletUi.primaryAction(list, me, view(list), true, true, directPay = true)
         assertEquals(WalletUi.ActionKind.ALL_CLEAR, a.kind)
         assertEquals("Tout est à jour", a.title)
         assertEquals("", a.button)
@@ -124,7 +124,7 @@ class WalletUiTest {
         val texts = ArrayList<String>()
         val o = WalletUi.overview(w)
         texts += listOf(o.toPay, o.toReceive, o.earnedToday, WalletUi.CUSTODY_NOTE, WalletUi.PRIVACY_NOTE)
-        val a = WalletUi.primaryAction(list, me, w, true, true)
+        val a = WalletUi.primaryAction(list, me, w, true, true, directPay = true)
         texts += listOf(a.title, a.detail, a.button, a.secondary)
         for (g in WalletUi.history(list, me, now)) {
             texts += g.label

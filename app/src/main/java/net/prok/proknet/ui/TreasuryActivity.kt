@@ -58,20 +58,24 @@ class TreasuryActivity : Activity() {
         io.execute {
             val q = ledger.queue()
             val review = ledger.reviewList()
-            runOnUiThread { render(q, review) }
+            val rec = ledger.reconcile()
+            runOnUiThread { render(q, review, rec) }
         }
     }
 
-    private fun render(q: LedgerView.Queue?, review: List<Map<String, String>>) {
+    private fun render(q: LedgerView.Queue?, review: List<Map<String, String>>, rec: String?) {
         if (q == null) { text(R.id.trSentence, "Brain injoignable"); text(R.id.trSummary, ledger.lastError); return }
         val s = q.summary
         text(R.id.trSentence, LedgerView.manualSendsLine(s.manualSendsPending))
+        val recLine = if (rec == null) "Rapprochement : indisponible" else LedgerView.reconcileLines(rec)
         text(R.id.trSummary,
             "Envoyés, non confirmés : " + s.sentUnconfirmed + " · À vérifier : " + s.needsAttention +
             "\nRecharges non attribuées : " + s.topupsUnassigned +
             "\nFloat MTN " + Market.cfa(s.floatMtn) + " · Airtel " + Market.cfa(s.floatAirtel) + " · dettes " + Market.cfa(s.liabilities) +
             (if (s.shortfall > 0) " · MANQUE " + Market.cfa(s.shortfall) else "") +
+            "\n" + recLine +
             "\nPaiements clients : " + (if (s.paymentsLive) "ACTIFS" else "désactivés (pilote)"))
+        findViewById<Button>(R.id.btnTrTestCredit).setOnLongClickListener { moveIdentityDialog(); true }
         val rows = findViewById<LinearLayout>(R.id.trRows)
         rows.removeAllViews()
         show(R.id.trEmpty, q.rows.isEmpty())
@@ -90,7 +94,7 @@ class TreasuryActivity : Activity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 18, 0, 18) }
         val head = TextView(this).apply {
             textSize = 15f
-            text = Market.cfa(r.amountCentimes) + " · " + railName(r.rail) + " · " + Msisdn.pretty(r.msisdn).ifEmpty { r.msisdn } +
+            text = (if (r.kind == "REFUND") "REMBOURSEMENT " else "") + Market.cfa(r.amountCentimes) + " · " + railName(r.rail) + " · " + Msisdn.pretty(r.msisdn).ifEmpty { r.msisdn } +
                 "\n" + LedgerView.statusText(r.state) + (if (r.amber) " · à vérifier dans l'historique MoMo" else "") +
                 " · " + r.ageLine(now) + " · prok-" + r.payeeId.take(8) + (if (r.memo.isNotEmpty()) "\n" + r.memo else "")
         }
@@ -184,6 +188,17 @@ class TreasuryActivity : Activity() {
                     runOnUiThread { toast(msgs.joinToString(" · ").ifEmpty { "Rien saisi" }); load() }
                 }
             }.setNegativeButton("Annuler", null).show()
+    }
+
+    /** Device or key recovery: the old identity's credit and earnings move to the new one, never duplicated. */
+    private fun moveIdentityDialog() {
+        val from = EditText(this).apply { hint = "Ancienne identité (id complet)" }
+        val to = EditText(this).apply { hint = "Nouvelle identité (id complet)" }
+        val memo = EditText(this).apply { hint = "Comment la personne a prouvé que c'est elle" }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(from); addView(to); addView(memo) }
+        AlertDialog.Builder(this).setTitle("Transférer une identité").setMessage("Téléphone réinstallé ou perdu : les soldes de l'ancienne identité passent à la nouvelle. Refusé tant que l'ancienne a une session ou un retrait en cours. Tout est journalisé.").setView(col)
+            .setPositiveButton("Transférer") { _, _ -> run { ledger.moveIdentity(from.text.toString().trim(), to.text.toString().trim(), memo.text.toString().trim()) } }
+            .setNegativeButton("Annuler", null).show()
     }
 
     private fun testCreditDialog() {
